@@ -13,6 +13,79 @@
 use super::*;
 
 pub const MAX_ROUTES: usize = 48;
+/// Default FM modulation depth in turns used by catalog algorithms and new
+/// `osc -> pitch` FM routes (`0.25` turns = `+25%` normalized mod-mode depth).
+pub const DEFAULT_FM_DEPTH_TURNS: f32 = 0.25;
+/// Maximum normalized mod-mode FM depth in turns (`±100%` maps linearly to `±1.0` turn,
+/// well inside `fm4::Routing`'s `[-8.0, 8.0]` turn domain).
+pub const MAX_MOD_MODE_FM_DEPTH_TURNS: f32 = 1.0;
+
+/// Non-pitch audio-rate targets currently executed at audio rate by Vector's
+/// `fm4` voice kernel. `OscPitch(_)` is executed at audio rate by `fm4::Routing`;
+/// `OscLevel(_)` and `FilterFrequency` remain declared in the v26 route contract
+/// for future audio-rate DSP wiring and are NOT outlined in FM mod mode today.
+pub const SUPPORTED_NON_PITCH_AUDIO_RATE_TARGETS: &[VectorModTarget] = &[];
+
+/// Map a signed normalized mod-mode depth (`-1.0..=1.0`) to FM phase-modulation
+/// depth in turns using the linear law `turns = depth_norm * MAX_MOD_MODE_FM_DEPTH_TURNS`.
+/// Thus `+0.25` (`+25%`) produces the exact `0.25`-turn catalog algorithm coefficient,
+/// `0.0` removes the edge, and negative depths invert modulator phase.
+pub fn fm_depth_turns_from_mod_depth(depth_norm: f32) -> Result<f32, VectorModError> {
+    if !depth_norm.is_finite() || !(-1.0..=1.0).contains(&depth_norm) {
+        return Err(VectorModError::NonFiniteOrOutOfRangeDepth);
+    }
+    Ok(depth_norm * MAX_MOD_MODE_FM_DEPTH_TURNS)
+}
+
+/// Inverse of [`fm_depth_turns_from_mod_depth`], clamped to `-1.0..=1.0` for UI display.
+pub fn mod_depth_from_fm_depth_turns(turns: f32) -> f32 {
+    if !turns.is_finite() {
+        return 0.0;
+    }
+    (turns / MAX_MOD_MODE_FM_DEPTH_TURNS).clamp(-1.0, 1.0)
+}
+
+/// Summary of a Vector device's canonical FM `osc -> pitch` routing graph.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OperatorFmSummary {
+    /// Directed FM modulation depths in turns (`matrix[source][target]`).
+    pub matrix: [[f32; OPERATORS]; OPERATORS],
+    /// True for each oscillator that routes audio to the output bus (modulates nothing in DAG mode).
+    pub carriers: [bool; OPERATORS],
+    /// Matching catalog algorithm (`Some(1..=11)`) or `None` when the graph is `"custom"`.
+    pub algorithm_choice: Option<u32>,
+}
+
+impl OperatorFmSummary {
+    /// True when `operator` drives at least one other oscillator's pitch.
+    pub fn is_modulator(&self, operator: usize) -> bool {
+        operator < OPERATORS
+            && (0..OPERATORS).any(|dst| dst != operator && self.matrix[operator][dst] != 0.0)
+    }
+
+    /// Row role label: `"fm"` when modulating another oscillator, `"out"` when a carrier.
+    pub fn row_role_label(&self, operator: usize) -> &'static str {
+        if self.is_modulator(operator) {
+            "fm"
+        } else {
+            "out"
+        }
+    }
+
+    /// Collect all nonzero directed edges `(source, target)` in deterministic order.
+    pub fn edges(&self) -> Vec<(usize, usize)> {
+        let mut out = Vec::new();
+        for src in 0..OPERATORS {
+            for dst in 0..OPERATORS {
+                if src != dst && self.matrix[src][dst] != 0.0 {
+                    out.push((src, dst));
+                }
+            }
+        }
+        out
+    }
+}
+
 /// Header (`flags: u32`, `route_count: u32`) plus `MAX_ROUTES * 8` bytes.
 pub(super) const HEADER_BYTES: usize = 8;
 pub(super) const ROUTE_BYTES: usize = 8;
@@ -119,6 +192,11 @@ impl VectorModTarget {
             self,
             Self::OscPitch(_) | Self::OscLevel(_) | Self::FilterFrequency
         )
+    }
+
+    /// True only for targets currently executed at audio rate by the live `fm4` kernel.
+    pub const fn supports_live_audio_rate_fm_execution(self) -> bool {
+        matches!(self, Self::OscPitch(_))
     }
 
     pub const fn supports_per_voice(self) -> bool {
@@ -661,6 +739,136 @@ pub fn migrate_lfo_to_shared_slot(
     })
 }
 
+/// Inspect the canonical FM `osc -> pitch` routing summary of a Vector state.
+pub fn operator_fm_summary(
+    state: &NativeDeviceState,
+) -> Result<OperatorFmSummary, DeviceContractError> {
+    let settings = OperatorSettings::from_state(state)?;
+    let matrix = std::array::from_fn(|src| {
+        std::array::from_fn(|dst| settings.fields[12 + src * OPERATORS + dst])
+    });
+    let carriers = std::array::from_fn(|op| settings.fields[28 + op] > 0.0);
+    let choice = algorithms::choice(&settings.fields[12..32]);
+    Ok(OperatorFmSummary {
+        matrix,
+        carriers,
+        algorithm_choice: (choice > 0).then_some(choice),
+    })
+}
+
+/// Check whether adding/activating an FM edge `source -> target` is valid (acyclic, non-self).
+pub fn operator_can_map_fm_edge(
+    state: &NativeDeviceState,
+    source: usize,
+    target: usize,
+) -> Result<(), VectorModError> {
+    let settings =
+        OperatorSettings::from_state(state).map_err(|_| VectorModError::InvalidOperatorIndex)?;
+    if source >= OPERATORS || target >= OPERATORS {
+        return Err(VectorModError::InvalidOperatorIndex);
+    }
+    if source == target {
+        return Err(VectorModError::SelfModulationUseFeedback);
+    }
+    let Some(src) = VectorModSource::osc(source) else {
+        return Err(VectorModError::InvalidOperatorIndex);
+    };
+    // Removing an already-active edge is always valid; otherwise check cycle freedom.
+    if settings.fields[12 + source * OPERATORS + target] != 0.0 {
+        return Ok(());
+    }
+    check_route_eligibility(
+        src,
+        VectorModTarget::OscPitch(target as u8),
+        DEFAULT_FM_DEPTH_TURNS,
+        settings.mod_matrix.routes(),
+    )
+}
+
+fn apply_fm_edge_turns(
+    state: &NativeDeviceState,
+    source: usize,
+    target: usize,
+    turns: f32,
+) -> Result<NativeDeviceState, VectorModError> {
+    let mut settings =
+        OperatorSettings::from_state(state).map_err(|_| VectorModError::InvalidOperatorIndex)?;
+    if source >= OPERATORS || target >= OPERATORS {
+        return Err(VectorModError::InvalidOperatorIndex);
+    }
+    if source == target {
+        return Err(VectorModError::SelfModulationUseFeedback);
+    }
+    if !turns.is_finite()
+        || !(-MAX_MOD_MODE_FM_DEPTH_TURNS..=MAX_MOD_MODE_FM_DEPTH_TURNS).contains(&turns)
+    {
+        return Err(VectorModError::NonFiniteOrOutOfRangeDepth);
+    }
+    let existing = settings.fields[12 + source * OPERATORS + target];
+    if turns != 0.0 && existing == 0.0 {
+        let Some(src) = VectorModSource::osc(source) else {
+            return Err(VectorModError::InvalidOperatorIndex);
+        };
+        check_route_eligibility(
+            src,
+            VectorModTarget::OscPitch(target as u8),
+            turns,
+            settings.mod_matrix.routes(),
+        )?;
+    }
+    settings.global.active = true;
+    settings.fields[12 + source * OPERATORS + target] = turns;
+    // Derive carrier membership strictly from outgoing FM edges:
+    // an oscillator that modulates nothing is a carrier (heard).
+    for op in 0..OPERATORS {
+        let modulates_any = (0..OPERATORS)
+            .any(|dst| dst != op && settings.fields[12 + op * OPERATORS + dst] != 0.0);
+        settings.fields[28 + op] = if modulates_any { 0.0 } else { 1.0 };
+    }
+    // Validate the resulting DAG through fm4::Routing before serializing.
+    settings
+        .kernel_parts()
+        .map_err(|_| VectorModError::AudioRateCycleDetected)?;
+    settings
+        .to_state()
+        .map_err(|_| VectorModError::AudioRateCycleDetected)
+}
+
+/// Toggle an FM `source -> target` mapping between off (`0.0`) and the catalog
+/// `0.25`-turn depth in one canonical validated state transition.
+pub fn operator_toggle_fm_edge(
+    state: &NativeDeviceState,
+    source: usize,
+    target: usize,
+) -> Result<NativeDeviceState, VectorModError> {
+    let settings =
+        OperatorSettings::from_state(state).map_err(|_| VectorModError::InvalidOperatorIndex)?;
+    if source >= OPERATORS || target >= OPERATORS {
+        return Err(VectorModError::InvalidOperatorIndex);
+    }
+    if source == target {
+        return Err(VectorModError::SelfModulationUseFeedback);
+    }
+    let next_turns = if settings.fields[12 + source * OPERATORS + target] != 0.0 {
+        0.0
+    } else {
+        DEFAULT_FM_DEPTH_TURNS
+    };
+    apply_fm_edge_turns(state, source, target, next_turns)
+}
+
+/// Set an FM `source -> target` mapping depth from a normalized mod-mode depth
+/// (`-1.0..=1.0`, where `0.0` removes the edge and `+0.25` = `0.25` turns).
+pub fn operator_set_fm_edge_depth(
+    state: &NativeDeviceState,
+    source: usize,
+    target: usize,
+    depth_norm: f32,
+) -> Result<NativeDeviceState, VectorModError> {
+    let turns = fm_depth_turns_from_mod_depth(depth_norm)?;
+    apply_fm_edge_turns(state, source, target, turns)
+}
+
 /// True when `state` is a Vector (`hex.instrument.operator`) state that either
 /// had `interpolation` or `antialias` disabled prior to v26, or was migrated
 /// from such a state and carries the retired-quality-upgrade record.
@@ -1034,5 +1242,110 @@ mod tests {
             .unwrap()
             .validate_state(&ext_migrated.slot_state)
             .unwrap();
+    }
+
+    #[test]
+    fn fm_as_modulation_depth_law_cycle_refusal_carrier_derivation_and_custom_dag_render() {
+        // 1. Documented linear depth law: +25% -> 0.25 turns (catalog coefficient), +/-100% -> +/-1.0 turn.
+        assert_eq!(
+            fm_depth_turns_from_mod_depth(0.25),
+            Ok(DEFAULT_FM_DEPTH_TURNS)
+        );
+        assert_eq!(fm_depth_turns_from_mod_depth(-0.5), Ok(-0.5));
+        assert_eq!(mod_depth_from_fm_depth_turns(0.25), 0.25);
+        assert!(fm_depth_turns_from_mod_depth(f32::NAN).is_err());
+        assert!(fm_depth_turns_from_mod_depth(1.5).is_err());
+        assert!(SUPPORTED_NON_PITCH_AUDIO_RATE_TARGETS.is_empty());
+        assert!(VectorModTarget::OscPitch(0).supports_live_audio_rate_fm_execution());
+        assert!(!VectorModTarget::OscLevel(0).supports_live_audio_rate_fm_execution());
+        assert!(!VectorModTarget::FilterFrequency.supports_live_audio_rate_fm_execution());
+
+        // 2. Default state is Algorithm 1 (3->2->1->0, only 0 is carrier).
+        let mut state = OPERATOR_METADATA.default_state().unwrap();
+        for op in 1..=4 {
+            state = OPERATOR_METADATA
+                .patch_parameter(
+                    &state,
+                    parameter::oscillator_level(op),
+                    ParameterValue::Float(0.6),
+                )
+                .unwrap();
+        }
+        let summary = operator_fm_summary(&state).unwrap();
+        assert_eq!(summary.algorithm_choice, Some(1));
+        assert_eq!(summary.carriers, [true, false, false, false]);
+        assert_eq!(summary.row_role_label(0), "out");
+        assert_eq!(summary.row_role_label(1), "fm");
+
+        // 3. Cycle refusal & self-modulation refusal.
+        assert_eq!(
+            operator_can_map_fm_edge(&state, 0, 0),
+            Err(VectorModError::SelfModulationUseFeedback)
+        );
+        assert_eq!(
+            operator_toggle_fm_edge(&state, 0, 0),
+            Err(VectorModError::SelfModulationUseFeedback)
+        );
+        // 0 -> 3 would close 3 -> 2 -> 1 -> 0 -> 3 cycle.
+        assert_eq!(
+            operator_can_map_fm_edge(&state, 0, 3),
+            Err(VectorModError::AudioRateCycleDetected)
+        );
+        assert_eq!(
+            operator_toggle_fm_edge(&state, 0, 3),
+            Err(VectorModError::AudioRateCycleDetected)
+        );
+        // 1 -> 2 would close 2 -> 1 -> 2 cycle.
+        assert_eq!(
+            operator_can_map_fm_edge(&state, 1, 2),
+            Err(VectorModError::AudioRateCycleDetected)
+        );
+
+        // 4. Toggle existing edge 2 -> 1 off => creates Algorithm 8 (3->2, 1->0, carriers [0, 2])!
+        let algo8 = operator_toggle_fm_edge(&state, 2, 1).unwrap();
+        let algo8_summary = operator_fm_summary(&algo8).unwrap();
+        assert_eq!(algo8_summary.algorithm_choice, Some(8));
+        assert_eq!(algo8_summary.carriers, [true, false, true, false]);
+        assert_eq!(algo8_summary.row_role_label(2), "out");
+
+        // 5. Add non-catalog custom edge 0 -> 2 (still acyclic: 3->2, 1->0->2; carrier only 2) => "custom".
+        let custom = operator_toggle_fm_edge(&algo8, 0, 2).unwrap();
+        let custom_summary = operator_fm_summary(&custom).unwrap();
+        assert_eq!(custom_summary.algorithm_choice, None);
+        assert_eq!(custom_summary.carriers, [false, false, true, false]);
+        assert_eq!(custom_summary.matrix[0][2], DEFAULT_FM_DEPTH_TURNS);
+        // Now 2 -> 1 would close 1 -> 0 -> 2 -> 1 cycle and must be refused!
+        assert_eq!(
+            operator_can_map_fm_edge(&custom, 2, 1),
+            Err(VectorModError::AudioRateCycleDetected)
+        );
+
+        // 6. Setting custom FM depth (+60% => 0.60 turns) alters rendered PCM and survives save/reopen.
+        let deeper = operator_set_fm_edge_depth(&custom, 0, 2, 0.6).unwrap();
+        let deeper_summary = operator_fm_summary(&deeper).unwrap();
+        assert!((deeper_summary.matrix[0][2] - 0.6).abs() < 1e-6);
+        let events = note_events();
+        let pcm_custom = render_operator(&custom, &events);
+        let pcm_deeper = render_operator(&deeper, &events);
+        assert_ne!(
+            pcm_custom, pcm_deeper,
+            "FM depth change must audibly change rendered PCM"
+        );
+        // Save/reopen roundtrip preserves custom DAG & depth identically.
+        let reopened = OperatorSettings::from_state(&deeper)
+            .unwrap()
+            .to_state()
+            .unwrap();
+        assert_eq!(operator_fm_summary(&reopened).unwrap(), deeper_summary);
+        assert_eq!(render_operator(&reopened, &events), pcm_deeper);
+
+        // 7. Selecting a catalog algorithm preset replaces all custom osc -> pitch mappings cleanly.
+        let reset = OPERATOR_METADATA
+            .patch_parameter(&deeper, parameter::ALGORITHM, ParameterValue::Choice(11))
+            .unwrap();
+        let reset_summary = operator_fm_summary(&reset).unwrap();
+        assert_eq!(reset_summary.algorithm_choice, Some(11));
+        assert!(reset_summary.edges().is_empty());
+        assert_eq!(reset_summary.carriers, [true; 4]);
     }
 }

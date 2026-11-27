@@ -95,6 +95,7 @@ pub(super) struct OperatorPanelState {
     pub(super) selected_operator: usize,
     pub(super) page: OperatorPage,
     pub(super) options_open: bool,
+    pub(super) armed_fm_source: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -168,10 +169,16 @@ pub(super) fn render_body(
         .w(px(SHELL_WIDTH))
         .flex_shrink_0()
         .h_full()
-        .pr(px(4.0));
+        .pr(px(2.0));
     for operator in (0..4).rev() {
         shell = shell.child(operator_row(
-            view, cx, device, identity, parameters, operator,
+            view,
+            cx,
+            device,
+            identity,
+            parameters,
+            operator,
+            state.armed_fm_source,
         ));
     }
 
@@ -259,6 +266,15 @@ pub(super) fn render_body(
         .debug_selector(move || format!("operator-body-{}", device.value()))
         .on_key_down(
             cx.listener(move |view, event: &gpui::KeyDownEvent, window, cx| {
+                if event.keystroke.key == "escape"
+                    && !event.is_held
+                    && let Some(entry) = view.device_panel.operator_pages.get_mut(&device)
+                    && entry.armed_fm_source.take().is_some()
+                {
+                    cx.notify();
+                    cx.stop_propagation();
+                    return;
+                }
                 if event.keystroke.key == "tab"
                     && !event.keystroke.modifiers.control
                     && !event.keystroke.modifiers.alt
@@ -402,8 +418,17 @@ fn operator_row(
     identity: DeviceControlIdentity,
     parameters: &[NativeDeviceParameterView],
     operator: usize,
+    armed_fm_source: Option<usize>,
 ) -> Stateful<Div> {
     let base = operator as u32 * 3 + 1;
+    let device_state = view
+        .state
+        .as_ref()
+        .and_then(|state| state.project.device(device))
+        .map(|d| d.state().clone());
+    let fm_summary = device_state
+        .as_ref()
+        .and_then(|state| hex_engine::native_operator_fm_summary(state).ok());
     let primary = shell_control(
         view,
         cx,
@@ -414,6 +439,86 @@ fn operator_row(
         ControlPresentation::FilledSlider,
         Some("coarse"),
     );
+    let primary_overlay = armed_fm_source.and_then(|src| {
+        let state = device_state.as_ref()?;
+        if src == operator
+            || hex_engine::native_operator_can_map_fm_edge(state, src, operator).is_err()
+        {
+            return None;
+        }
+        let existing_turns = fm_summary.map_or(0.0, |s| s.matrix[src][operator]);
+        let mapped = existing_turns != 0.0;
+        let mod_depth = hex_engine::native_operator_mod_depth_from_turns(existing_turns);
+        let accent = theme::oscillator_identity_color(src)
+            .unwrap_or_else(|| theme::color(theme::PaletteRole::Primary));
+        let owner = context::Owner::capture(view, device);
+        let target_selector = format!("operator-fm-target-{}-{src}-{operator}", device.value());
+        let depth_selector = format!("operator-fm-depth-{}-{src}-{operator}", device.value());
+        let overlay = div()
+            .id(ElementId::Name(target_selector.clone().into()))
+            .debug_selector(move || target_selector.clone())
+            .absolute()
+            .inset_0()
+            .border_1()
+            .border_color(rgb(accent))
+            .cursor(gpui::CursorStyle::PointingHand)
+            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+                cx.stop_propagation();
+                if !owner.is_some_and(|o| o.is_current(view)) || !finalize_controls(view, cx) {
+                    return;
+                }
+                let Some(current) = view
+                    .state
+                    .as_ref()
+                    .and_then(|s| s.project.device(device))
+                    .map(|d| d.state().clone())
+                else {
+                    return;
+                };
+                let next = if event.modifiers().shift && mapped {
+                    let next_depth = if mod_depth >= 0.99 {
+                        hex_engine::NATIVE_OPERATOR_DEFAULT_FM_DEPTH_TURNS
+                    } else {
+                        (mod_depth + 0.25).min(1.0)
+                    };
+                    hex_engine::native_operator_set_fm_edge_depth(
+                        &current, src, operator, next_depth,
+                    )
+                } else {
+                    hex_engine::native_operator_toggle_fm_edge(&current, src, operator)
+                };
+                match next {
+                    Ok(state) => {
+                        let _ = view.enqueue_device_barrier(hex_session::service::Request::Edit(
+                            hex_project::Command::ReplaceDeviceState { device, state },
+                        ));
+                    }
+                    Err(error) => {
+                        view.error = Some(error.reason().into());
+                    }
+                }
+                cx.notify();
+            }))
+            .children(mapped.then(|| {
+                div()
+                    .debug_selector(move || depth_selector.clone())
+                    .absolute()
+                    .top_0()
+                    .right_0()
+                    .px(px(2.0))
+                    .text_size(px(7.0))
+                    .bg(rgb(theme::color(theme::PaletteRole::Background)))
+                    .text_color(rgb(accent))
+                    .child(theme::text(format!("{:+.0}%", mod_depth * 100.0)))
+            }));
+        Some(overlay)
+    });
+    let primary = if let Some(overlay) = primary_overlay {
+        div().relative().child(primary).children([overlay])
+    } else {
+        primary
+    };
     let fine = compact_control_with_codec(
         view,
         cx,
@@ -454,7 +559,7 @@ fn operator_row(
         .h(px(44.0))
         .flex()
         .items_center()
-        .gap(px(2.0))
+        .gap(px(1.0))
         .relative()
         .track_focus(&section_focus)
         .key_context("hex_operator_section")
@@ -501,8 +606,10 @@ fn operator_row(
         .h(px(8.0))
         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .debug_selector(move || format!("operator-keytrack-icon-{}-{operator}", device.value()));
+    let fm_handle = operator_fm_handle(view, cx, device, operator, fm_summary, armed_fm_source);
     row = row
         .child(operator_power(view, cx, device, parameters, operator))
+        .children([fm_handle])
         .child(
             div()
                 .w(px(60.0))
@@ -535,6 +642,78 @@ fn operator_row(
                 .child(icon),
         );
     row
+}
+
+fn operator_fm_handle(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    operator: usize,
+    fm_summary: Option<hex_engine::OperatorFmSummary>,
+    armed_fm_source: Option<usize>,
+) -> Stateful<Div> {
+    let owner = context::Owner::capture(view, device);
+    let armed = armed_fm_source == Some(operator);
+    let role = fm_summary.map_or("out", |summary| summary.row_role_label(operator));
+    let accent = theme::oscillator_identity_color(operator)
+        .unwrap_or_else(|| theme::color(theme::PaletteRole::Primary));
+    let style = super::device_layout_style();
+    let selector = format!("operator-fm-handle-{}-{operator}", device.value());
+    let role_selector = format!("operator-fm-role-{}-{operator}-{role}", device.value());
+    let armed_selector = format!("operator-fm-armed-{}-{operator}", device.value());
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .w(px(14.0))
+        .h(px(36.0))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_between()
+        .py(px(2.0))
+        .rounded(px(2.0))
+        .border_1()
+        .border_color(rgb(if armed { accent } else { style.border }))
+        .bg(rgb(if armed { accent } else { style.surface }))
+        .cursor(gpui::CursorStyle::PointingHand)
+        .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |view, _, _, cx| {
+            cx.stop_propagation();
+            if !owner.is_some_and(|o| o.is_current(view)) {
+                return;
+            }
+            let entry = view.device_panel.operator_pages.entry(device).or_default();
+            let next = if entry.armed_fm_source == Some(operator) {
+                None
+            } else {
+                view.device_panel.mapping_source = None;
+                Some(operator)
+            };
+            entry.armed_fm_source = next;
+            cx.notify();
+        }))
+        .child(
+            div()
+                .debug_selector(move || role_selector.clone())
+                .text_size(px(6.0))
+                .text_color(rgb(if armed { style.background } else { style.muted }))
+                .child(theme::text(role)),
+        )
+        .child(
+            div()
+                .text_size(px(7.0))
+                .text_color(rgb(if armed { style.background } else { accent }))
+                .child(theme::text("●→")),
+        )
+        .children(armed.then(|| {
+            div()
+                .debug_selector(move || armed_selector.clone())
+                .absolute()
+                .top_0()
+                .right_0()
+                .size(px(2.0))
+        }))
 }
 
 fn operator_power(

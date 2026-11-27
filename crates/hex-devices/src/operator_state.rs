@@ -61,9 +61,13 @@ mod mod_env;
 pub mod mod_matrix;
 mod modulation;
 pub use mod_matrix::{
-    LfoSlotMigration, ModMatrix, QUALITY_UPGRADE_COMPATIBILITY_WARNING, VectorModError,
-    VectorModRoute, VectorModSource, VectorModTarget, check_route_eligibility,
-    migrate_lfo_to_shared_slot, operator_state_requires_quality_upgrade_warning,
+    DEFAULT_FM_DEPTH_TURNS, LfoSlotMigration, MAX_MOD_MODE_FM_DEPTH_TURNS, ModMatrix,
+    OperatorFmSummary, QUALITY_UPGRADE_COMPATIBILITY_WARNING,
+    SUPPORTED_NON_PITCH_AUDIO_RATE_TARGETS, VectorModError, VectorModRoute, VectorModSource,
+    VectorModTarget, check_route_eligibility, fm_depth_turns_from_mod_depth,
+    migrate_lfo_to_shared_slot, mod_depth_from_fm_depth_turns, operator_can_map_fm_edge,
+    operator_fm_summary, operator_set_fm_edge_depth,
+    operator_state_requires_quality_upgrade_warning, operator_toggle_fm_edge,
 };
 mod osc_env_shape;
 mod performance;
