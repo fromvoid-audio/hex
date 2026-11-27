@@ -106,6 +106,7 @@ impl_inline_owned_factory!(
     crate::gate::PreparedGate,
     crate::overdrive::PreparedOverdrive,
     crate::rattle::PreparedRattle,
+    crate::redux::PreparedRedux,
     crate::saturator::PreparedSaturator,
     crate::utility::PreparedUtilityFilterRuntime,
 );
