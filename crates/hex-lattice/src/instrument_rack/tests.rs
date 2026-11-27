@@ -409,8 +409,8 @@ fn codec_round_trip_parameters_recursion_prohibition_and_validation() {
     assert!(decoded.branches[1].bypassed);
     assert_eq!(decoded.encode_state().unwrap().payload(), patched.payload());
 
-    // Nested rack inside a branch must refuse.
-    let nested = InstrumentRackSpec {
+    // Cycle / duplicate rack_id (both outer and inner rack_id == 1) must refuse with InvalidId.
+    let cycle = InstrumentRackSpec {
         rack_id: id(1),
         overlap_policy: InstrumentRackOverlapPolicy::Layer,
         branches: [
@@ -433,7 +433,62 @@ fn codec_round_trip_parameters_recursion_prohibition_and_validation() {
         ],
     };
     assert_eq!(
-        nested.encode_state().err(),
+        cycle.encode_state().err(),
+        Some(DeviceContractError::InvalidId)
+    );
+
+    // Depth-2 nested rack with distinct IDs succeeds; depth-3 refuses with UnsupportedProcessingClass.
+    let valid_depth2 = InstrumentRackSpec {
+        rack_id: id(2),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
+        branches: [
+            InstrumentRackBranchSpec {
+                branch_id: id(10),
+                device_id: id(100),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::default(),
+                state: Some(default.clone()),
+            },
+            InstrumentRackBranchSpec {
+                branch_id: id(20),
+                device_id: id(200),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::default(),
+                state: None,
+            },
+        ],
+    };
+    let depth2_state = valid_depth2.encode_state().unwrap();
+    assert_eq!(
+        InstrumentRackSpec::decode_state(&depth2_state).unwrap(),
+        valid_depth2
+    );
+    let depth3 = InstrumentRackSpec {
+        rack_id: id(3),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
+        branches: [
+            InstrumentRackBranchSpec {
+                branch_id: id(30),
+                device_id: id(300),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::default(),
+                state: Some(depth2_state),
+            },
+            InstrumentRackBranchSpec {
+                branch_id: id(40),
+                device_id: id(400),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::default(),
+                state: None,
+            },
+        ],
+    };
+    assert_eq!(
+        depth3.encode_state().err(),
         Some(DeviceContractError::UnsupportedProcessingClass)
     );
 
@@ -940,4 +995,178 @@ fn key_velocity_zone_selection_crossfade_overlap_live_edit_and_v1_migration() {
     let mut drain = [[0.0_f32; 2]; 64];
     shrunk_rt.process_block(&[], &mut drain, &crate::EMPTY_DEVICE_RESOURCES);
     assert!(shrunk_rt.is_quiescent());
+}
+
+#[test]
+fn nested_two_level_instrument_rack_pdc_sum_zones_live_retarget_and_budget_oracle() {
+    static VOICE_DEF: TestVoiceDef = TestVoiceDef;
+    static CHILDREN: [&dyn NativeInstrumentDefinition; 1] = [&VOICE_DEF];
+    let child_reg = NativeInstrumentRegistry::new(&CHILDREN).unwrap();
+    let rack_def = InstrumentRackDefinition::new(child_reg).unwrap();
+    let tuning = TuningTable::default();
+    let ctx = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &EMPTY_DEVICE_RESOURCES,
+    };
+
+    // Depth-2 nested rack:
+    //   Inner Rack (id 200):
+    //     Inner Branch 0: latency 10, level 0.4, gain 1.0
+    //     Inner Branch 1: latency 2 (inner comp = 8), level 0.2, gain 1.0
+    //     => Inner Rack latency = 10, sum level = 0.6 at frame 10!
+    //   Outer Rack (id 100):
+    //     Outer Branch 0: Inner Rack (latency 10), gain 0.5 => amp 0.3 at frame 10
+    //     Outer Branch 1: latency 4 (outer comp = 6), level 0.4, gain 0.5 => amp 0.2 at frame 10
+    //     => Total Rack latency = 10; all 3 leaf instruments align at frame 10 with amplitude 0.5 * (pitch/100)!
+    let inner_a = encode_voice(VoiceConfig {
+        level: 0.4,
+        latency_frames: 10,
+        release_frames: 4,
+    });
+    let inner_b = encode_voice(VoiceConfig {
+        level: 0.2,
+        latency_frames: 2,
+        release_frames: 4,
+    });
+    let outer_b = encode_voice(VoiceConfig {
+        level: 0.4,
+        latency_frames: 4,
+        release_frames: 4,
+    });
+
+    let make_nested = |inner_b_zone: InstrumentRackZone| {
+        let inner = InstrumentRackSpec {
+            rack_id: id(200),
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
+            branches: [
+                InstrumentRackBranchSpec {
+                    branch_id: id(201),
+                    device_id: id(21),
+                    gain: 1.0,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(inner_a.clone()),
+                },
+                InstrumentRackBranchSpec {
+                    branch_id: id(202),
+                    device_id: id(22),
+                    gain: 1.0,
+                    bypassed: false,
+                    zone: inner_b_zone,
+                    state: Some(inner_b.clone()),
+                },
+            ],
+        };
+        InstrumentRackSpec {
+            rack_id: id(100),
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
+            branches: [
+                InstrumentRackBranchSpec {
+                    branch_id: id(101),
+                    device_id: id(11),
+                    gain: 0.5,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(inner.encode_state().unwrap()),
+                },
+                InstrumentRackBranchSpec {
+                    branch_id: id(102),
+                    device_id: id(12),
+                    gain: 0.5,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(outer_b.clone()),
+                },
+            ],
+        }
+    };
+
+    let full_state = make_nested(InstrumentRackZone::default())
+        .encode_state()
+        .unwrap();
+    let prepared = rack_def
+        .prepare_instrument_with_runtime_limits(&full_state, &ctx, limits())
+        .unwrap();
+    assert_eq!(prepared.algorithmic_latency_frames(), Some(10));
+
+    // Tight byte budget refuses preparation cleanly!
+    let mut tight = limits();
+    tight.max_pair_bytes = 256;
+    assert_eq!(
+        rack_def
+            .prepare_instrument_with_runtime_limits(&full_state, &ctx, tight)
+            .err(),
+        Some(DeviceContractError::RuntimeBudgetExceeded)
+    );
+
+    // Render pitch 60 across irregular partitions: all 3 leaves arrive at EXACT frame 10 with 0.5 * 0.60 = 0.30!
+    let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+    let mut rt = factory.create_runtime();
+    let events = [
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 100,
+        },
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 14,
+            occurrence_id: 1,
+        },
+    ];
+    let mut out = vec![[0.0_f32; 2]; 48];
+    rt.preflight_events(&events, 48, &EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    rt.process_block(&events, &mut out, &EMPTY_DEVICE_RESOURCES);
+    for (idx, frame) in out.iter().enumerate().take(10) {
+        assert_eq!(*frame, [0.0, 0.0], "pre-latency energy at frame {idx}");
+    }
+    assert!(
+        (out[10][0] - 0.30).abs() < 1e-5,
+        "expected 0.30 at frame 10, got {}",
+        out[10][0]
+    );
+
+    // Live nested inner-branch zone retarget while note 1 is held:
+    // shrink inner branch 1 to keys 80..=127 so held note 1 releases cleanly with zero stuck notes!
+    let mut active = factory.create_runtime();
+    let hold = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 60,
+        velocity: 100,
+    }];
+    let mut pre = [[0.0_f32; 2]; 12];
+    active.process_block(&hold, &mut pre, &EMPTY_DEVICE_RESOURCES);
+    assert!((pre[10][0] - 0.30).abs() < 1e-5);
+
+    let edited_state = make_nested(InstrumentRackZone::hard(80, 127, 1, 127))
+        .encode_state()
+        .unwrap();
+    let edited_factory = rack_def
+        .prepare_instrument_with_runtime_limits(&edited_state, &ctx, limits())
+        .unwrap()
+        .prepare_mutable_runtime()
+        .unwrap()
+        .unwrap();
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        edited_factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("expected prepared nested zone retarget proof");
+    };
+    let mut next_rt = edited_factory.create_runtime();
+    assert!(next_rt.can_retarget_history_from(active.as_ref(), proof.as_ref()));
+    next_rt.retarget_history_from(active.as_ref(), proof.as_ref());
+
+    let rel = [NativeInstrumentEvent::NoteOff {
+        frame_offset: 0,
+        occurrence_id: 1,
+    }];
+    let mut tail = [[0.0_f32; 2]; 64];
+    next_rt
+        .preflight_events(&rel, 64, &EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    next_rt.process_block(&rel, &mut tail, &EMPTY_DEVICE_RESOURCES);
+    assert!(next_rt.is_quiescent());
 }

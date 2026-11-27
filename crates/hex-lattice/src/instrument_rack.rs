@@ -1,16 +1,20 @@
-//! Bounded two-branch native Instrument Rack for one retained native source.
+//! Bounded nested native Instrument Rack for one retained native source
+//! (`INSTRUMENT_RACK_MAX_DEPTH == 2`).
 //!
 //! Fans a single host event stream (`NativeInstrumentEvent` with stable
 //! `occurrence_id`s, paired note-offs, MPE, and shared controller events) to two
-//! independent native instrument branches prepared through the existing
-//! `NativeInstrumentRegistry` (no parallel registry, no per-track clones),
-//! aligns branch algorithmic latencies with exact-capacity control-allocated
-//! delay rings, and sums weighted branch outputs once.
+//! independent native instrument branches (or bounded depth-2 nested Instrument
+//! Racks) prepared through the existing `NativeInstrumentRegistry` (no parallel
+//! registry, no per-track clones), aligns branch algorithmic latencies across
+//! levels with exact-capacity control-allocated delay rings, and sums weighted
+//! branch outputs once.
 //!
-//! Nesting is explicitly prohibited (`INSTRUMENT_RACK_MAX_DEPTH == 1`): any
-//! child branch referencing `INSTRUMENT_RACK_TYPE_ID` is refused on control.
-//! All child runtimes, delay rings, and chunk scratch buffers are allocated on
-//! control; callback processing performs zero allocations, locks, I/O, or final drops.
+//! Nesting is explicitly bounded at `INSTRUMENT_RACK_MAX_DEPTH == 2`: deeper
+//! nesting (`depth > 2`), duplicate rack/branch/device identities across levels
+//! (cycles/self-reference), and budget overflows are refused on control before
+//! touching active state. All child runtimes, delay rings, and chunk scratch
+//! buffers are allocated on control; callback processing performs zero
+//! allocations, locks, I/O, or final drops.
 
 #[cfg(test)]
 mod tests;
@@ -38,8 +42,9 @@ pub const INSTRUMENT_RACK_STATE_VERSION_V1: u32 = 1;
 pub const INSTRUMENT_RACK_STATE_VERSION: u32 = 2;
 pub const INSTRUMENT_RACK_RUNTIME_VERSION: u32 = 2;
 pub const INSTRUMENT_RACK_BRANCH_COUNT: usize = 2;
-/// Explicit nesting prohibition: branches contain flat native instruments only.
-pub const INSTRUMENT_RACK_MAX_DEPTH: usize = 1;
+/// Explicit nesting ceiling: outer Instrument Rack (depth 1) may host nested
+/// Instrument Racks (depth 2) whose branches contain flat native instruments only.
+pub const INSTRUMENT_RACK_MAX_DEPTH: usize = 2;
 pub const INSTRUMENT_RACK_MAX_BRANCH_GAIN: f32 = 4.0;
 pub const INSTRUMENT_RACK_MAX_COMPENSATION_DELAY_FRAMES: u32 = MAX_MAIN_PASS_DELAY_FRAMES;
 pub const INSTRUMENT_RACK_MAX_EVENTS_PER_BLOCK: usize = 259;
@@ -222,12 +227,68 @@ pub struct InstrumentRackSpec {
 
 impl InstrumentRackSpec {
     pub fn validate(&self) -> Result<(), DeviceContractError> {
-        if self.branches[0].branch_id == self.branches[1].branch_id
-            || self.branches[0].device_id == self.branches[1].device_id
-        {
+        let mut seen_racks = [0_u64; 3];
+        let mut seen_racks_len = 0_usize;
+        let mut seen_branches = [0_u64; 6];
+        let mut seen_branches_len = 0_usize;
+        let mut seen_devices = [0_u64; 6];
+        let mut seen_devices_len = 0_usize;
+        self.validate_at_depth(
+            1,
+            &mut seen_racks,
+            &mut seen_racks_len,
+            &mut seen_branches,
+            &mut seen_branches_len,
+            &mut seen_devices,
+            &mut seen_devices_len,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_at_depth(
+        &self,
+        depth: usize,
+        seen_racks: &mut [u64; 3],
+        seen_racks_len: &mut usize,
+        seen_branches: &mut [u64; 6],
+        seen_branches_len: &mut usize,
+        seen_devices: &mut [u64; 6],
+        seen_devices_len: &mut usize,
+    ) -> Result<(), DeviceContractError> {
+        if depth == 0 || depth > INSTRUMENT_RACK_MAX_DEPTH {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let rack_raw = self.rack_id.get();
+        if seen_racks[..*seen_racks_len].contains(&rack_raw) {
             return Err(DeviceContractError::InvalidId);
         }
+        if *seen_racks_len >= seen_racks.len() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        seen_racks[*seen_racks_len] = rack_raw;
+        *seen_racks_len += 1;
+
         for branch in &self.branches {
+            let branch_raw = branch.branch_id.get();
+            if seen_branches[..*seen_branches_len].contains(&branch_raw) {
+                return Err(DeviceContractError::InvalidId);
+            }
+            if *seen_branches_len >= seen_branches.len() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
+            seen_branches[*seen_branches_len] = branch_raw;
+            *seen_branches_len += 1;
+
+            let dev_raw = branch.device_id.get();
+            if seen_devices[..*seen_devices_len].contains(&dev_raw) {
+                return Err(DeviceContractError::InvalidId);
+            }
+            if *seen_devices_len >= seen_devices.len() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
+            seen_devices[*seen_devices_len] = dev_raw;
+            *seen_devices_len += 1;
+
             if !branch.gain.is_finite()
                 || !(0.0..=INSTRUMENT_RACK_MAX_BRANCH_GAIN).contains(&branch.gain)
             {
@@ -235,15 +296,27 @@ impl InstrumentRackSpec {
             }
             branch.zone.validate()?;
             if let Some(state) = &branch.state {
-                if state.type_id() == INSTRUMENT_RACK_TYPE_ID {
-                    return Err(DeviceContractError::UnsupportedProcessingClass);
-                }
                 state.type_id().validate()?;
                 if state.state_version() == 0 {
                     return Err(DeviceContractError::InvalidStateVersion);
                 }
                 if !state.asset_references().is_empty() {
                     return Err(DeviceContractError::AssetResourcesUnavailable);
+                }
+                if state.type_id() == INSTRUMENT_RACK_TYPE_ID {
+                    if depth >= INSTRUMENT_RACK_MAX_DEPTH {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                    let nested = Self::decode_state_raw(state, true)?;
+                    nested.validate_at_depth(
+                        depth + 1,
+                        seen_racks,
+                        seen_racks_len,
+                        seen_branches,
+                        seen_branches_len,
+                        seen_devices,
+                        seen_devices_len,
+                    )?;
                 }
             }
         }
@@ -327,7 +400,9 @@ impl InstrumentRackSpec {
 
     /// Strictly decode and validate a current v2 Instrument Rack `NativeDeviceState`.
     pub fn decode_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
-        Self::decode_state_inner(state, false)
+        let spec = Self::decode_state_raw(state, false)?;
+        spec.validate()?;
+        Ok(spec)
     }
 
     /// Decode and migrate a v1 or v2 Instrument Rack `NativeDeviceState` into
@@ -335,10 +410,12 @@ impl InstrumentRackSpec {
     pub fn decode_and_migrate_state(
         state: &NativeDeviceState,
     ) -> Result<Self, DeviceContractError> {
-        Self::decode_state_inner(state, true)
+        let spec = Self::decode_state_raw(state, true)?;
+        spec.validate()?;
+        Ok(spec)
     }
 
-    fn decode_state_inner(
+    fn decode_state_raw(
         state: &NativeDeviceState,
         allow_v1: bool,
     ) -> Result<Self, DeviceContractError> {
@@ -481,13 +558,11 @@ impl InstrumentRackSpec {
             branches
                 .try_into()
                 .map_err(|_| DeviceContractError::MalformedState)?;
-        let spec = Self {
+        Ok(Self {
             rack_id,
             overlap_policy,
             branches: [branch_a, branch_b],
-        };
-        spec.validate()?;
-        Ok(spec)
+        })
     }
 }
 
@@ -512,6 +587,44 @@ impl<'a> InstrumentRackDefinition<'a> {
         limits: Option<NativeInstrumentRuntimeLimits>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let spec = InstrumentRackSpec::decode_and_migrate_state(state)?;
+        self.prepare_spec_at_depth(&spec, context, limits, 1)
+    }
+
+    fn migrate_spec_at_depth(
+        &self,
+        spec: &mut InstrumentRackSpec,
+        depth: usize,
+    ) -> Result<(), DeviceContractError> {
+        if depth == 0 || depth > INSTRUMENT_RACK_MAX_DEPTH {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        for branch in &mut spec.branches {
+            if let Some(child) = &branch.state {
+                if child.type_id() == INSTRUMENT_RACK_TYPE_ID {
+                    if depth >= INSTRUMENT_RACK_MAX_DEPTH {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                    let mut nested = InstrumentRackSpec::decode_and_migrate_state(child)?;
+                    self.migrate_spec_at_depth(&mut nested, depth + 1)?;
+                    branch.state = Some(nested.encode_state()?);
+                } else {
+                    branch.state = Some(self.children.migrate_state(child)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn prepare_spec_at_depth(
+        &self,
+        spec: &InstrumentRackSpec,
+        context: &DevicePreparationContext<'_>,
+        limits: Option<NativeInstrumentRuntimeLimits>,
+        depth: usize,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        if depth == 0 || depth > INSTRUMENT_RACK_MAX_DEPTH {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
         let mut prepared_branches: [Option<PreparedBranchFactory>; INSTRUMENT_RACK_BRANCH_COUNT] =
             [None, None];
         let mut branch_latencies = [0_u32; INSTRUMENT_RACK_BRANCH_COUNT];
@@ -520,13 +633,21 @@ impl<'a> InstrumentRackDefinition<'a> {
             let Some(child_state) = &branch.state else {
                 continue;
             };
-            let prepared_inst = match limits {
-                Some(host_limits) => self.children.prepare_instrument_with_runtime_limits(
-                    child_state,
-                    context,
-                    host_limits,
-                )?,
-                None => self.children.prepare_instrument(child_state, context)?,
+            let prepared_inst = if child_state.type_id() == INSTRUMENT_RACK_TYPE_ID {
+                if depth >= INSTRUMENT_RACK_MAX_DEPTH {
+                    return Err(DeviceContractError::UnsupportedProcessingClass);
+                }
+                let nested_spec = InstrumentRackSpec::decode_and_migrate_state(child_state)?;
+                self.prepare_spec_at_depth(&nested_spec, context, limits, depth + 1)?
+            } else {
+                match limits {
+                    Some(host_limits) => self.children.prepare_instrument_with_runtime_limits(
+                        child_state,
+                        context,
+                        host_limits,
+                    )?,
+                    None => self.children.prepare_instrument(child_state, context)?,
+                }
             };
             let factory = prepared_inst
                 .prepare_mutable_runtime()?
@@ -711,11 +832,7 @@ impl NativeDeviceMetadata for InstrumentRackDefinition<'_> {
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut spec = InstrumentRackSpec::decode_and_migrate_state(state)?;
-        for branch in &mut spec.branches {
-            if let Some(child) = &branch.state {
-                branch.state = Some(self.children.migrate_state(child)?);
-            }
-        }
+        self.migrate_spec_at_depth(&mut spec, 1)?;
         spec.encode_state()
     }
 
@@ -1662,7 +1779,16 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
         }
         for (dst, src) in self.branches.iter_mut().zip(&other.branches) {
             if let (Some(a), Some(b)) = (dst.as_mut(), src.as_ref()) {
-                a.runtime.copy_history_from(b.runtime.as_ref());
+                if a.runtime.can_copy_history_from(b.runtime.as_ref()) {
+                    a.runtime.copy_history_from(b.runtime.as_ref());
+                } else if let Some(inner_dst) = a.runtime.as_any().downcast_ref::<Self>() {
+                    let inner_proof = InstrumentRackZoneRetargetProof {
+                        rack_id: inner_dst.rack_id,
+                        sample_rate: inner_dst.sample_rate,
+                    };
+                    a.runtime
+                        .retarget_history_from(b.runtime.as_ref(), &inner_proof);
+                }
                 a.routed_occurrences = b.routed_occurrences;
                 if let (Some(dst_delay), Some(src_delay)) = (&mut a.delay, &b.delay) {
                     dst_delay.copy_from(src_delay);
@@ -1700,11 +1826,23 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
             .all(|(dst, src)| match (dst, src) {
                 (None, None) => true,
                 (Some(a), Some(b)) => {
+                    let child_compatible = if a.runtime.can_copy_history_from(b.runtime.as_ref()) {
+                        true
+                    } else if let Some(inner_dst) = a.runtime.as_any().downcast_ref::<Self>() {
+                        let inner_proof = InstrumentRackZoneRetargetProof {
+                            rack_id: inner_dst.rack_id,
+                            sample_rate: inner_dst.sample_rate,
+                        };
+                        a.runtime
+                            .can_retarget_history_from(b.runtime.as_ref(), &inner_proof)
+                    } else {
+                        false
+                    };
                     a.branch_id == b.branch_id
                         && a.device_id == b.device_id
                         && a.gain.to_bits() == b.gain.to_bits()
                         && a.compensation_delay_frames == b.compensation_delay_frames
-                        && a.runtime.can_copy_history_from(b.runtime.as_ref())
+                        && child_compatible
                 }
                 _ => false,
             })
@@ -1723,7 +1861,16 @@ impl MutableInstrumentRuntime for InstrumentRackRuntime {
         };
         for (dst, src) in self.branches.iter_mut().zip(&other.branches) {
             if let (Some(a), Some(b)) = (dst.as_mut(), src.as_ref()) {
-                a.runtime.copy_history_from(b.runtime.as_ref());
+                if a.runtime.can_copy_history_from(b.runtime.as_ref()) {
+                    a.runtime.copy_history_from(b.runtime.as_ref());
+                } else if let Some(inner_dst) = a.runtime.as_any().downcast_ref::<Self>() {
+                    let inner_proof = InstrumentRackZoneRetargetProof {
+                        rack_id: inner_dst.rack_id,
+                        sample_rate: inner_dst.sample_rate,
+                    };
+                    a.runtime
+                        .retarget_history_from(b.runtime.as_ref(), &inner_proof);
+                }
                 a.routed_occurrences = b.routed_occurrences;
                 if let (Some(dst_delay), Some(src_delay)) = (&mut a.delay, &b.delay) {
                     dst_delay.copy_from(src_delay);

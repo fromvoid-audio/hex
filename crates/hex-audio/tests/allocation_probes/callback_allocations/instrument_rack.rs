@@ -422,3 +422,208 @@ fn zoned_crossfade_instrument_rack_and_live_zone_edit_allocate_nothing_on_callba
     drop(rev_a);
     drop(table);
 }
+
+#[test]
+fn nested_two_level_shared_source_instrument_rack_allocates_nothing_on_callback() {
+    use hex_lattice::{InstrumentRackOverlapPolicy, InstrumentRackZone};
+
+    let sub_base = default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::subtractive::SUBTRACTIVE_TYPE_ID,
+    )
+    .unwrap();
+    let sub_attack = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &sub_base,
+        hex_devices::subtractive::parameter::ATTACK,
+        ParameterValue::Float(0.001),
+    )
+    .unwrap();
+    let sub = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &sub_attack,
+        hex_devices::subtractive::parameter::RELEASE,
+        ParameterValue::Float(0.005),
+    )
+    .unwrap();
+    let fm4 = default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::fm4::device::FM4_TYPE_ID,
+    )
+    .unwrap();
+
+    let make_nested = |inner_b1_zone: InstrumentRackZone| {
+        let inner = InstrumentRackSpec {
+            rack_id: id(200),
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
+            branches: [
+                InstrumentRackBranchSpec {
+                    branch_id: id(201),
+                    device_id: id(21),
+                    gain: 1.0,
+                    bypassed: false,
+                    zone: InstrumentRackZone::hard(0, 63, 1, 127),
+                    state: Some(sub.clone()),
+                },
+                InstrumentRackBranchSpec {
+                    branch_id: id(202),
+                    device_id: id(22),
+                    gain: 1.0,
+                    bypassed: false,
+                    zone: inner_b1_zone,
+                    state: Some(fm4.clone()),
+                },
+            ],
+        };
+        InstrumentRackSpec {
+            rack_id: id(100),
+            overlap_policy: InstrumentRackOverlapPolicy::Layer,
+            branches: [
+                InstrumentRackBranchSpec {
+                    branch_id: id(101),
+                    device_id: id(11),
+                    gain: 0.5,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(inner.encode_state().unwrap()),
+                },
+                InstrumentRackBranchSpec {
+                    branch_id: id(102),
+                    device_id: id(12),
+                    gain: 0.25,
+                    bypassed: false,
+                    zone: InstrumentRackZone::default(),
+                    state: Some(sub.clone()),
+                },
+            ],
+        }
+    };
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "nested-rack-probe".into(),
+            devices: vec![
+                make_nested(InstrumentRackZone::hard(64, 127, 1, 127))
+                    .encode_state()
+                    .unwrap(),
+            ],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("expected source");
+    };
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "track".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected track");
+    };
+    if editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .is_some()
+    {
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+    }
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat(2),
+        })
+        .unwrap()
+    else {
+        panic!("clip");
+    };
+    for (pitch, start, vel) in [(60, BeatTime::ZERO, 110), (67, beat_frac(1, 64), 95)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration: beat_frac(1, 32),
+                pitch,
+                channel: 0,
+                velocity: vel,
+            })
+            .unwrap();
+    }
+
+    let builtin = hex_devices::native_instrument_registry().unwrap();
+    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
+    let rack_def = InstrumentRackDefinition::new(builtin).unwrap();
+    defs.push(&rack_def);
+    let combined = NativeInstrumentRegistry::new(&defs).unwrap();
+    let table = Arc::new(SineTable::new());
+    let rev_a = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &combined,
+        )
+        .unwrap(),
+    );
+    let inst_id = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: inst_id,
+            state: make_nested(InstrumentRackZone::hard(64, 127, 100, 127))
+                .encode_state()
+                .unwrap(),
+        })
+        .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &combined,
+        )
+        .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    let mut edited = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        edited.try_inherit_state_from(&mut active).unwrap();
+        edited.render(&mut buf).unwrap();
+        edited.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(
+        info.count_total, 0,
+        "nested rack callback allocated: {info:?}"
+    );
+    assert_eq!(info.bytes_total, 0, "nested rack callback bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "nested rack net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "nested rack net bytes: {info:?}");
+
+    drop(edited);
+    drop(active);
+    drop(rev_b);
+    drop(rev_a);
+    drop(table);
+}
