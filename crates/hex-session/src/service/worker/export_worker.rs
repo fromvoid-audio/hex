@@ -79,7 +79,7 @@ pub(crate) fn run_export_worker(
     wake_hook: client::WakeHook,
     #[cfg(test)] test_hook: ExportTestHook,
 ) {
-    run_export_worker_with_signal(
+    run_export_worker_with_recovery(
         work,
         events,
         exporter,
@@ -87,13 +87,14 @@ pub(crate) fn run_export_worker(
         shutdown,
         wake_hook,
         Arc::new(WakeSignal::default()),
+        None,
         #[cfg(test)]
         test_hook,
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_export_worker_with_signal(
+pub(crate) fn run_export_worker_with_recovery(
     work: Receiver<ExportWork>,
     events: SyncSender<ExportEvent>,
     exporter: Exporter,
@@ -101,6 +102,7 @@ pub(crate) fn run_export_worker_with_signal(
     shutdown: Arc<AtomicBool>,
     wake_hook: client::WakeHook,
     drain_signal: Arc<WakeSignal>,
+    recovery: Option<Arc<crate::ExportRecoveryJournal>>,
     #[cfg(test)] test_hook: ExportTestHook,
 ) {
     while let Ok(work) = work.recv() {
@@ -252,9 +254,17 @@ pub(crate) fn run_export_worker_with_signal(
                     wake_hook.wake();
                     break;
                 }
-                Err(TrySendError::Disconnected(_)) => return,
+                Err(TrySendError::Disconnected(undelivered)) => {
+                    if let Some(journal) = &recovery {
+                        journal.record_event(&undelivered);
+                    }
+                    return;
+                }
                 Err(TrySendError::Full(returned)) => {
                     if shutdown.load(Ordering::Acquire) {
+                        if let Some(journal) = &recovery {
+                            journal.record_event(&returned);
+                        }
                         return;
                     }
                     event = returned;

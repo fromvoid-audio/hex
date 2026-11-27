@@ -119,10 +119,12 @@ pub use analytic_continuation::{
 
 mod instrument;
 mod instrument_gain;
+mod instrument_outputs;
 mod instrument_pair;
 mod instrument_rack;
 mod instrument_runtime;
 mod midi_processor;
+mod midi_rack;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, AnalyticNoteContinuation, MAX_SHARED_ANALYTIC_CONTEXT_BYTES,
     NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
@@ -131,6 +133,18 @@ pub use instrument::{
 };
 pub use instrument_gain::{
     INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentOccurrenceGain,
+};
+pub use instrument_outputs::{
+    MAX_NATIVE_OUTPUT_BLOCK_FRAMES, MAX_NATIVE_OUTPUT_COMPENSATION_DELAY_FRAMES,
+    MAX_NATIVE_OUTPUT_DESTINATIONS, MAX_NATIVE_OUTPUT_FANOUT_PER_PORT,
+    MAX_NATIVE_OUTPUT_GRAPH_EDGES, MAX_NATIVE_OUTPUT_PORTS, MAX_NATIVE_OUTPUT_ROUTE_GAIN,
+    MAX_NATIVE_OUTPUT_ROUTES, MultiOutputDestinationBuffer, MultiOutputInstrumentRuntime,
+    MultiOutputRoutingError, NATIVE_MULTI_OUTPUT_PLAN_VERSION, NativeGraphEdge,
+    NativeMultiOutputEdit, NativeMultiOutputHistory, NativeMultiOutputLimits,
+    NativeMultiOutputPlan, NativeMultiOutputRoute, NativeMultiOutputTopology,
+    NativeOutputChannelLayout, NativeOutputDestination, NativeOutputDestinationInfo,
+    NativeOutputPortDescriptor, NativeOutputPortId, PreparedMultiOutputRouter,
+    validate_output_port_descriptors,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
@@ -151,9 +165,21 @@ pub use instrument_runtime::{
     PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
 pub use midi_processor::{
+    BoundedFutureMidiQueue, DueMidiEvent, FUTURE_MIDI_EVENT_QUEUE_CAPACITY,
+    FUTURE_MIDI_MAX_HORIZON_BEATS_Q32, FUTURE_MIDI_MAX_HORIZON_FRAMES,
+    FUTURE_MIDI_RESERVED_NOTE_OFF_SLOTS, FutureMidiTime, GENERATED_OCCURRENCE_ID_BASE,
     MidiProcessorOutput, MutableMidiProcessorRuntime, NativeMidiProcessorDefinition,
     NativeMidiProcessorError, NativeMidiProcessorLimits, NativeMidiProcessorRegistry,
-    NativeMidiProcessorRuntimePair, PreparedNativeMidiProcessor,
+    NativeMidiProcessorRuntimePair, PreparedNativeMidiProcessor, ScheduledMidiEvent,
+    ScheduledMidiKind, resolve_future_time_in_block, validate_future_horizon,
+};
+pub use midi_rack::{
+    MIDI_RACK_BRANCH_COUNT, MIDI_RACK_MAX_ACTIVE_OCCURRENCES,
+    MIDI_RACK_MAX_BRANCH_ACTIVE_OCCURRENCES, MIDI_RACK_MAX_DEPTH, MIDI_RACK_MAX_INPUT_EVENTS,
+    MIDI_RACK_MAX_OUTPUT_EVENTS, MIDI_RACK_MAX_WORK_UNITS, MIDI_RACK_RUNTIME_VERSION,
+    MIDI_RACK_STATE_VERSION, MIDI_RACK_TYPE_ID, MidiRackBranchSpec, MidiRackDefinition,
+    MidiRackSpec, PARAM_MIDI_RACK_BRANCH_1_BYPASS, PARAM_MIDI_RACK_BRANCH_2_BYPASS,
+    PreparedMidiRack,
 };
 
 mod adapters;

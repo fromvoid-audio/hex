@@ -101,13 +101,20 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
         _ => false,
     };
     let query = query.trim().to_lowercase();
-    for class in [NativeDeviceClass::Effect, NativeDeviceClass::Instrument] {
-        if class == NativeDeviceClass::Instrument
-            && (!matches!(owner, DevicePanelOwner::Track(_)) || is_group_track)
+    for class in [
+        NativeDeviceClass::MidiProcessor,
+        NativeDeviceClass::Effect,
+        NativeDeviceClass::Instrument,
+    ] {
+        if matches!(
+            class,
+            NativeDeviceClass::Instrument | NativeDeviceClass::MidiProcessor
+        ) && (!matches!(owner, DevicePanelOwner::Track(_)) || is_group_track)
         {
             continue;
         }
         let cached = match class {
+            NativeDeviceClass::MidiProcessor => &view.device_panel.midi_processor_catalog,
             NativeDeviceClass::Effect => &view.device_panel.effect_catalog,
             NativeDeviceClass::Instrument => &view.device_panel.instrument_catalog,
         };
@@ -118,6 +125,7 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
             Ok(catalog) => {
                 for entry in catalog {
                     let kind = match class {
+                        NativeDeviceClass::MidiProcessor => "midi",
                         NativeDeviceClass::Effect => "effect",
                         NativeDeviceClass::Instrument => "instrument",
                     };
@@ -128,15 +136,19 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
                     {
                         continue;
                     }
-                    let replacing = class == NativeDeviceClass::Instrument
-                        && match owner {
-                            DevicePanelOwner::Track(track) => view
-                                .state
-                                .as_ref()
-                                .and_then(|state| state.project.track(track))
-                                .is_some_and(|track| track.instrument().is_some()),
-                            _ => false,
-                        };
+                    let replacing = match (class, owner) {
+                        (NativeDeviceClass::Instrument, DevicePanelOwner::Track(track)) => view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track))
+                            .is_some_and(|track| track.instrument().is_some()),
+                        (NativeDeviceClass::MidiProcessor, DevicePanelOwner::Track(track)) => view
+                            .state
+                            .as_ref()
+                            .and_then(|state| state.project.track(track))
+                            .is_some_and(|track| track.midi_processor().is_some()),
+                        _ => false,
+                    };
                     let prefix = match owner {
                         DevicePanelOwner::Track(_) => "native",
                         DevicePanelOwner::Main => "main",
@@ -181,22 +193,33 @@ fn activate(
     let request = match owner {
         DevicePanelOwner::Track(track) => {
             let track_ref = state.project.track(track);
-            if class == NativeDeviceClass::Instrument
-                && track_ref.is_some_and(hex_project::Track::is_group)
+            if matches!(
+                class,
+                NativeDeviceClass::Instrument | NativeDeviceClass::MidiProcessor
+            ) && track_ref.is_some_and(hex_project::Track::is_group)
             {
                 return;
             }
             let instrument = track_ref
                 .and_then(|track| track.instrument())
                 .map(hex_project::Device::id);
-            let placement = match (class, instrument) {
-                (NativeDeviceClass::Instrument, Some(device)) => {
+            let midi_processor = track_ref
+                .and_then(|track| track.midi_processor())
+                .map(hex_project::Device::id);
+            let placement = match (class, instrument, midi_processor) {
+                (NativeDeviceClass::Instrument, Some(device), _) => {
                     TrackCatalogPlacement::ReplaceInstrument(device)
                 }
-                (NativeDeviceClass::Instrument, None) => {
+                (NativeDeviceClass::Instrument, None, _) => {
                     TrackCatalogPlacement::Insert { before: None }
                 }
-                (NativeDeviceClass::Effect, _) => TrackCatalogPlacement::Insert { before },
+                (NativeDeviceClass::MidiProcessor, _, Some(device)) => {
+                    TrackCatalogPlacement::ReplaceMidiProcessor(device)
+                }
+                (NativeDeviceClass::MidiProcessor, _, None) => {
+                    TrackCatalogPlacement::Insert { before: None }
+                }
+                (NativeDeviceClass::Effect, _, _) => TrackCatalogPlacement::Insert { before },
             };
             Request::LoadTrackCatalogDevice {
                 project_generation: view.project_generation,

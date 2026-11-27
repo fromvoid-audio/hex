@@ -268,7 +268,8 @@ pub use snapshot::{
     AssetSnapshot, ClipSnapshot, DeviceSnapshot, MidiClipSnapshot, MidiNoteSnapshot,
     MidiSourceSnapshot, ReturnTrackSnapshot, SceneSnapshot, SendLevelSnapshot,
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
-    SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
+    SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot,
+    TrackMidiProcessorSnapshot, TrackSnapshot,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -652,6 +653,8 @@ pub struct TrackData {
     pub(crate) muted: bool,
     pub(crate) soloed: bool,
     pub(crate) devices: Vec<Device>,
+    /// Optional bounded pre-instrument native MIDI processor on an ordinary track.
+    pub(crate) midi_processor: Option<Device>,
     pub(crate) instrument: Option<native_sources::SourceBinding>,
     /// The bound receiver retains its source path after its own MIDI was printed.
     pub(crate) retained_source_path: bool,
@@ -776,6 +779,10 @@ impl Track {
     pub fn devices(&self) -> &[Device] {
         &self.devices
     }
+    /// Optional bounded pre-instrument native MIDI processor on this track.
+    pub fn midi_processor(&self) -> Option<&Device> {
+        self.midi_processor.as_ref()
+    }
     /// Optional instrument in the track's ordered device chain. `None` means
     /// MIDI on this track is silent.
     pub fn instrument(&self) -> Option<&Device> {
@@ -802,10 +809,12 @@ impl Track {
         self.instrument_position
     }
     /// Borrowed device order for clients that need to present the canonical
-    /// chain. `Effect` values remain in `devices()` order; the instrument is
-    /// yielded at its persisted gap.
+    /// chain. Any pre-instrument MIDI processor comes first; `Effect` values
+    /// remain in `devices()` order; the instrument is yielded at its persisted gap.
     pub fn ordered_device_chain(&self) -> OrderedDeviceChain<'_> {
         OrderedDeviceChain {
+            midi_processor: self.midi_processor.as_ref(),
+            midi_processor_yielded: false,
             effects: &self.devices,
             instrument: self.instrument.as_deref(),
             instrument_position: self.instrument_position,
@@ -829,12 +838,15 @@ impl Track {
 /// Explicit class/slot reference into a track's canonical ordered device chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackDeviceRef<'a> {
+    MidiProcessor(&'a Device),
     Instrument(&'a Device),
     Effect(&'a Device),
 }
 
-/// Allocation-free borrowed iteration over a track's effects and instrument.
+/// Allocation-free borrowed iteration over a track's MIDI processor, effects and instrument.
 pub struct OrderedDeviceChain<'a> {
+    midi_processor: Option<&'a Device>,
+    midi_processor_yielded: bool,
     effects: &'a [Device],
     instrument: Option<&'a Device>,
     instrument_position: Option<usize>,
@@ -845,6 +857,12 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
     type Item = TrackDeviceRef<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if !self.midi_processor_yielded {
+            self.midi_processor_yielded = true;
+            if let Some(midi_processor) = self.midi_processor {
+                return Some(TrackDeviceRef::MidiProcessor(midi_processor));
+            }
+        }
         if !self.instrument_yielded
             && self.instrument_position == Some(self.effect_index)
             && let Some(instrument) = self.instrument
@@ -1225,7 +1243,12 @@ impl Project {
         let device = self
             .tracks
             .iter_mut()
-            .flat_map(|t| t.devices.iter_mut())
+            .flat_map(|t| {
+                let data = &mut **t;
+                data.midi_processor
+                    .iter_mut()
+                    .chain(data.devices.iter_mut())
+            })
             .chain(self.returns.iter_mut().flat_map(|t| t.devices.iter_mut()))
             .chain(self.main_devices.iter_mut())
             .find(|d| d.id == id)

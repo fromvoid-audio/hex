@@ -55,20 +55,36 @@ pub(crate) fn save_document_as(
 pub(crate) fn bind_new_save(
     outcome: hex_storage::SaveNewOutcome,
 ) -> (DocumentHandle, SaveCurrentCommit) {
+    let retained_note = outcome.retained_stage.as_ref().map(|stage| {
+        format!(
+            "staging path {} was retained; inspect it before removing it",
+            hex_storage::text::verbatim(stage.display())
+        )
+    });
     let commit = match outcome.warning {
-        Some(warning) => SaveCurrentCommit {
-            dirty: true,
-            status: "project was published, but durability could not be confirmed".into(),
-            error: Some(format!(
+        Some(warning) => {
+            let mut message = format!(
                 "complete project was published at {}, but could not {}: {}",
                 hex_storage::text::verbatim(outcome.path.display()),
                 warning.operation,
                 warning.source
-            )),
-        },
+            );
+            if let Some(note) = retained_note {
+                message.push_str("; ");
+                message.push_str(&note);
+            }
+            SaveCurrentCommit {
+                dirty: true,
+                status: "project was published, but durability could not be confirmed".into(),
+                error: Some(message),
+            }
+        }
         None => SaveCurrentCommit {
             dirty: false,
-            status: save_status::SAVED.into(),
+            status: match retained_note {
+                Some(note) => format!("{} · {note}", save_status::SAVED),
+                None => save_status::SAVED.into(),
+            },
             error: None,
         },
     };
@@ -1288,10 +1304,21 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     ctx.outcome.error = Some("project changed · format upgrade cancelled".into());
                 }
                 (Some(handle), Ok(image))
-                    if !consent && handle.token.requires_schema_upgrade_for(&image.project) =>
+                    if !consent
+                        && (handle.token.requires_schema_upgrade_for(&image.project)
+                            || (hex_engine::project_has_operator_quality_upgrade(
+                                &image.project,
+                            ) && !handle.token.contains_bytes(b"\"state_version\":26"))) =>
                 {
                     ctx.outcome.save_confirmation_required = true;
-                    ctx.outcome.error = Some("saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite".into());
+                    ctx.outcome.error = Some(
+                        if hex_engine::project_has_operator_quality_upgrade(&image.project) {
+                            "saving makes this file incompatible with older hex readers and enables vector interpolation and antialiasing (higher quality); use save as to preserve it, or explicitly confirm overwrite"
+                        } else {
+                            "saving makes this file incompatible with older hex readers; use save as to preserve it, or explicitly confirm overwrite"
+                        }
+                        .into(),
+                    );
                 }
                 (Some(handle), Ok(image)) => {
                     match hex_storage::prepare_replacement_within(

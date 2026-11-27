@@ -276,6 +276,33 @@ impl DeviceModulation {
         Self::new(sources, routes)
     }
 
+    /// Remove one slot modulator and every route sourced from or targeting it in
+    /// one atomic bank replacement (single-step Undo/Redo via `ReplaceDeviceModulation`).
+    pub fn remove_source(&self, source: ModulationSourceId) -> Result<Self, Invalid> {
+        if !self.sources.iter().any(|slot| slot.id == source) {
+            return Err(Invalid("modulator no longer exists"));
+        }
+        let sources: Vec<_> = self
+            .sources
+            .iter()
+            .filter(|slot| slot.id != source)
+            .cloned()
+            .collect();
+        let routes: Vec<_> = self
+            .routes
+            .iter()
+            .filter(|route| {
+                route.source != source
+                    && !matches!(
+                        route.destination,
+                        ModulationDestination::Modulator { source: target, .. } if target == source
+                    )
+            })
+            .copied()
+            .collect();
+        Self::new(sources, routes)
+    }
+
     pub fn sources(&self) -> &[Modulator] {
         &self.sources
     }

@@ -177,7 +177,7 @@ mod imp {
 
         pub fn wait_timeout(&self, timeout: Duration) -> bool {
             let mut drain = [0_u8; 64];
-            let read_once = || {
+            let mut read_once = || {
                 // SAFETY: `read_fd` is a valid non-blocking pipe descriptor.
                 unsafe {
                     libc::read(

@@ -202,6 +202,7 @@ pub(super) fn capture_devices_for_clipboard(
             let chain_owner = ProcessorChainOwner::Track(id.value());
             for node in track.ordered_device_chain() {
                 match node {
+                    hex_project::TrackDeviceRef::MidiProcessor(_) => {}
                     hex_project::TrackDeviceRef::Instrument(device) => {
                         collect_device(chain_owner, device, false);
                     }

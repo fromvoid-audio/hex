@@ -197,6 +197,38 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
             project.track_mut(track)?.devices[index] = Device::fresh_serial_leaf(id, state);
             Ok(crate::Created::Device(id))
         }
+        Command::InsertMidiProcessor { track, state } => {
+            let id = insert_midi_processor(project, track, state)?;
+            Ok(crate::Created::Device(id))
+        }
+        Command::RemoveMidiProcessor { track } => {
+            let target = project
+                .track(track)
+                .ok_or(Invalid("track no longer exists"))?;
+            if target.midi_processor.is_none() {
+                return Err(Invalid("midi processor slot is already empty"));
+            }
+            project.track_mut(track)?.midi_processor = None;
+            Ok(crate::Created::None)
+        }
+        Command::ReplaceTrackMidiProcessor {
+            track,
+            replacing,
+            state,
+        } => {
+            let target = project
+                .track(track)
+                .filter(|target| !target.is_group())
+                .ok_or(Invalid(
+                    "midi processor replacement requires an ordinary track",
+                ))?;
+            if target.midi_processor().map(Device::id) != Some(replacing) {
+                return Err(Invalid("midi processor replacement target changed"));
+            }
+            let id = DeviceId(project.allocate_id()?);
+            project.track_mut(track)?.midi_processor = Some(Device::fresh_serial_leaf(id, state));
+            Ok(crate::Created::Device(id))
+        }
         Command::InsertInstrument { track, state } => {
             let id = insert_instrument(project, track, state)?;
             Ok(crate::Created::Device(id))
@@ -237,6 +269,14 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         Command::RemoveDevice(id) => {
             if let Some(source) = project.source_owning_device(id) {
                 project.remove_source_device(source, id)?;
+                return Ok(crate::Created::None);
+            }
+            if let Some(track) = project
+                .tracks
+                .iter()
+                .position(|track| track.midi_processor().is_some_and(|d| d.id == id))
+            {
+                project.tracks[track].midi_processor = None;
                 return Ok(crate::Created::None);
             }
             if let Ok((track, index)) = locate_device(project, id) {
@@ -410,6 +450,31 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<crate::Cr
         }
         _ => Err(Invalid("command is not a device edit")),
     }
+}
+
+fn insert_midi_processor(
+    project: &mut Project,
+    track: TrackId,
+    state: NativeDeviceState,
+) -> Result<DeviceId, Invalid> {
+    let target = project
+        .tracks
+        .iter()
+        .find(|candidate| candidate.id == track)
+        .ok_or(Invalid("track no longer exists"))?;
+    if target.is_group() {
+        return Err(Invalid("group tracks cannot host a midi processor"));
+    }
+    if target.midi_processor.is_some() {
+        return Err(Invalid("midi processor slot is already occupied"));
+    }
+    let total_devices = crate::returns::device_count(project)?;
+    if total_devices >= MAX_DEVICES {
+        return Err(Invalid("project device limit reached"));
+    }
+    let id = DeviceId(project.allocate_id()?);
+    project.track_mut(track)?.midi_processor = Some(Device::fresh_serial_leaf(id, state));
+    Ok(id)
 }
 
 fn insert_instrument(
@@ -888,12 +953,21 @@ impl Project {
             .track(destination)
             .ok_or(Invalid("device target track no longer exists"))?;
         let mut order = [None; MAX_DEVICES_PER_TRACK + 1];
+        let mut order_len = 0;
         let mut selected_found = 0;
         let mut next_effect = 0;
         let mut subtree_end = 0;
         let mut effect_count = target.devices().len();
-        for (entry, slot) in source.ordered_device_chain().zip(&mut order) {
+        for entry in source.ordered_device_chain() {
             match entry {
+                crate::TrackDeviceRef::MidiProcessor(device)
+                    if selected.ids().contains(&device.id()) =>
+                {
+                    return Err(Invalid(
+                        "moving midi processors between tracks is unsupported",
+                    ));
+                }
+                crate::TrackDeviceRef::MidiProcessor(_) => {}
                 crate::TrackDeviceRef::Instrument(device)
                     if selected.ids().contains(&device.id()) =>
                 {
@@ -901,7 +975,8 @@ impl Project {
                         return Err(Invalid("destination cannot accept another instrument"));
                     }
                     selected_found += 1;
-                    *slot = Some(device.id());
+                    order[order_len] = Some(device.id());
+                    order_len += 1;
                 }
                 crate::TrackDeviceRef::Instrument(_) => {}
                 crate::TrackDeviceRef::Effect(device) => {
@@ -924,7 +999,8 @@ impl Project {
                     let span = crate::device_inventory::serial_unit_span(source.devices(), index)?;
                     subtree_end = span.end;
                     effect_count += span.len();
-                    *slot = Some(device.id());
+                    order[order_len] = Some(device.id());
+                    order_len += 1;
                 }
             }
         }
@@ -991,7 +1067,9 @@ fn reorder_selection(
     let mut anchor = None;
     for (node, root) in order.zip(&mut roots) {
         let (device, index) = match node {
-            TrackDeviceRef::Instrument(device) => (device, None),
+            TrackDeviceRef::MidiProcessor(device) | TrackDeviceRef::Instrument(device) => {
+                (device, None)
+            }
             TrackDeviceRef::Effect(device) => {
                 let index = next_effect;
                 next_effect += 1;
@@ -1388,7 +1466,8 @@ mod tests {
                 .unwrap()
                 .ordered_device_chain()
                 .map(|node| match node {
-                    crate::TrackDeviceRef::Instrument(device)
+                    crate::TrackDeviceRef::MidiProcessor(device)
+                    | crate::TrackDeviceRef::Instrument(device)
                     | crate::TrackDeviceRef::Effect(device) => device.id(),
                 })
                 .collect::<Vec<_>>()
@@ -1488,7 +1567,8 @@ mod tests {
                 .unwrap()
                 .ordered_device_chain()
                 .map(|node| match node {
-                    crate::TrackDeviceRef::Instrument(device)
+                    crate::TrackDeviceRef::MidiProcessor(device)
+                    | crate::TrackDeviceRef::Instrument(device)
                     | crate::TrackDeviceRef::Effect(device) => device.id(),
                 })
                 .collect::<Vec<_>>(),
@@ -1571,7 +1651,8 @@ mod tests {
             replaced_track
                 .ordered_device_chain()
                 .map(|node| match node {
-                    crate::TrackDeviceRef::Instrument(device)
+                    crate::TrackDeviceRef::MidiProcessor(device)
+                    | crate::TrackDeviceRef::Instrument(device)
                     | crate::TrackDeviceRef::Effect(device) => device.id(),
                 })
                 .collect::<Vec<_>>(),
@@ -1630,7 +1711,8 @@ mod tests {
             track_view
                 .ordered_device_chain()
                 .map(|node| match node {
-                    crate::TrackDeviceRef::Instrument(device)
+                    crate::TrackDeviceRef::MidiProcessor(device)
+                    | crate::TrackDeviceRef::Instrument(device)
                     | crate::TrackDeviceRef::Effect(device) => device.id(),
                 })
                 .collect::<Vec<_>>(),
@@ -1849,5 +1931,140 @@ mod tests {
         );
         assert_eq!(*exhausted.project(), before_exhausted);
         assert!(!exhausted.can_undo());
+    }
+
+    #[test]
+    fn midi_processor_slot_edits_undo_redo_and_snapshot_round_trip() {
+        let pitch_type = DeviceTypeId::from_static("hex.midi.pitch");
+        let pitch_0 = NativeDeviceState::new(pitch_type, 1, vec![0, 0, 127, 0]).unwrap();
+        let pitch_7 = NativeDeviceState::new(pitch_type, 1, vec![7, 0, 127, 0]).unwrap();
+        let pitch_12 = NativeDeviceState::new(pitch_type, 1, vec![12, 0, 127, 1]).unwrap();
+
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let crate::Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "lead".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+
+        // Insert MIDI processor on ordinary track.
+        let crate::Created::Device(proc_id) = editor
+            .execute(Command::InsertMidiProcessor {
+                track,
+                state: pitch_0.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("expected device");
+        };
+        assert_eq!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .midi_processor()
+                .map(Device::id),
+            Some(proc_id)
+        );
+        assert_eq!(
+            editor.project().device_location(proc_id).unwrap().class,
+            crate::DeviceUnitClass::MidiProcessor
+        );
+        // Ordered chain yields MIDI processor before instrument.
+        assert!(matches!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .ordered_device_chain()
+                .next(),
+            Some(crate::TrackDeviceRef::MidiProcessor(d)) if d.id() == proc_id
+        ));
+
+        // Duplicate insert on same track refuses atomically.
+        assert!(
+            editor
+                .execute(Command::InsertMidiProcessor {
+                    track,
+                    state: pitch_7.clone(),
+                })
+                .is_err()
+        );
+
+        // State update, bypass, and snapshot round-trip.
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: proc_id,
+                state: pitch_7.clone(),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: proc_id,
+                bypassed: true,
+            })
+            .unwrap();
+        let snap = editor.project().snapshot();
+        assert_eq!(snap.track_midi_processors.len(), 1);
+        let restored = Project::from_snapshot(snap).unwrap();
+        assert_eq!(restored, *editor.project());
+
+        // Atomic Undo/Redo through bypass, state, and insertion.
+        assert!(editor.undo());
+        assert!(!editor.project().device(proc_id).unwrap().bypassed());
+        assert!(editor.undo());
+        assert_eq!(editor.project().device(proc_id).unwrap().state(), &pitch_0);
+        assert!(editor.redo());
+        assert_eq!(editor.project().device(proc_id).unwrap().state(), &pitch_7);
+
+        // ReplaceTrackMidiProcessor assigns fresh ID; RemoveDevice clears slot.
+        let crate::Created::Device(replaced_id) = editor
+            .execute(Command::ReplaceTrackMidiProcessor {
+                track,
+                replacing: proc_id,
+                state: pitch_12.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("expected replaced device");
+        };
+        assert!(replaced_id > proc_id);
+        assert_eq!(
+            editor.project().device(replaced_id).unwrap().state(),
+            &pitch_12
+        );
+        editor.execute(Command::RemoveDevice(replaced_id)).unwrap();
+        assert!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .midi_processor()
+                .is_none()
+        );
+        assert!(editor.undo());
+        assert_eq!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .midi_processor()
+                .map(Device::id),
+            Some(replaced_id)
+        );
+        editor
+            .execute(Command::RemoveMidiProcessor { track })
+            .unwrap();
+        assert!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .midi_processor()
+                .is_none()
+        );
     }
 }

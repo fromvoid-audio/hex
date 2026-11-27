@@ -197,6 +197,7 @@ pub fn project_device_modulation_target_supported(
     }
     let state = device.state();
     let definition: Option<&dyn NativeDeviceMetadata> = match location.class {
+        DeviceUnitClass::MidiProcessor => None,
         DeviceUnitClass::Instrument => hex_devices::native_instrument_registry()
             .ok()
             .and_then(|registry| registry.definition(state.type_id()))
@@ -235,6 +236,14 @@ fn operator_modulation_supported(state: &NativeDeviceState) -> bool {
     state.type_id() == hex_devices::operator_state::OPERATOR_TYPE_ID
         && hex_devices::operator_state::OperatorSettings::from_state(state)
             .is_ok_and(|settings| settings.has_global_voice_runtime())
+}
+
+/// True when any Vector (`hex.instrument.operator`) device in `project` was
+/// migrated from a pre-v26 state that had `interpolation` or `antialias` off.
+pub fn project_has_operator_quality_upgrade(project: &Project) -> bool {
+    project.devices().any(|device| {
+        hex_devices::operator_state::operator_state_requires_quality_upgrade_warning(device.state())
+    })
 }
 
 /// Whether this native instrument's current provider configuration can prepare

@@ -119,6 +119,7 @@ mod device_action_owner;
 mod device_comparison;
 mod device_gesture;
 mod device_panel;
+pub use device_panel::package_panel::parse_package_ui_json;
 mod device_preset;
 mod dialogs;
 mod disk_overload;

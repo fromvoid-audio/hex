@@ -206,7 +206,20 @@ editor_components = {
     'device_panel/compressor_panel.rs': ('ctrl)', 'row(', 'extras)', 'mode_col)', 'sc_col)'),
     'device_panel/operator_panel.rs': ('performance_column(',),
     'device_panel/operator_panel/global.rs': ('voices)', 'glide_enabled)', 'glide_time)'),
+    'device_panel/operator_panel/lfo_editor.rs': (
+        'top_controls)', 'dest_row)', 'left_upper)', 'waveform_box)',
+        'mod_row)', 'env_levels_row)', 'upper)', 'lower)',
+    ),
+    'device_panel/operator_panel/pitch_page.rs': (
+        'super::compact_control(', 'row_levels)', 'row_times)', 'row_dest)', 'graph_box)', 'lower)',
+    ),
     'device_panel/overdrive_panel.rs': ('entity)', 'top_dials)', 'bottom_dials)'),
+    'device_panel/package_panel.rs': (
+        'notice)', 'fallback)', 'render_readonly_meter(', 'render_readonly_curve_plot(',
+        'render_readonly_envelope_plot(', 'render_readonly_harmonic_bars(',
+        'render_readonly_waveform_region(', 'grid)', 'column)', 'sections_row)', 'bar(',
+        'bar_meter)', 'lanes)',
+    ),
     'device_panel/saturator_panel.rs': (
         'soft_clip)', 'dc_filter)', 'switches)', 'main_dials)', 'a)', 'b)',
         'color_toggle)', 'dial_row(', 'ws_caption)', 'color_rail)', 'waveshaper_rail)',
@@ -401,12 +414,16 @@ for path in (*((ROOT / 'crates/hex-ui/src').rglob('*.rs')), *((ROOT / 'crates/he
             path == editor_root / 'device_panel/operator_panel/waveform_editor.rs'
             and re.match(r'hex_widgets::device_inline_caption\(\s*theme::text\(readout\)\s*,', suffix)
         )
+        package_section_caption = (
+            path == editor_root / 'device_panel/package_panel.rs'
+            and re.match(r'hex_widgets::device_caption\(\s*theme::text\(', suffix)
+        )
         # This row contains only controls from the shared themed factory.
         modulator_parameter_control = (
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/device_panel/modulators/source_card.rs'
             and suffix.startswith(('parameter_control_with_presentation(', 'control_row)'))
         )
-        if not suffix.startswith(widgets) and not suffix.startswith(local_components) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not vector_tuning_caption and not modulator_parameter_control:
+        if not suffix.startswith(widgets) and not suffix.startswith(local_components) and not typed_error and not fixture_canvas and not header_mixer_component and not clip_detail_component and not console_column_component and not reverb_component and not browser_vector_component and not browser_scrollbar_component and not transport_vector_component and not limiter_component and not device_insertion_component and not log_viewer_source and not plugin_parameter_search and not track_meter_component and not vector_tuning_caption and not package_section_caption and not modulator_parameter_control:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

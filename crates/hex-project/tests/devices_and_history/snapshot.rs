@@ -11,6 +11,7 @@ fn valid_snapshot() -> Snapshot {
         frozen_tracks: Vec::new(),
         track_io: Vec::new(),
         scene_follow_actions: Vec::new(),
+        track_midi_processors: Vec::new(),
         retained_source_paths: Vec::new(),
         aliases: Default::default(),
         native_sources: Vec::new(),

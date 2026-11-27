@@ -625,7 +625,8 @@ fn plain_drag_moves_a_device_to_the_end_of_another_track_header(cx: &mut TestApp
                         .unwrap()
                         .ordered_device_chain()
                         .map(|entry| match entry {
-                            hex_project::TrackDeviceRef::Effect(device)
+                            hex_project::TrackDeviceRef::MidiProcessor(device)
+                            | hex_project::TrackDeviceRef::Effect(device)
                             | hex_project::TrackDeviceRef::Instrument(device) => device.id(),
                         })
                         .collect::<Vec<_>>()

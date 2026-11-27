@@ -55,9 +55,13 @@ mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
 mod export_error;
+pub mod export_recovery;
+pub use export_recovery::{ExportRecoveryJournal, ExportRecoveryKind, ExportRecoveryNotice};
+pub use hex_storage::factory_library;
 pub mod import_batch;
 pub mod import_batch_decode;
 mod import_reuse;
+pub mod package_ingress;
 mod recovered_source;
 mod resident_import;
 pub use recovered_source::{RecoveredSource, RecoverySourceError, recover_wav_to_new_source};
@@ -801,6 +805,9 @@ impl Session {
             .device_location(device)
             .ok_or(SessionError::Invalid("device no longer exists"))?;
         Ok(match location.class {
+            hex_project::DeviceUnitClass::MidiProcessor => {
+                hex_engine::NativeDeviceClass::MidiProcessor
+            }
             hex_project::DeviceUnitClass::Instrument => hex_engine::NativeDeviceClass::Instrument,
             hex_project::DeviceUnitClass::Effect => hex_engine::NativeDeviceClass::Effect,
         })

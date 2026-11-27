@@ -258,6 +258,14 @@ impl DenseEffectCallback {
     }
 
     pub fn finish(&mut self, host_accepted: bool) -> Result<(), Fault> {
+        self.finish_with_publish_timestamp(host_accepted, None)
+    }
+
+    pub fn finish_with_publish_timestamp(
+        &mut self,
+        host_accepted: bool,
+        published_at_ns: Option<u64>,
+    ) -> Result<(), Fault> {
         if host_accepted
             && !self.callback.is_revoked()
             && let Some(stage) = &self.callback.staged
@@ -267,7 +275,8 @@ impl DenseEffectCallback {
         {
             return self.callback.fail(fault);
         }
-        self.callback.finish(host_accepted)
+        self.callback
+            .finish_with_publish_timestamp(host_accepted, published_at_ns)
     }
 
     pub fn fault(&self) -> Option<Fault> {

@@ -935,6 +935,55 @@ pub(in crate::service) fn submit_browser_edit(
     Ok(BrowserEdit::Applied(created, prepared))
 }
 
+/// Same as [`submit_browser_edit`], staging any verified default-unit original
+/// audio files atomically with the canonical edit and audio publication.
+#[allow(clippy::too_many_arguments)] // Mirrors submit_browser_edit plus the staged original batch.
+pub(in crate::service) fn submit_browser_edit_with_originals(
+    session: &mut Session,
+    command: Command,
+    originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
+    state: &ViewState,
+    project_generation: u64,
+    previous: Option<&PreparedRevision>,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+    document_intent: u64,
+    proposal_control: Option<&Arc<PluginEffectControl>>,
+) -> Result<BrowserEdit, SessionError> {
+    if originals.is_empty() {
+        return submit_browser_edit(
+            session,
+            command,
+            state,
+            project_generation,
+            previous,
+            events,
+            resident,
+            admission,
+            document_intent,
+            proposal_control,
+        );
+    }
+    if proposal_control.is_some_and(|control| !control.begin_commit()) {
+        return Err(SessionError::Invalid("device insertion was cancelled"));
+    }
+    let (created, prepared) = super::execute_command_with_originals(
+        session,
+        command,
+        originals,
+        previous,
+        hex_engine::AudioSourceContext {
+            project_generation,
+            editor_revision: state.revision.saturating_add(1),
+        },
+        events,
+        resident,
+        admission,
+    )?;
+    Ok(BrowserEdit::Applied(created, prepared))
+}
+
 impl BrowserEdit {
     fn from_pending(pending: Option<Pending>) -> Self {
         pending.map_or(Self::Unchanged, |pending| Self::Pending(Box::new(pending)))

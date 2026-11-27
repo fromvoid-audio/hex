@@ -3,11 +3,38 @@
 use crate::Session;
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::DeviceTypeId;
-use hex_project::{Command, DeviceId, DeviceInitialization, PortableDeviceUnit};
+use hex_project::{
+    AssetId, Command, DeviceId, DeviceInitialization, PortableDeviceUnit, RegisterUnitOriginal,
+    UnitAssetResolution,
+};
 use hex_storage::preset::{DeviceClass, Preset, PresetContents};
 use std::path::Path;
 
 pub mod originals;
+
+/// One canonical command together with any verified original-rate audio files
+/// decoded from the app-owned preset media store that must enter
+/// `Session::native_assets` inside the same prepared project transaction.
+pub(super) struct PreparedCommand {
+    pub command: Command,
+    pub originals: Vec<(AssetId, hex_media::DecodedAudio)>,
+}
+
+impl PreparedCommand {
+    pub(super) fn plain(command: Command) -> Self {
+        Self {
+            command,
+            originals: Vec::new(),
+        }
+    }
+}
+
+fn original_frame_budget(session: &Session) -> u64 {
+    session
+        .native_reservation
+        .map(|reservation| reservation.max_scan_frames.min(session.max_resident_frames))
+        .unwrap_or(session.max_resident_frames)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct Owner {
@@ -20,6 +47,7 @@ pub struct Owner {
 
 fn storage_class(class: NativeDeviceClass) -> DeviceClass {
     match class {
+        NativeDeviceClass::MidiProcessor => DeviceClass::MidiProcessor,
         NativeDeviceClass::Instrument => DeviceClass::Instrument,
         NativeDeviceClass::Effect => DeviceClass::Effect,
     }
@@ -92,9 +120,6 @@ fn validate_unit(class: NativeDeviceClass, unit: &PortableDeviceUnit) -> Result<
     if DeviceClass::from(unit.class()) != storage_class(class) {
         return Err("complete preset does not match the device slot".into());
     }
-    if !unit.assets().is_empty() {
-        return Err("complete presets with original audio are not available here yet".into());
-    }
     for (index, node) in unit.nodes().iter().enumerate() {
         let class = if index == 0 {
             class
@@ -113,13 +138,29 @@ pub(super) fn save_complete(
     revision: u64,
     owner: Owner,
     destination: CompleteDestination<'_>,
+    defaults_root: Option<&Path>,
 ) -> Result<(), String> {
     validate_owner(session, generation, revision, owner)?;
     let unit = session
-        .project()
         .capture_portable_device_unit(owner.device)
         .map_err(|error| error.to_string())?;
     validate_unit(owner.class, &unit)?;
+    if let CompleteDestination::Default(root) = destination {
+        // Understand the previously saved provider state before retaining media or replacing it.
+        load_default_contents(root, owner.class, owner.type_id)?;
+    }
+    if !unit.assets().is_empty() {
+        let store_root = match destination {
+            CompleteDestination::Default(root) => Some(root),
+            CompleteDestination::Preset(_) => defaults_root,
+        }
+        .ok_or("complete presets with original audio require an app data folder")?;
+        let store = originals::OriginalStore::new(store_root, original_frame_budget(session))
+            .map_err(|error| error.to_string())?;
+        store
+            .retain_unit(session, &unit, &session.shutdown)
+            .map_err(|error| error.to_string())?;
+    }
     match destination {
         CompleteDestination::Preset(path) => {
             if path.as_os_str().len() > 4096 {
@@ -128,8 +169,6 @@ pub(super) fn save_complete(
             hex_storage::preset::save_unit_new(path, &unit).map_err(|error| error.to_string())
         }
         CompleteDestination::Default(root) => {
-            // Understand the previously saved provider state before replacing it.
-            load_default_contents(root, owner.class, owner.type_id)?;
             hex_storage::preset::defaults::save_unit(root, &unit).map_err(|error| error.to_string())
         }
     }
@@ -159,22 +198,80 @@ pub(super) fn load_default_contents(
     Ok(contents)
 }
 
-pub(super) fn initialize_complete(
+pub(super) fn prepare_unit_command(
+    session: &Session,
     command: Command,
     unit: PortableDeviceUnit,
-) -> Result<Command, String> {
-    DeviceInitialization::new_unit(command, unit, Vec::new())
-        .map(|initialization| Command::InitializeDevice(Box::new(initialization)))
-        .map_err(|error| error.to_string())
-}
-
-pub(super) fn initialize_default_unit(
-    command: Command,
-    unit: PortableDeviceUnit,
-) -> Result<Command, String> {
-    DeviceInitialization::new_replacement_unit(command, unit, Vec::new())
-        .map(|initialization| Command::InitializeDevice(Box::new(initialization)))
-        .map_err(|error| error.to_string())
+    allow_type_change: bool,
+    store_root: Option<&Path>,
+) -> Result<PreparedCommand, String> {
+    if unit.assets().is_empty() {
+        let init = if allow_type_change {
+            DeviceInitialization::new_replacement_unit(command, unit, Vec::new())
+        } else {
+            DeviceInitialization::new_unit(command, unit, Vec::new())
+        }
+        .map_err(|error| error.to_string())?;
+        return Ok(PreparedCommand::plain(Command::InitializeDevice(Box::new(
+            init,
+        ))));
+    }
+    let store_root =
+        store_root.ok_or("complete presets with original audio require an app data folder")?;
+    let store = originals::OriginalStore::new(store_root, original_frame_budget(session))
+        .map_err(|error| error.to_string())?;
+    let mut resolutions = Vec::with_capacity(unit.assets().len());
+    let mut existing_missing_pcm: Vec<(AssetId, hex_media::DecodedAudio)> = Vec::new();
+    let mut fresh_decoded: Vec<(usize, hex_media::DecodedAudio)> = Vec::new();
+    for (manifest_index, &expected) in unit.assets().iter().enumerate() {
+        if let Some(existing_id) = session.project().find_portable_original(expected) {
+            resolutions.push(UnitAssetResolution::Existing(existing_id));
+            if !session.native_assets.contains(existing_id) {
+                let decoded = store
+                    .load(expected, &session.shutdown)
+                    .map_err(|error| error.to_string())?;
+                existing_missing_pcm.push((existing_id, decoded));
+            }
+        } else {
+            let decoded = store
+                .load(expected, &session.shutdown)
+                .map_err(|error| error.to_string())?;
+            resolutions.push(UnitAssetResolution::Register(RegisterUnitOriginal {
+                path: decoded.path().to_path_buf(),
+                source_rate: expected.source_rate,
+                source_frames: expected.source_frames,
+                facts: expected.facts,
+            }));
+            fresh_decoded.push((manifest_index, decoded));
+        }
+    }
+    let init = if allow_type_change {
+        DeviceInitialization::new_replacement_unit_with_originals(
+            session.project(),
+            command,
+            unit,
+            resolutions,
+        )
+    } else {
+        DeviceInitialization::new_unit_with_originals(session.project(), command, unit, resolutions)
+    }
+    .map_err(|error| error.to_string())?;
+    let reserved = init.reserved_unit_originals();
+    if reserved.len() != fresh_decoded.len() {
+        return Err("reserved unit original count mismatch".into());
+    }
+    let mut originals = Vec::with_capacity(existing_missing_pcm.len() + fresh_decoded.len());
+    originals.extend(existing_missing_pcm);
+    for (entry, (manifest_index, decoded)) in reserved.iter().zip(fresh_decoded) {
+        if entry.manifest_index != manifest_index {
+            return Err("reserved unit original manifest order mismatch".into());
+        }
+        originals.push((entry.asset, decoded));
+    }
+    Ok(PreparedCommand {
+        command: Command::InitializeDevice(Box::new(init)),
+        originals,
+    })
 }
 
 /// Read only on the worker. Both active and inactive native payloads must be
@@ -237,7 +334,8 @@ pub(super) fn load_command(
     revision: u64,
     owner: Owner,
     path: &Path,
-) -> Result<Command, String> {
+    defaults_root: Option<&Path>,
+) -> Result<PreparedCommand, String> {
     if path.as_os_str().len() > 4096 {
         return Err("device preset path exceeds the 4096-byte limit".into());
     }
@@ -252,12 +350,15 @@ pub(super) fn load_command(
         PresetContents::State(preset) => preset,
         PresetContents::Unit(unit) => {
             validate_unit(owner.class, &unit)?;
-            return initialize_complete(
+            return prepare_unit_command(
+                session,
                 Command::ReplaceDeviceState {
                     device: owner.device,
                     state: unit.nodes()[0].state.clone(),
                 },
                 unit,
+                false,
+                defaults_root,
             );
         }
     };
@@ -285,14 +386,16 @@ pub(super) fn load_command(
         .map(|comparison| comparison.with_global_trims_from(&state))
         .transpose()
         .map_err(|error| format!("device preset refused · {error}"))?;
-    Ok(Command::ReplaceDeviceComparison {
+    Ok(PreparedCommand::plain(Command::ReplaceDeviceComparison {
         device: owner.device,
         state,
         comparison,
-    })
+    }))
 }
 
 #[cfg(test)]
 mod defaults_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod unit_media_tests;

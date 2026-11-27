@@ -382,6 +382,13 @@ pub(in crate::editor) fn render_track(
         let identities: HashMap<_, _> = track
             .ordered_device_chain()
             .map(|node| match node {
+                hex_project::TrackDeviceRef::MidiProcessor(device) => (
+                    device.id(),
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::MidiProcessor,
+                        type_id: device.state().type_id(),
+                    },
+                ),
                 hex_project::TrackDeviceRef::Instrument(device) => (
                     device.id(),
                     DeviceControlIdentity {
@@ -501,6 +508,12 @@ pub(in crate::editor) fn render_track(
             view.device_panel.message = None;
         }
         view.device_panel.views.retain(|id, _| alive.contains(id));
+        view.device_panel
+            .package_schemas
+            .retain(|id, _| alive.contains(id));
+        view.device_panel
+            .package_snapshots
+            .retain(|id, _| alive.contains(id));
         retire_transfer_previews(&mut view.device_panel, |device| {
             identities
                 .get(&device)
@@ -563,6 +576,9 @@ pub(in crate::editor) fn render_track(
     // and unsupported-state errors, without constructing offscreen controls.
     for node in nodes.iter().copied() {
         let (device, class) = match node {
+            hex_project::TrackDeviceRef::MidiProcessor(device) => {
+                (device, NativeDeviceClass::MidiProcessor)
+            }
             hex_project::TrackDeviceRef::Instrument(device) => {
                 (device, NativeDeviceClass::Instrument)
             }
@@ -573,6 +589,13 @@ pub(in crate::editor) fn render_track(
 
     parameter_rows::reconcile(view, cx);
 
+    if view.device_panel.midi_processor_catalog.is_none() {
+        view.device_panel.midi_processor_catalog = Some(
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::MidiProcessor).map_err(
+                |error| hex_session::service::text::lowercase_outside_verbatim(&error.to_string()),
+            ),
+        );
+    }
     if view.device_panel.effect_catalog.is_none() {
         view.device_panel.effect_catalog = Some(
             hex_engine::native_device_catalog_for_class(NativeDeviceClass::Effect).map_err(
@@ -660,7 +683,8 @@ pub(in crate::editor) fn render_track(
     let device_ids: Vec<_> = track
         .ordered_device_chain()
         .map(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(device)
+            hex_project::TrackDeviceRef::MidiProcessor(device)
+            | hex_project::TrackDeviceRef::Instrument(device)
             | hex_project::TrackDeviceRef::Effect(device) => device.id(),
         })
         .collect();
@@ -668,6 +692,9 @@ pub(in crate::editor) fn render_track(
         .iter()
         .map(|node| {
             let (device, class) = match node {
+                hex_project::TrackDeviceRef::MidiProcessor(device) => {
+                    (*device, NativeDeviceClass::MidiProcessor)
+                }
                 hex_project::TrackDeviceRef::Instrument(device) => {
                     (*device, NativeDeviceClass::Instrument)
                 }
@@ -729,6 +756,9 @@ pub(in crate::editor) fn render_track(
             chain = chain.children([view.proposed_plugin_slot_card(cx)]);
         }
         let (device, class) = match node {
+            hex_project::TrackDeviceRef::MidiProcessor(device) => {
+                (device, NativeDeviceClass::MidiProcessor)
+            }
             hex_project::TrackDeviceRef::Instrument(device) => {
                 (device, NativeDeviceClass::Instrument)
             }
@@ -772,6 +802,7 @@ pub(in crate::editor) fn render_track(
             continue;
         }
         let rendered = match class {
+            NativeDeviceClass::MidiProcessor => render_midi_processor(view, window, cx, device),
             NativeDeviceClass::Instrument => render_instrument(view, window, cx, track_id, device),
             NativeDeviceClass::Effect => render_effect(view, window, cx, track_id, device),
         };
@@ -1040,7 +1071,8 @@ pub(in crate::editor) fn trace_vst3_track_panel(view: &EditorView, snapshot: &mu
     let devices = || {
         track.ordered_device_chain().filter_map(|node| {
             let device = match node {
-                hex_project::TrackDeviceRef::Instrument(device)
+                hex_project::TrackDeviceRef::MidiProcessor(device)
+                | hex_project::TrackDeviceRef::Instrument(device)
                 | hex_project::TrackDeviceRef::Effect(device) => device,
             };
             (device.state().type_id().as_str() == Ok("hex.vst3")).then_some(device.id())
@@ -1197,6 +1229,122 @@ pub(in crate::editor) fn vst3_degraded_body(
         .debug_selector(move || format!("device-body-{}", device_id.value()))
 }
 
+pub(in crate::editor) fn render_midi_processor(
+    view: &mut EditorView,
+    window: Option<&Window>,
+    cx: &mut Context<EditorView>,
+    device: &hex_project::Device,
+) -> Stateful<Div> {
+    let device_id = device.id();
+    let selected = view.device_panel.is_selected(device_id);
+    let device_view = view
+        .device_panel
+        .views
+        .remove(&device_id)
+        .filter(|(class, cached, _)| {
+            *class == NativeDeviceClass::MidiProcessor && cached == device.state()
+        })
+        .map(|(_, _, result)| result)
+        .unwrap_or_else(|| {
+            hex_engine::native_device_view_for_class(
+                NativeDeviceClass::MidiProcessor,
+                device.state(),
+            )
+            .map_err(|error| {
+                hex_session::service::text::lowercase_outside_verbatim(&error.to_string())
+            })
+        });
+    let leading = bypass_action(view, device, NativeDeviceClass::MidiProcessor, cx);
+    let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
+    let rendered = match &device_view {
+        _ if view.device_panel.collapsed.contains(&device_id) => fold::frame(
+            view,
+            cx,
+            device,
+            NativeDeviceClass::MidiProcessor,
+            device_view.as_ref().ok(),
+            leading,
+            header_actions,
+        ),
+        Ok(device_view) => {
+            let body = parameter_rows::body(
+                view,
+                window,
+                cx,
+                device_id,
+                DeviceControlIdentity {
+                    class: NativeDeviceClass::MidiProcessor,
+                    type_id: device_view.type_id,
+                },
+                device_view,
+            );
+            device_frame(
+                device_drag_title(
+                    view,
+                    cx,
+                    device,
+                    NativeDeviceClass::MidiProcessor,
+                    theme::text(device_view.name.clone()),
+                ),
+                theme::device_frame_style(selected),
+                leading,
+                header_actions,
+                body,
+            )
+        }
+        Err(error) => {
+            let body = crate::device_composition::unsupported_body(theme::text(format!(
+                "unsupported midi processor state · {error}"
+            )))
+            .id(ElementId::Name(
+                format!("device-body-{}", device_id.value()).into(),
+            ))
+            .debug_selector(move || format!("device-body-{}", device_id.value()));
+            let title = theme::text(
+                device
+                    .state()
+                    .type_id()
+                    .as_str()
+                    .unwrap_or("unknown midi processor"),
+            );
+            device_frame(
+                device_drag_title(view, cx, device, NativeDeviceClass::MidiProcessor, title),
+                theme::device_frame_style(selected),
+                leading,
+                header_actions,
+                body,
+            )
+        }
+    };
+    let rendered = rendered
+        .h_full()
+        .debug_selector(move || format!("device-shell-{}", device_id.value()));
+    view.device_panel.views.insert(
+        device_id,
+        (
+            NativeDeviceClass::MidiProcessor,
+            device.state().clone(),
+            device_view,
+        ),
+    );
+    let selector = format!("midi-processor-device-{}", device_id.value());
+    let card_width = device_card_width(view, NativeDeviceClass::MidiProcessor, device);
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .min_w(px(card_width))
+        .h(px(DEVICE_FRAME_HEIGHT))
+        .flex()
+        .flex_shrink_0()
+        .capture_any_mouse_down(device_selection_listener(
+            device_id,
+            view.project_generation,
+            view.device_panel.owner,
+            cx,
+        ))
+        .child(rendered)
+}
+
 pub(in crate::editor) fn render_effect(
     view: &mut EditorView,
     window: Option<&Window>,
@@ -1309,6 +1457,22 @@ pub(in crate::editor) fn render_effect(
                     device.state(),
                     device_view,
                     sample_rate,
+                )
+            } else if let Some(schema) = view.device_panel.package_schemas.get(&device_id).cloned()
+            {
+                let snapshot = view.device_panel.package_snapshots.get(&device_id).cloned();
+                package_panel::render_body(
+                    view,
+                    window,
+                    cx,
+                    device_id,
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device_view.type_id,
+                    },
+                    device_view,
+                    schema.as_ref().map_err(String::as_str),
+                    snapshot.as_ref(),
                 )
             } else {
                 parameter_rows::body(
@@ -1654,17 +1818,36 @@ pub(in crate::editor) fn render_instrument(
                         modulation,
                     )
                 } else {
-                    let body = parameter_rows::body(
-                        view,
-                        window,
-                        cx,
-                        device_id,
-                        DeviceControlIdentity {
-                            class: NativeDeviceClass::Instrument,
-                            type_id: device_view.type_id,
-                        },
-                        device_view,
-                    );
+                    let body = if let Some(schema) =
+                        view.device_panel.package_schemas.get(&device_id).cloned()
+                    {
+                        let snapshot = view.device_panel.package_snapshots.get(&device_id).cloned();
+                        package_panel::render_body(
+                            view,
+                            window,
+                            cx,
+                            device_id,
+                            DeviceControlIdentity {
+                                class: NativeDeviceClass::Instrument,
+                                type_id: device_view.type_id,
+                            },
+                            device_view,
+                            schema.as_ref().map_err(String::as_str),
+                            snapshot.as_ref(),
+                        )
+                    } else {
+                        parameter_rows::body(
+                            view,
+                            window,
+                            cx,
+                            device_id,
+                            DeviceControlIdentity {
+                                class: NativeDeviceClass::Instrument,
+                                type_id: device_view.type_id,
+                            },
+                            device_view,
+                        )
+                    };
                     let fm4_source = device_view.type_id.as_str() == Ok("hex.instrument.fm4")
                         && view
                             .state
@@ -1792,6 +1975,7 @@ pub(in crate::editor) fn render_automation_trim(
         bindings::BindingPresentation {
             kind: ControlPresentation::InlineValue,
             text: ControlText::default(),
+            label_override: None,
             policy: binding_policy,
             compact_toggle_width: 0.0,
         },

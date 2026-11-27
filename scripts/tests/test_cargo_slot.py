@@ -1,5 +1,6 @@
 """Exercise the cooperative slot with independent processes and no Cargo work."""
 
+import json
 import os
 from pathlib import Path
 import signal
@@ -219,6 +220,114 @@ class CargoSlotTests(unittest.TestCase):
         lock.unlink()
         result = subprocess.run(command, env=self.env, capture_output=True, check=False)
         self.assertEqual(result.returncode, 7)
+
+    def test_status_and_contention_diagnostics_identify_active_holder_without_disruption(self):
+        # Idle before any lock file exists: --status must not create files.
+        idle = subprocess.run(
+            [sys.executable, str(SCRIPT), "--status", "--json"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(idle.returncode, 0, idle.stderr)
+        idle_data = json.loads(idle.stdout)
+        self.assertEqual(idle_data["state"], "idle")
+        self.assertFalse(idle_data["lock_file_present"])
+        self.assertFalse(Path(self.env["HEX_CARGO_SLOT_FILE"]).exists())
+
+        first, first_started, first_release = self.start("first")
+        self.wait_for(first_started)
+        # Wait briefly for child_pid metadata update.
+        meta_path = Path(self.env["HEX_CARGO_SLOT_FILE"] + ".holder.json")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            if meta_path.exists():
+                parsed = json.loads(meta_path.read_text())
+                if parsed.get("child_pid") is not None:
+                    break
+            time.sleep(0.01)
+
+        # --status reports exact holder metadata while the first job is active.
+        status_json = subprocess.run(
+            [sys.executable, str(SCRIPT), "--status", "--json"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(status_json.returncode, 0, status_json.stderr)
+        occupied = json.loads(status_json.stdout)
+        self.assertEqual(occupied["state"], "occupied")
+        self.assertTrue(occupied["lock_file_present"])
+        self.assertEqual(occupied["holder"]["pid"], first.pid)
+        self.assertIsInstance(occupied["holder"]["child_pid"], int)
+        self.assertIn("first", occupied["holder"]["cwd"])
+        self.assertIsNotNone(occupied["held_seconds"])
+
+        # A timed-out waiter prints holder diagnostics explaining the delay.
+        waiter, waiter_started, _ = self.start("waiter", wait_seconds=0.1)
+        self.assertEqual(waiter.wait(timeout=3), 75)
+        self.assertFalse(waiter_started.exists())
+        waiter_log = self.logs["waiter"].read_text()
+        self.assertIn("cargo slot busy (execution):", waiter_log)
+        self.assertIn(f"pid={first.pid}", waiter_log)
+        self.assertIn("timed out waiting for cargo slot after 0.1s:", waiter_log)
+
+        # Active holder completes normally and removes its own holder metadata.
+        first_release.touch()
+        self.assertEqual(first.wait(timeout=3), 0)
+        self.assertFalse(meta_path.exists())
+        after = subprocess.run(
+            [sys.executable, str(SCRIPT), "--status", "--json"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(after.returncode, 0)
+        self.assertEqual(json.loads(after.stdout)["state"], "idle")
+
+    def test_status_reports_stale_metadata_without_deleting_it_and_survives_wrapper_kill(self):
+        first, first_started, first_release = self.start("first")
+        self.wait_for(first_started)
+        first.kill()
+        first.wait(timeout=3)
+
+        # Child still holds the execution lock; status still sees occupied + holder info.
+        during_orphan = subprocess.run(
+            [sys.executable, str(SCRIPT), "--status", "--json"],
+            env=self.env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(during_orphan.returncode, 0)
+        orphan_data = json.loads(during_orphan.stdout)
+        self.assertEqual(orphan_data["state"], "occupied")
+        self.assertIsNotNone(orphan_data["holder"])
+
+        # Once the orphaned child exits, lock is idle; leftover metadata is reported
+        # as stale without being deleted by --status.
+        first_release.touch()
+        meta_path = Path(self.env["HEX_CARGO_SLOT_FILE"] + ".holder.json")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            probe = subprocess.run(
+                [sys.executable, str(SCRIPT), "--status", "--json"],
+                env=self.env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            data = json.loads(probe.stdout)
+            if data["state"] == "idle":
+                self.assertIsNotNone(data["stale_holder_metadata"])
+                self.assertTrue(meta_path.exists())
+                break
+            time.sleep(0.02)
+        else:
+            self.fail("orphaned child did not release execution lock")
 
 
 if __name__ == "__main__":

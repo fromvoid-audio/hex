@@ -254,6 +254,8 @@ fn state_mut(command: &mut Command) -> Result<&mut NativeDeviceState, Invalid> {
     match command {
         Command::InsertDevice { state, .. }
         | Command::InsertNestedDevice { state, .. }
+        | Command::InsertMidiProcessor { state, .. }
+        | Command::ReplaceTrackMidiProcessor { state, .. }
         | Command::InsertInstrument { state, .. }
         | Command::LoadInstrument { state, .. }
         | Command::InsertMainDevice { state, .. }

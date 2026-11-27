@@ -2095,6 +2095,13 @@ impl SessionPlayback {
                 .map_err(SessionPlaybackError::from)?;
             let mut runtime = runtime;
             if let Some(runtime) = runtime.as_mut() {
+                if let Some((identity, bypassed, prepared)) =
+                    revision.session().mutable_midi_processor(id)
+                {
+                    let stage =
+                        runtime.prepare_midi_processor_with_bypass(identity, prepared, bypassed)?;
+                    runtime.install_prepared_midi_processor(stage);
+                }
                 if let Some(modulation) = revision.session().instrument_modulation(id) {
                     runtime.install_modulation(modulation)?;
                 }

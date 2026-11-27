@@ -832,3 +832,212 @@ fn retained_operator_preview_survives_unassigned_repaints_and_retires_on_replace
         );
     });
 }
+
+#[gpui::test]
+fn lfo_slot_editor_exposes_waveform_extended_params_and_routes_with_undo(cx: &mut TestAppContext) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(2000.0), px(540.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let tab = lfo_link_bounds(&mut visual, device);
+    visual.simulate_click(tab.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    let detail = visual
+        .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+        .unwrap();
+    let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+    let waveform = visual
+        .debug_bounds(selector(format!(
+            "operator-lfo-waveform-{}",
+            device.value()
+        )))
+        .expect("two-cycle lfo waveform preview");
+    let routes = visual
+        .debug_bounds(selector(format!("operator-lfo-routes-{}", device.value())))
+        .expect("lfo 1 routes summary");
+    assert!(waveform.bottom() <= rail.top());
+    assert!(waveform.right() <= detail.right());
+    assert!(routes.top() >= rail.bottom());
+    assert!(routes.bottom() <= detail.bottom());
+
+    // Every extended LFO parameter sits inside detail and never overlaps the tab rail.
+    for parameter in [
+        711_u32, 712, 713, 714, 715, 716, 717, 718, 719, 720, 721, 722, 726,
+    ] {
+        let bounds = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}",
+                device.value()
+            )))
+            .expect("extended lfo control mounted");
+        assert!(
+            bounds.bottom() <= rail.top() || bounds.top() >= rail.bottom(),
+            "lfo param {parameter} overlaps tab rail: {bounds:?} rail={rail:?}"
+        );
+        assert!(
+            bounds.right() <= detail.right() && bounds.bottom() <= detail.bottom(),
+            "lfo param {parameter} clipped: {bounds:?} detail={detail:?}"
+        );
+    }
+
+    // Toggle filter destination (712) and verify canonical edit + single-step Undo/Redo.
+    let flt = visual
+        .debug_bounds(selector(format!("device-{}-parameter-712", device.value())))
+        .unwrap();
+    visual.simulate_click(flt.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 712) == ParameterValue::Bool(true)
+            })
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 712) == ParameterValue::Bool(false)
+            })
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 712) == ParameterValue::Bool(true)
+            })
+    });
+
+    // Edit r<key (713) and confirm canonical update + Undo.
+    let rate_key = visual
+        .debug_bounds(selector(format!(
+            "device-{}-parameter-713-value",
+            device.value()
+        )))
+        .unwrap();
+    visual.simulate_click(rate_key.center(), Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("50");
+    visual.simulate_keystrokes("enter");
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 713) == ParameterValue::Float(50.0)
+            })
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 713) == ParameterValue::Float(0.0)
+            })
+    });
+}
+
+#[gpui::test]
+fn pitch_page_binds_bipolar_envelope_transpose_spread_and_destinations_with_undo(
+    cx: &mut TestAppContext,
+) {
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_fixture();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(2000.0), px(540.0)));
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let pitch_tab = visual
+        .debug_bounds(selector(format!("operator-page-{}-pitch", device.value())))
+        .expect("pitch page tab");
+    visual.simulate_click(pitch_tab.center(), Modifiers::default());
+    visual.run_until_parked();
+
+    let detail = visual
+        .debug_bounds(selector(format!("operator-detail-{}", device.value())))
+        .unwrap();
+    let rail = tab_bounds(&mut visual, device, "envelope", "amp env");
+    let graph = visual
+        .debug_bounds("operator-pitch-envelope-graph")
+        .expect("bipolar pitch envelope graph");
+    let routes = visual
+        .debug_bounds(selector(format!(
+            "operator-pitch-routes-{}",
+            device.value()
+        )))
+        .expect("pitch routes and glide summary");
+    assert!(graph.bottom() <= rail.top());
+    assert!(routes.top() >= rail.bottom());
+    assert!(routes.bottom() <= detail.bottom());
+
+    for parameter in [
+        640_u32, 641, 650, 651, 653, 654, 655, 656, 657, 658, 659, 666, 667, 668, 669, 670,
+    ] {
+        let bounds = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}",
+                device.value()
+            )))
+            .expect("pitch page control mounted");
+        assert!(
+            bounds.top() >= rail.bottom() && bounds.bottom() <= detail.bottom(),
+            "pitch param {parameter} out of lower region: {bounds:?} rail={rail:?} detail={detail:?}"
+        );
+        assert!(
+            bounds.right() <= detail.right(),
+            "pitch param {parameter} clipped horizontally: {bounds:?} detail={detail:?}"
+        );
+    }
+
+    // Toggle pitch env on (650), edit transpose (640) and spread (641), verify Undo/Redo.
+    let on_btn = visual
+        .debug_bounds(selector(format!("device-{}-parameter-650", device.value())))
+        .unwrap();
+    visual.simulate_click(on_btn.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        view.worker_requests_pending == 0
+            && view.state.as_ref().is_some_and(|state| {
+                operator_parameter_value(state, track, device, 650) == ParameterValue::Bool(true)
+            })
+    });
+
+    for (parameter, typed, expected) in [(640_u32, "12", 12.0_f32), (641, "45", 45.0)] {
+        let field = visual
+            .debug_bounds(selector(format!(
+                "device-{}-parameter-{parameter}-value",
+                device.value()
+            )))
+            .unwrap();
+        visual.simulate_click(field.center(), Modifiers::default());
+        visual.simulate_keystrokes("cmd-a");
+        visual.simulate_input(typed);
+        visual.simulate_keystrokes("enter");
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Float(expected)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Float(0.0)
+                })
+        });
+        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump_until(&editor, cx, |view| {
+            view.worker_requests_pending == 0
+                && view.state.as_ref().is_some_and(|state| {
+                    operator_parameter_value(state, track, device, parameter)
+                        == ParameterValue::Float(expected)
+                })
+        });
+    }
+}

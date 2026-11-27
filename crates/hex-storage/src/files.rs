@@ -145,6 +145,11 @@ impl FileToken {
             })
         }
     }
+
+    /// True when the original on-disk document bytes already contain `needle`.
+    pub fn contains_bytes(&self, needle: &[u8]) -> bool {
+        !needle.is_empty() && self.0.windows(needle.len()).any(|window| window == needle)
+    }
 }
 
 /// Decode and capture the same single read, preserving original saved-format
@@ -206,11 +211,20 @@ fn read_bytes(mut reader: impl Read) -> Result<Vec<u8>, StorageError> {
     }
 }
 
+/// Track a reserved sibling staging pathname without blindly unlinking it on
+/// drop. Another process may have replaced the pathname with unrelated data, or
+/// it may hold recoverable staged bytes after a pre-publication failure.
 struct Temporary(PathBuf);
-impl Drop for Temporary {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
-    }
+
+fn with_retained_stage(stage: &Path, source: std::io::Error) -> std::io::Error {
+    let kind = source.kind();
+    std::io::Error::new(
+        kind,
+        format!(
+            "{source}; staging path {} was retained; inspect it before using or removing it",
+            crate::text::verbatim(stage.display())
+        ),
+    )
 }
 
 /// Create a complete new project without overwriting another file. Failed writes
@@ -249,13 +263,17 @@ fn durable_token(outcome: SaveNewOutcome) -> Result<FileToken, StorageError> {
 }
 
 /// A new project that is complete and visible at `path`. `warning` reports a
-/// failed temporary cleanup or directory sync after publication; the token
-/// still matches the published bytes, so callers can bind the document.
+/// failed directory sync after publication; the token still matches the
+/// published bytes, so callers can bind the document. `retained_stage` is set
+/// when publication did not consume the staging pathname (e.g. `fclonefileat`
+/// or descriptor-bound exclusive copy); it is always an independent inode
+/// isolated from `path` and is intentionally not unlinked by pathname.
 #[derive(Debug)]
 pub struct SaveNewOutcome {
     pub path: PathBuf,
     pub token: FileToken,
     pub warning: Option<ReplaceWarning>,
+    pub retained_stage: Option<PathBuf>,
 }
 
 /// Create a new project like [`save_new_with_token`], but return a published
@@ -264,7 +282,7 @@ pub fn save_new_with_outcome(
     path: impl AsRef<Path>,
     project: &Project,
 ) -> Result<SaveNewOutcome, StorageError> {
-    save_with_finish(path.as_ref(), project, finish_publication)
+    save_with_hooks(path.as_ref(), project, |_| {}, finish_publication)
 }
 
 type FinishError = (&'static str, std::io::Error);
@@ -272,6 +290,15 @@ type FinishError = (&'static str, std::io::Error);
 fn save_with_finish(
     path: &Path,
     project: &Project,
+    finish: impl FnOnce(&Path, &Path) -> Result<(), FinishError>,
+) -> Result<SaveNewOutcome, StorageError> {
+    save_with_hooks(path, project, |_| {}, finish)
+}
+
+fn save_with_hooks(
+    path: &Path,
+    project: &Project,
+    before_publish: impl FnOnce(&Path),
     finish: impl FnOnce(&Path, &Path) -> Result<(), FinishError>,
 ) -> Result<SaveNewOutcome, StorageError> {
     if path.file_name().is_none() {
@@ -307,11 +334,14 @@ fn save_with_finish(
     for _ in 0..32 {
         let id = NEXT_TEMP.fetch_add(1, Relaxed);
         let candidate = parent.join(format!(".hex-pending-{}-{id}", std::process::id()));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&candidate) {
             Ok(file) => {
                 temporary = Some((Temporary(candidate), file));
                 break;
@@ -323,10 +353,17 @@ fn save_with_finish(
     let (temporary, mut file) = temporary.ok_or(StorageError::Invalid(
         "could not reserve project temporary file",
     ))?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+        return Err(with_retained_stage(&temporary.0, error).into());
+    }
+    before_publish(&temporary.0);
+    let published =
+        match crate::publication::publish_new_isolated_from_file(&mut file, &temporary.0, path) {
+            Ok(published) => published,
+            Err(error) => return Err(with_retained_stage(&temporary.0, error).into()),
+        };
     drop(file);
-    crate::publication::publish_new(&temporary.0, path)?;
+    let retained_stage = published.staging_remains().then(|| temporary.0.clone());
     let warning = finish(&temporary.0, path)
         .err()
         .map(|(operation, source)| ReplaceWarning { operation, source });
@@ -334,16 +371,15 @@ fn save_with_finish(
         path: path.to_path_buf(),
         token: FileToken::from_validated_bytes(Arc::from(bytes)),
         warning,
+        retained_stage,
     })
 }
 
-pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), FinishError> {
-    // Attempt directory sync even when temporary cleanup failed. Neither step
-    // may roll back a destination that has already been published.
-    // An exclusive-rename publication already consumed the staging name.
-    let cleanup_error = fs::remove_file(temporary)
-        .err()
-        .filter(|error| error.kind() != std::io::ErrorKind::NotFound);
+pub(crate) fn finish_publication(_temporary: &Path, path: &Path) -> Result<(), FinishError> {
+    // Never unlink `temporary` by pathname after publication: exclusive rename
+    // already consumed it, and non-consuming modes (`fclonefileat`, exclusive
+    // copy) intentionally retain an isolated stage rather than risking deletion
+    // of a concurrently substituted foreign file.
     #[cfg(unix)]
     let sync_error = {
         let parent = path
@@ -357,9 +393,6 @@ pub(crate) fn finish_publication(temporary: &Path, path: &Path) -> Result<(), Fi
         let _ = path;
         None
     };
-    if let Some(error) = cleanup_error {
-        return Err(("remove the temporary project file", error));
-    }
     if let Some(error) = sync_error {
         return Err(("synchronize the project directory", error));
     }
@@ -792,7 +825,10 @@ mod tests {
         let project = Project::new(48_000).expect("project");
         let outcome = save_with_finish(&path, &project, |temporary, destination| {
             assert_eq!(load(destination).expect("published document"), project);
-            fs::remove_file(temporary).expect("cleanup succeeds");
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            assert!(!temporary.exists(), "exclusive rename consumed staging");
+            #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+            let _ = temporary;
             Err((
                 "synchronize the project directory",
                 std::io::Error::other("injected sync failure"),
@@ -821,6 +857,7 @@ mod tests {
                 .contains("injected sync failure")
         );
         assert_eq!(load(&path).expect("retained complete document"), project);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert_eq!(fs::read_dir(&dir.0).expect("directory").count(), 1);
         assert!(
             matches!(save_new(&path, &project), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
@@ -836,16 +873,18 @@ mod tests {
     #[test]
     fn volumes_without_hard_links_save_overwrite_and_recover() {
         use crate::publication::simulate::{Volume, volume};
-        for capability in [
-            Volume::NoHardLinks(libc::ENOTSUP),
-            Volume::NoHardLinks(libc::EPERM),
-            Volume::NoAtomicCreate,
+        for (capability, expects_retained_stage) in [
+            (Volume::NoHardLinks(libc::ENOTSUP), false),
+            (Volume::NoHardLinks(libc::EPERM), false),
+            (Volume::NoAtomicCreate, true),
         ] {
             let dir = TestDir::new();
             let _volume = volume(capability);
             let path = dir.0.join("usb.hex");
             let first = Project::new(48_000).expect("project");
-            let token = save_new_with_token(&path, &first).expect("save as");
+            let outcome = save_new_with_outcome(&path, &first).expect("save as");
+            assert_eq!(outcome.retained_stage.is_some(), expects_retained_stage);
+            let token = durable_token(outcome).expect("durable token");
             assert_eq!(load(&path).expect("complete project"), first);
             assert!(
                 matches!(save_new(&path, &first), Err(StorageError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists)
@@ -856,9 +895,200 @@ mod tests {
             assert_eq!(load(&path).expect("replaced"), second);
             let recovery = crate::load_recovery(&path).expect("recovery sidecar");
             assert_eq!(recovery.project, first);
-            // Only the project and its sidecar remain: no staging leftovers.
-            assert_eq!(fs::read_dir(&dir.0).expect("directory").count(), 2);
+            // Exclusive rename consumes staging (2 files); copy fallback safely
+            // retains its isolated stage without unsafe pathname unlinking (3 files).
+            let expected_count = if expects_retained_stage { 3 } else { 2 };
+            assert_eq!(
+                fs::read_dir(&dir.0).expect("directory").count(),
+                expected_count
+            );
         }
+    }
+
+    /// Regression for #8145: reproducing the retained hard-link alias mutation
+    /// and verifying that `save_new_with_outcome` on a simulated link-only
+    /// volume publishes an isolated independent inode instead of a shared
+    /// writable hard link.
+    #[cfg(unix)]
+    #[test]
+    fn link_only_volume_isolates_published_project_from_retained_stage_mutation() {
+        use crate::publication::simulate::{Volume, volume};
+
+        // First reproduce why a retained raw hard-link alias corrupts destination.
+        let repro_dir = TestDir::new();
+        let raw_stage = repro_dir.0.join(".raw-stage");
+        let raw_dest = repro_dir.0.join("aliased.hex");
+        let project = Project::new(48_000).expect("project");
+        fs::write(&raw_stage, encode(&project).expect("encode")).expect("stage");
+        fs::hard_link(&raw_stage, &raw_dest).expect("raw hard link");
+        assert!(same_existing_file(&raw_stage, &raw_dest));
+        fs::write(&raw_stage, b"corrupted via alias").expect("mutate stage");
+        assert!(
+            load(&raw_dest).is_err(),
+            "retained raw hard link shares writable inode and corrupts destination"
+        );
+
+        // Actual save caller under simulated LinkOnly volume isolates inodes.
+        let dir = TestDir::new();
+        let _guard = volume(Volume::LinkOnly);
+        let path = dir.0.join("isolated.hex");
+        let outcome = save_new_with_outcome(&path, &project).expect("isolated link-only save");
+        let retained = outcome
+            .retained_stage
+            .as_ref()
+            .expect("retained stage must be reported truthfully");
+        assert_eq!(load(&path).expect("loadable published project"), project);
+        assert!(
+            !same_existing_file(retained, &path),
+            "published project must not share an inode with retained stage"
+        );
+        // Mutating the retained staging file must not corrupt the published project.
+        fs::write(retained, b"corrupted stage bytes").expect("mutate retained stage");
+        assert_eq!(
+            load(&path).expect("published project remains intact"),
+            project
+        );
+    }
+
+    /// Regression for #8145 on macOS APFS: `fclonefileat` publishes an atomic,
+    /// source-descriptor-bound CoW inode even when the staging pathname is
+    /// swapped with foreign data right before publication, and mutating the
+    /// retained stage leaves the published project untouched.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn clone_only_volume_publishes_isolated_cow_project_from_open_fd_under_stage_swap() {
+        use crate::publication::simulate::{Volume, volume};
+
+        let dir = TestDir::new();
+        let _guard = volume(Volume::CloneOnly);
+        let path = dir.0.join("cloned.hex");
+        let displaced = dir.0.join("displaced-stage");
+        let project = Project::new(48_000).expect("project");
+        let mut stage_seen = None;
+        let outcome = save_with_hooks(
+            &path,
+            &project,
+            |stage| {
+                stage_seen = Some(stage.to_path_buf());
+                fs::rename(stage, &displaced).expect("move stage aside");
+                fs::write(stage, b"foreign bytes at staging path").expect("substitute foreign");
+            },
+            finish_publication,
+        )
+        .expect("APFS fclonefileat publishes from open fd");
+        let stage = stage_seen.expect("stage reserved");
+        assert_eq!(outcome.retained_stage.as_deref(), Some(stage.as_path()));
+        assert_eq!(load(&path).expect("published from original fd"), project);
+        assert_eq!(
+            fs::read(&stage).expect("foreign file preserved"),
+            b"foreign bytes at staging path"
+        );
+        assert!(displaced.is_file(), "displaced stage preserved");
+        assert!(!same_existing_file(&displaced, &path));
+        fs::write(&displaced, b"mutated original stage").expect("mutate displaced");
+        assert_eq!(load(&path).expect("CoW clone remains isolated"), project);
+    }
+
+    /// Regression for #8144: replacing the stage pathname right after
+    /// publication preserves foreign bytes, the published project, and any
+    /// displaced stage across publication modes without unsafe pathname unlink.
+    #[cfg(unix)]
+    #[test]
+    fn post_publication_stage_substitution_preserves_foreign_bytes_and_published_project() {
+        use crate::publication::simulate::{Volume, volume};
+
+        let modes: Vec<Option<Volume>> = vec![
+            None,
+            #[cfg(target_os = "macos")]
+            Some(Volume::CloneOnly),
+            Some(Volume::LinkOnly),
+            Some(Volume::NoAtomicCreate),
+        ];
+        let project = Project::new(48_000).expect("project");
+        for mode in modes {
+            let dir = TestDir::new();
+            let _guard = mode.map(volume);
+            let path = dir.0.join("saved.hex");
+            let displaced = dir.0.join("displaced-stage");
+            let mut stage_path = None;
+            let mut had_stage_to_displace = false;
+            let outcome = save_with_hooks(
+                &path,
+                &project,
+                |_| {},
+                |temporary, destination| {
+                    stage_path = Some(temporary.to_path_buf());
+                    if temporary.exists() {
+                        fs::rename(temporary, &displaced).expect("move stage aside");
+                        had_stage_to_displace = true;
+                    }
+                    fs::write(temporary, b"foreign bytes after publication")
+                        .expect("place foreign file at staging pathname");
+                    finish_publication(temporary, destination)
+                },
+            )
+            .expect("save should succeed");
+            let stage_path = stage_path.expect("stage observed");
+            assert_eq!(
+                fs::read(&stage_path).expect("foreign file must survive"),
+                b"foreign bytes after publication"
+            );
+            assert_eq!(load(&path).expect("published project survives"), project);
+            if had_stage_to_displace {
+                assert!(displaced.is_file(), "displaced stage must survive");
+                assert_eq!(
+                    outcome.retained_stage.as_deref(),
+                    Some(stage_path.as_path())
+                );
+            } else {
+                assert!(outcome.retained_stage.is_none());
+            }
+        }
+    }
+
+    /// Regression for #8144: pre-publication failure preserves substituted
+    /// foreign bytes at the staging pathname instead of unlinking them in Drop,
+    /// preserves an occupied destination, and reports the retained stage path.
+    #[cfg(unix)]
+    #[test]
+    fn pre_publication_stage_substitution_preserves_foreign_bytes_on_error() {
+        let dir = TestDir::new();
+        let path = dir.0.join("occupied.hex");
+        let displaced = dir.0.join("displaced-stage");
+        let project = Project::new(48_000).expect("project");
+        let mut stage_path = None;
+        let error = save_with_hooks(
+            &path,
+            &project,
+            |stage| {
+                stage_path = Some(stage.to_path_buf());
+                fs::rename(stage, &displaced).expect("move stage aside");
+                fs::write(stage, b"foreign file at stage").expect("substitute stage");
+                fs::write(&path, b"existing destination").expect("occupy destination");
+            },
+            finish_publication,
+        )
+        .expect_err("occupied destination must fail");
+        let stage_path = stage_path.expect("stage reserved");
+        let StorageError::Io(io_error) = &error else {
+            panic!("expected IO AlreadyExists error, got {error:?}");
+        };
+        assert_eq!(io_error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(
+            error
+                .to_string()
+                .contains(&stage_path.to_string_lossy().to_string()),
+            "error must report retained stage path: {error}"
+        );
+        assert_eq!(
+            fs::read(&path).expect("existing destination untouched"),
+            b"existing destination"
+        );
+        assert_eq!(
+            fs::read(&stage_path).expect("foreign bytes at stage must survive Drop"),
+            b"foreign file at stage"
+        );
+        assert!(displaced.is_file(), "displaced staged bytes preserved");
     }
 
     #[test]

@@ -1184,6 +1184,91 @@ fn unified_schema_feature_table_is_sorted_complete_and_blocks_legacy_encoders() 
 }
 
 #[test]
+fn schema_132_round_trips_track_midi_processors_migrates_legacy_and_refuses_downgrade() {
+    let pitch_type = hex_lattice_contract::DeviceTypeId::from_static("hex.midi.pitch");
+    let pitch_state =
+        hex_lattice_contract::NativeDeviceState::new(pitch_type, 1, vec![7, 24, 84, 2]).unwrap();
+
+    // Legacy schema 63 project opens cleanly with no MIDI processor.
+    let mut legacy_editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(legacy_track) = legacy_editor
+        .execute(Command::AddMidiTrack {
+            name: "legacy".into(),
+        })
+        .unwrap()
+    else {
+        panic!("legacy track");
+    };
+    let legacy_bytes = crate::encode(legacy_editor.project()).unwrap();
+    assert_eq!(
+        crate::schema_version_for(legacy_editor.project()),
+        crate::CURRENT_SCHEMA_VERSION
+    );
+    let migrated = crate::decode(&legacy_bytes).unwrap();
+    assert!(
+        migrated
+            .track(legacy_track)
+            .unwrap()
+            .midi_processor()
+            .is_none()
+    );
+
+    // Schema 132 project with track MIDI processor + bypass + instrument round-trips completely.
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "pitch-track".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Device(proc_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: pitch_state.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("midi processor");
+    };
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: proc_id,
+            bypassed: true,
+        })
+        .unwrap();
+
+    let project = editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::MIDI_PROCESSOR_SCHEMA_VERSION
+    );
+    let encoded = crate::encode(project).unwrap();
+    let mut json: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(json["version"], crate::MIDI_PROCESSOR_SCHEMA_VERSION);
+    let caps = json["capabilities"].as_array().unwrap();
+    assert!(caps.iter().any(|c| c == "midi_processor"));
+
+    let decoded = crate::decode(&encoded).unwrap();
+    assert_eq!(&decoded, project);
+    let decoded_proc = decoded.track(track).unwrap().midi_processor().unwrap();
+    assert_eq!(decoded_proc.id(), proc_id);
+    assert_eq!(decoded_proc.state(), &pitch_state);
+    assert!(decoded_proc.bypassed());
+
+    // Schema 131 must refuse schema 132 capability / track_midi_processors payloads cleanly.
+    json["version"] = serde_json::json!(crate::LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION);
+    let downgraded = serde_json::to_vec(&json).unwrap();
+    assert!(crate::decode(&downgraded).is_err());
+
+    // Schema 133 is refused as newer.
+    json["version"] = serde_json::json!(crate::MIDI_PROCESSOR_SCHEMA_VERSION + 1);
+    let newer = serde_json::to_vec(&json).unwrap();
+    assert!(crate::decode(&newer).is_err());
+}
+
+#[test]
 #[ignore = "memory footprint probe for unified schema 126"]
 fn bench_memory_unified_schema126() {
     let project = build_rich_multi_feature_project();

@@ -939,14 +939,18 @@ impl EditorView {
         let new_track = |before_track, class, gain: Option<f32>| Destination::NewTrack {
             before_track,
             slot: match class {
-                NativeDeviceClass::Effect => TrackDeviceSlot::Effect,
+                NativeDeviceClass::Effect | NativeDeviceClass::MidiProcessor => {
+                    TrackDeviceSlot::Effect
+                }
                 NativeDeviceClass::Instrument => TrackDeviceSlot::Instrument,
             },
             gain: gain.unwrap_or(1.0),
             track_identity: state.project.next_identity(),
         };
         let track_slot = |track, class, replace: Option<hex_project::DeviceId>| match class {
-            NativeDeviceClass::Effect => Destination::Track(track),
+            NativeDeviceClass::Effect | NativeDeviceClass::MidiProcessor => {
+                Destination::Track(track)
+            }
             NativeDeviceClass::Instrument => replace
                 .map_or(Destination::Instrument(track), |instrument| {
                     Destination::ReplaceInstrument { track, instrument }
@@ -963,7 +967,8 @@ impl EditorView {
         {
             let (before, replace) = match *placement {
                 TrackCatalogPlacement::Insert { before } => (before, None),
-                TrackCatalogPlacement::ReplaceInstrument(device) => (None, Some(device)),
+                TrackCatalogPlacement::ReplaceInstrument(device)
+                | TrackCatalogPlacement::ReplaceMidiProcessor(device) => (None, Some(device)),
             };
             let (class, type_id, destination, control) = (
                 *class,

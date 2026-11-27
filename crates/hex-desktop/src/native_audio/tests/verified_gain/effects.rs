@@ -418,8 +418,8 @@ fn check_auto_pan(running: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(1);
     h.next();
+    h.wait = Duration::from_secs(1);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,
@@ -862,8 +862,8 @@ fn check_main_saturator(running: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(1);
     h.next();
+    h.wait = Duration::from_secs(1);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,

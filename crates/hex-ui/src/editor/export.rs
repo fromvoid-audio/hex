@@ -372,12 +372,22 @@ impl EditorView {
                 // Native message bodies preserve case-sensitive recovery paths;
                 // status chrome and the prompt normalize app text through theme::text.
                 let recovery_message = match &event.result {
-                    Ok(report) => report.recovery_path.as_ref().map(|path| {
-                        format!(
-                            "previous file is preserved at {}",
-                            hex_session::service::text::verbatim(path.display())
-                        )
-                    }),
+                    Ok(report) => {
+                        let mut parts = Vec::new();
+                        if let Some(path) = report.recovery_path.as_ref() {
+                            parts.push(format!(
+                                "previous file is preserved at {}",
+                                hex_session::service::text::verbatim(path.display())
+                            ));
+                        }
+                        if let Some(stage) = report.retained_stage.as_ref() {
+                            parts.push(format!(
+                                "staging path {} was not removed · inspect it before removing anything",
+                                hex_session::service::text::verbatim(stage.display())
+                            ));
+                        }
+                        (!parts.is_empty()).then(|| parts.join(" · "))
+                    }
                     Err(error) => Some(error.to_string()),
                 };
                 if let (Some(handle), Some(message)) =
@@ -405,6 +415,9 @@ impl EditorView {
                             report.clipped_samples,
                             report
                                 .recovery_path
+                                .map(|path| hex_session::service::text::verbatim(path.display())),
+                            report
+                                .retained_stage
                                 .map(|path| hex_session::service::text::verbatim(path.display())),
                         );
                         self.error = None;
@@ -452,6 +465,7 @@ fn export_status(
     frames: u64,
     clipped_samples: u64,
     previous_file: Option<String>,
+    retained_stage: Option<String>,
 ) -> String {
     let mut status = format!("exported rev {revision} · {frames} frames");
     match clipped_samples {
@@ -461,6 +475,9 @@ fn export_status(
     }
     if let Some(path) = previous_file {
         status.push_str(&format!(" · previous file at {path}"));
+    }
+    if let Some(path) = retained_stage {
+        status.push_str(&format!(" · inspect staging path at {path}"));
     }
     status
 }
@@ -495,16 +512,20 @@ mod status_tests {
     #[test]
     fn export_status_reports_clipped_samples_only_when_present() {
         assert_eq!(
-            export_status(3, 480, 0, None),
+            export_status(3, 480, 0, None, None),
             "exported rev 3 · 480 frames"
         );
         assert_eq!(
-            export_status(3, 480, 1, None),
+            export_status(3, 480, 1, None, None),
             "exported rev 3 · 480 frames · 1 sample clipped"
         );
         assert_eq!(
-            export_status(4, 2, 2, Some("/Old/Take.wav".into())),
+            export_status(4, 2, 2, Some("/Old/Take.wav".into()), None),
             "exported rev 4 · 2 frames · 2 samples clipped · previous file at /Old/Take.wav"
+        );
+        assert_eq!(
+            export_status(5, 2, 0, None, Some("/Tmp/.hex-export-1-0.tmp".into())),
+            "exported rev 5 · 2 frames · inspect staging path at /Tmp/.hex-export-1-0.tmp"
         );
     }
 }
