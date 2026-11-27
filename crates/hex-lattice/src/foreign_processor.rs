@@ -117,6 +117,11 @@ pub struct ForeignAutomationSource<'a> {
     /// Strictly increasing raw continuous parameter IDs with reserved dense
     /// modulation lanes (up to `MAX_FOREIGN_MODULATION_TARGETS`).
     pub dense_parameters: &'a [u32],
+    /// Strictly increasing raw parameter IDs observed not to round-trip through
+    /// the plug-in's `getState`/`setState` chunks. Active reading automation
+    /// lanes still drive these IDs, while unlaned static-base overrides are
+    /// omitted so live manual edits are not snapped back to a reset default.
+    pub unpersisted_parameters: &'a [u32],
     /// Strictly increasing raw parameter IDs.
     pub parameters: &'a [ForeignParameterCapability],
 }

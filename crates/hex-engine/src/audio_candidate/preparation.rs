@@ -190,6 +190,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
                     sample_rate: context.sample_rate,
                     quantum_frames: 16,
                     dense_parameters: &[],
+                    unpersisted_parameters: &[],
                     parameters: &self.params,
                 }))
             }
@@ -324,6 +325,7 @@ impl<'a, 'definitions> AudioCandidateEffects<'a, 'definitions> {
                     sample_rate: context.sample_rate,
                     quantum_frames: 16,
                     dense_parameters: &[],
+                    unpersisted_parameters: &[],
                     parameters: &self.params,
                 }))
             }

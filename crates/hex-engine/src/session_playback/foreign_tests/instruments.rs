@@ -3141,6 +3141,7 @@ fn loop_edit_accepts_inactive_linear_range_mixed_automation_and_silent_track() {
                 sample_rate: context.sample_rate,
                 quantum_frames: 8,
                 dense_parameters: &[],
+                unpersisted_parameters: &[],
                 parameters: &PARAMS,
             }))
         }

@@ -326,6 +326,7 @@ impl SourceCapabilities {
             sample_rate,
             quantum_frames,
             dense_parameters: &[],
+            unpersisted_parameters: &[],
             parameters: &self.parameters[..self.len],
         })
     }

@@ -504,12 +504,9 @@ impl Program {
         tempo: &TempoMap,
         profile: QuantumProfile,
     ) -> Result<Option<Self>, Invalid> {
-        if source.dense_parameters.is_empty() {
-            return Self::prepare(lanes, source.class, source.parameters, tempo, profile);
-        }
-        if source.dense_parameters.len() > hex_lattice::MAX_FOREIGN_MODULATION_TARGETS
+        if source.unpersisted_parameters.len() > MAX_TARGETS
             || source
-                .dense_parameters
+                .unpersisted_parameters
                 .windows(2)
                 .any(|pair| pair[0] >= pair[1])
             || source.parameters.len() > MAX_TARGETS
@@ -517,6 +514,32 @@ impl Program {
                 .parameters
                 .windows(2)
                 .any(|pair| pair[0].id >= pair[1].id)
+            || source.unpersisted_parameters.iter().any(|&raw_id| {
+                source
+                    .parameters
+                    .binary_search_by_key(&raw_id, |parameter| parameter.id)
+                    .is_err()
+            })
+        {
+            return Err(Invalid(
+                "invalid foreign automation unpersisted parameter set",
+            ));
+        }
+        if source.dense_parameters.is_empty() {
+            return Self::prepare_with_unpersisted(
+                lanes,
+                source.class,
+                source.parameters,
+                source.unpersisted_parameters,
+                tempo,
+                profile,
+            );
+        }
+        if source.dense_parameters.len() > hex_lattice::MAX_FOREIGN_MODULATION_TARGETS
+            || source
+                .dense_parameters
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
             || source.dense_parameters.iter().any(|&raw_id| {
                 !source
                     .parameters
@@ -549,7 +572,24 @@ impl Program {
             sparse[count] = parameter;
             count += 1;
         }
-        Self::prepare(lanes, source.class, &sparse[..count], tempo, profile)
+        let mut sparse_unpersisted = [0u32; MAX_TARGETS];
+        let mut unpersisted_count = 0;
+        for &raw_id in source
+            .unpersisted_parameters
+            .iter()
+            .filter(|&&raw_id| source.dense_parameters.binary_search(&raw_id).is_err())
+        {
+            sparse_unpersisted[unpersisted_count] = raw_id;
+            unpersisted_count += 1;
+        }
+        Self::prepare_with_unpersisted(
+            lanes,
+            source.class,
+            &sparse[..count],
+            &sparse_unpersisted[..unpersisted_count],
+            tempo,
+            profile,
+        )
     }
 
     /// Compile authored read and exact canonical bases for the armed source.
@@ -560,6 +600,17 @@ impl Program {
         lanes: &[DeviceAutomation],
         class: [u8; 16],
         capabilities: &[ParameterCapability],
+        tempo: &TempoMap,
+        profile: QuantumProfile,
+    ) -> Result<Option<Self>, Invalid> {
+        Self::prepare_with_unpersisted(lanes, class, capabilities, &[], tempo, profile)
+    }
+
+    fn prepare_with_unpersisted(
+        lanes: &[DeviceAutomation],
+        class: [u8; 16],
+        capabilities: &[ParameterCapability],
+        unpersisted: &[u32],
         tempo: &TempoMap,
         profile: QuantumProfile,
     ) -> Result<Option<Self>, Invalid> {
@@ -613,6 +664,11 @@ impl Program {
             let authored_lane = authored
                 .clone()
                 .find_map(|(candidate, lane)| (candidate == id).then_some(lane));
+            let has_authored_points = authored_lane.is_some_and(|lane| !lane.points.is_empty());
+            let has_touch = authored_lane.is_some_and(|lane| !lane.touch.is_empty());
+            if !has_authored_points && !has_touch && unpersisted.binary_search(&id).is_ok() {
+                continue;
+            }
             let knots = if let Some(lane) = authored_lane.filter(|lane| !lane.points.is_empty()) {
                 prepare_knots(&lane.points, parameter.steps, tempo)?
             } else {
