@@ -176,7 +176,8 @@ pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize,
         .checked_add(encoded_block)
         .and_then(|bytes| {
             bytes.checked_add(
-                std::mem::size_of::<ControlledRenderer>() - std::mem::size_of::<SessionPlayback>(),
+                std::mem::size_of::<ControlledRenderer>()
+                    - std::mem::size_of::<Box<SessionPlayback>>(),
             )
         })
         .ok_or_else(overflow)?;
@@ -806,7 +807,7 @@ pub(super) fn foreign_linear_runtime(
 }
 
 struct ForeignCapturedRenderer<'p, 'pages, 'f> {
-    playback: SessionPlayback,
+    playback: Box<SessionPlayback>,
     inputs: crate::bounce::RenderInputs<'p, 'pages, 'f>,
     plan: OutputCapturePlan,
     buffers: Vec<[Frame; FRAMES_PER_BLOCK]>,
@@ -881,7 +882,7 @@ impl BlockRenderer for ForeignCapturedRenderer<'_, '_, '_> {
 }
 
 struct ForeignLinearRenderer<'p, 'pages, 'f> {
-    playback: SessionPlayback,
+    playback: Box<SessionPlayback>,
     inputs: crate::bounce::RenderInputs<'p, 'pages, 'f>,
     block_frames: usize,
     control: ExportControl,
@@ -1055,7 +1056,7 @@ pub fn render_control_sampler_with_policy(
             .apply(SessionPlaybackCommand::Play)
             .map_err(ExportError::SessionRender)?;
         let mut renderer = Box::new(ControlledRenderer {
-            playback,
+            playback: Box::new(playback),
             sources: Some(sources),
             pages: None,
             plan: None,
@@ -1073,7 +1074,7 @@ pub(super) fn prepare_runtime(
     start: u64,
     frames: u64,
     control: &ExportControl,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     prepare_runtime_observed(revision, resources, start, frames, control, || {})
 }
 
@@ -1090,7 +1091,7 @@ pub(super) fn prepare_runtime_with_foreign<'provider>(
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
     foreign: &mut dyn crate::ForeignBounceRenderer,
     block_frames: usize,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     let mut inputs = crate::bounce::RenderInputs {
         pages,
         foreign: Some(foreign),
@@ -1111,7 +1112,7 @@ pub(super) fn prepare_runtime_with_pages<'provider>(
     frames: u64,
     control: &ExportControl,
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     let constructor: RuntimeConstructor = if resources.is_some() {
         resource_linear_runtime
     } else {
@@ -1138,7 +1139,7 @@ fn prepare_runtime_observed(
     frames: u64,
     control: &ExportControl,
     after_block: impl FnMut(),
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     let constructor: RuntimeConstructor = if resources.is_some() {
         resource_linear_runtime
     } else {
@@ -1164,7 +1165,7 @@ pub(super) fn prepare_bounce_runtime<'provider>(
     frames: u64,
     control: &ExportControl,
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     prepare_bounce_runtime_with_inputs(
         revision,
         resources,
@@ -1187,7 +1188,7 @@ pub(super) fn prepare_bounce_runtime_with_inputs(
     control: &ExportControl,
     inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
     block_frames: usize,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     let constructor: RuntimeConstructor = if inputs.foreign.is_some() {
         SessionPlayback::new_finite_arrangement_bounce_with_foreign
     } else {
@@ -1218,7 +1219,7 @@ fn prepare_runtime_using(
     spec: RuntimePrepSpec<'_>,
     constructor: RuntimeConstructor,
     after_block: impl FnMut(),
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     prepare_runtime_using_pages(spec, constructor, after_block, None)
 }
 
@@ -1227,7 +1228,7 @@ fn prepare_runtime_using_pages<'provider>(
     constructor: RuntimeConstructor,
     after_block: impl FnMut(),
     pages: Option<&mut (dyn PreparedExportPages + 'provider)>,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     prepare_runtime_with_inputs(
         spec,
         constructor,
@@ -1246,7 +1247,7 @@ fn prepare_runtime_with_inputs(
     mut after_block: impl FnMut(),
     inputs: &mut crate::bounce::RenderInputs<'_, '_, '_>,
     block_frames: usize,
-) -> Result<SessionPlayback, ExportError> {
+) -> Result<Box<SessionPlayback>, ExportError> {
     let RuntimePrepSpec {
         revision,
         resources,
@@ -1275,7 +1276,7 @@ fn prepare_runtime_with_inputs(
     // Construct exactly once with the selected policy; source scope validation
     // stays in the engine, and factories mint leases only on this control thread.
     let mut playback =
-        constructor(revision, resources, frames).map_err(ExportError::SessionRender)?;
+        Box::new(constructor(revision, resources, frames).map_err(ExportError::SessionRender)?);
     if !replay && start != 0 {
         playback
             .apply(SessionPlaybackCommand::Seek(start))
@@ -1319,7 +1320,7 @@ fn resource_linear_runtime(
 }
 
 struct ControlledRenderer<'a> {
-    playback: SessionPlayback,
+    playback: Box<SessionPlayback>,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     pages: Option<&'a mut dyn PreparedExportPages>,
     plan: Option<OutputCapturePlan>,

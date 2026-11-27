@@ -427,7 +427,7 @@ fn render_stems_with_resources_and_hook(
     let mut staging = Staging::new(path)?;
     enum StemWriter {
         Wav(PooledStemWriter),
-        Flac(hex_media::FlacStreamWriter<PooledStemWriter>),
+        Flac(Box<hex_media::FlacStreamWriter<PooledStemWriter>>),
     }
     let file_pool = Rc::new(RefCell::new(StemFilePool::new(max_open_files)));
     let mut writers = Vec::with_capacity(ordered.len());
@@ -449,9 +449,10 @@ fn render_stems_with_resources_and_hook(
             index: slot_index,
         };
         if format.is_flac() {
-            let flac =
+            let flac = Box::new(
                 hex_media::FlacStreamWriter::new(writer, rate, 2, format.bits_per_sample(), frames)
-                    .map_err(map_flac_encode_error)?;
+                    .map_err(map_flac_encode_error)?,
+            );
             writers.push(StemWriter::Flac(flac));
         } else {
             write_header_encoded(&mut writer, rate, bytes, byte_rate, format)?;
