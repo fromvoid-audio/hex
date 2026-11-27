@@ -509,5 +509,13 @@ fn sample_cycle(
     }
 }
 
+pub mod instrument;
+pub use instrument::{
+    ATTACK, DEFAULT_WAVETABLE_FRAME_SIZE, DEFAULT_WAVETABLE_VOICES, GAIN, INTERPOLATION,
+    MAX_WAVETABLE_VOICES, PreparedWavetableInstrumentRuntime, RELEASE, TABLE_POSITION, VOICE_LIMIT,
+    WAVETABLE_DEFINITION, WAVETABLE_STATE_VERSION, WAVETABLE_TYPE_ID, WavetableDefinition,
+    WavetableState,
+};
+
 #[cfg(test)]
 mod tests;

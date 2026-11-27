@@ -156,3 +156,159 @@ fn resident_wavetable_source_renders_with_zero_callback_allocations_and_control_
     assert_eq!(dropped.try_recv().unwrap(), control_thread);
     assert_eq!(dropped.try_recv().unwrap(), control_thread);
 }
+
+#[test]
+fn registered_wavetable_instrument_playback_zero_alloc_reclamation_and_storage_migration() {
+    use hex_devices::wavetable::{WAVETABLE_TYPE_ID, WavetableState};
+    use hex_engine::audio_transform::AudioTransformPreparation;
+    use hex_engine::native_device_resources::PreparedDeviceResources;
+    use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference};
+    use hex_project::BeatTime;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    let control_thread = std::thread::current().id();
+    let (_observer, dropped) = control_drop_probe::observe(control_thread);
+    let cancel = AtomicBool::new(false);
+
+    // 1. Open and migrate an explicit supported prior-schema project (v63) before adding
+    //    hex.instrument.wavetable and saving/reopening at current schema.
+    let prior_project = Project::new(48_000).unwrap();
+    assert_eq!(
+        hex_storage::schema_version_for(&prior_project),
+        hex_storage::CURRENT_SCHEMA_VERSION
+    );
+    let prior_bytes = hex_storage::encode(&prior_project).unwrap();
+    let migrated_prior = hex_storage::decode(&prior_bytes).unwrap();
+
+    let mut editor = Editor::new(migrated_prior, 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "wavetable".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "wt-inst.wav".into(),
+            sample_rate: 48_000,
+            frames: 512,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let slot = DeviceAssetSlot::new(1).unwrap();
+    let state = WavetableState {
+        slot: Some(slot),
+        frame_size: 256,
+        table_position: 0.5,
+        gain: 0.9,
+        attack_seconds: 0.0,
+        release_seconds: 0.005,
+        interpolation: WavetableInterpolation::CubicHermite,
+        voice_limit: 8,
+    }
+    .to_native_with_asset(DeviceAssetReference {
+        slot,
+        asset: DeviceAssetKey::new(asset.value()).unwrap(),
+    })
+    .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: state.clone(),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_raw(1_u64 << 32),
+        })
+        .unwrap()
+    else {
+        panic!("clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::from_raw(1_u64 << 30),
+            pitch: 69,
+            channel: 0,
+            velocity: 127,
+        })
+        .unwrap();
+
+    // 2. Save and reopen via hex-storage; verify exact type, payload, and asset reference.
+    let saved_bytes = hex_storage::encode(editor.project()).unwrap();
+    let reopened = hex_storage::decode(&saved_bytes).unwrap();
+    let reopened_state = reopened.track(track).unwrap().instrument().unwrap().state();
+    assert_eq!(reopened_state.type_id(), WAVETABLE_TYPE_ID);
+    assert_eq!(reopened_state, &state);
+
+    // 3. Admit resident wavetable asset and prepare ordinary SessionPlayback on control.
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                OwnedAudioSource::try_resident(48_000, stereo_wavetable(256, 1, 3))
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            ledger(),
+            4_096,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let resources =
+        PreparedDeviceResources::prepare_on_control(&store, &reopened, 1_000_000, &cancel).unwrap();
+    let scan_frames = resources.compiler_scan_work_on_control(&reopened).unwrap();
+    let revision = Arc::new(
+        PreparedRevision::prepare_with_device_resources(
+            &reopened,
+            &BTreeMap::new(),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+            &AudioTransformPreparation::default(),
+            &resources,
+            scan_frames.max(1),
+            &cancel,
+        )
+        .unwrap(),
+    );
+    let mut playback = SessionPlayback::new_with_device_resources(revision, &resources).unwrap();
+    let mut out = [[0.0_f32; 2]; 128];
+
+    // 4. Measured callback Play + render + Stop + Seek + Play + render + Stop:
+    //    strictly zero total & net allocs/bytes.
+    let info = measure(|| {
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut out).unwrap();
+        playback.apply(SessionPlaybackCommand::Stop).unwrap();
+        playback.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+        playback.apply(SessionPlaybackCommand::Play).unwrap();
+        playback.render(&mut out).unwrap();
+        playback.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(out.iter().flatten().all(|s| s.is_finite()));
+    assert!(out.iter().flatten().any(|s| s.abs() > 0.1));
+
+    // 5. No resident bank dropped during callback; dropping on control reclaims strictly on control.
+    assert!(dropped.try_recv().is_err());
+    drop(playback);
+    drop(resources);
+    drop(store);
+    assert_eq!(dropped.try_recv().unwrap(), control_thread);
+}
