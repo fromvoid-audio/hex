@@ -46,6 +46,7 @@ pub use hex_devices::reverb::{ReverbPreview, preview as native_reverb_preview};
 pub use hex_devices::saturator::{
     SaturatorTransferCurve, transfer_curve as native_saturator_transfer_curve,
 };
+pub use hex_devices::shifter::{ShifterLfoPreview, lfo_preview as native_shifter_lfo_preview};
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;

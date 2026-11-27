@@ -34,6 +34,7 @@ mod chorus_panel;
 mod delay_panel;
 mod overdrive_panel;
 mod rattle_panel;
+mod shifter_panel;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,

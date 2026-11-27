@@ -329,6 +329,7 @@ fn source_provider_mapping_supported(state: &NativeDeviceState, parameter: Param
                     | hex_devices::delay::LFO_RATE
             )
         || id == hex_devices::chorus::CHORUS_TYPE_ID
+        || id == hex_devices::shifter::SHIFTER_TYPE_ID
         || id == hex_devices::reverb::REVERB_TYPE_ID
         || id == hex_devices::utility::UTILITY_TYPE_ID
             && hex_devices::utility::UtilityDefinition::supports_source_matrix_modulation(

@@ -352,6 +352,8 @@ pub(super) fn render_return_effect(
                 super::auto_pan_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.chorus") {
                 super::chorus_panel::render_body(view, cx, id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.shifter") {
+                super::shifter_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq") {
                 let sample_rate = view
                     .state

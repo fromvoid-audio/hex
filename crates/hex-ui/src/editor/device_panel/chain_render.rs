@@ -1512,6 +1512,8 @@ pub(in crate::editor) fn render_effect(
                 auto_pan_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.chorus") {
                 chorus_panel::render_body(view, cx, device_id, device_view)
+            } else if device_view.type_id.as_str() == Ok("hex.shifter") {
+                shifter_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq") {
                 let sample_rate = view
                     .state
