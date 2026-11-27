@@ -143,6 +143,8 @@ fn multisample_arrangement_session_simultaneous_steal_refusal_history_and_stop()
                 slot: s1,
                 low_key: 36,
                 high_key: 59,
+                low_velocity: 1,
+                high_velocity: 127,
                 root_key: 48,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -152,6 +154,8 @@ fn multisample_arrangement_session_simultaneous_steal_refusal_history_and_stop()
                 slot: s2,
                 low_key: 60,
                 high_key: 84,
+                low_velocity: 1,
+                high_velocity: 127,
                 root_key: 72,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -413,6 +417,8 @@ fn multisample_arrangement_session_simultaneous_steal_refusal_history_and_stop()
                 slot: s1,
                 low_key: 0,
                 high_key: 60,
+                low_velocity: 1,
+                high_velocity: 127,
                 root_key: 60,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -422,6 +428,8 @@ fn multisample_arrangement_session_simultaneous_steal_refusal_history_and_stop()
                 slot: s2,
                 low_key: 61,
                 high_key: 127,
+                low_velocity: 1,
+                high_velocity: 127,
                 root_key: 72,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -519,6 +527,8 @@ fn multisample_arrangement_session_simultaneous_steal_refusal_history_and_stop()
             slot: s1,
             low_key: 36,
             high_key: 60,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 48,
             detune_cents: 0.0,
             gain: 1.0,
@@ -618,5 +628,256 @@ fn multisample_arrangement_session_simultaneous_steal_refusal_history_and_stop()
         (shared_out[400][0] - 0.25).abs() < 1e-4 && (shared_out[400][1] - (-0.25)).abs() < 1e-4,
         "expected remaining note [0.25, -0.25] after independent NoteOff, got {:?}",
         shared_out[400]
+    );
+}
+
+#[test]
+fn multisample_velocity_layers_shared_same_note_source_replacement_and_history() {
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 32).unwrap();
+    let Created::Asset(a_soft) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "vel-soft-44k1.wav".into(),
+            sample_rate: 44_100,
+            frames: 4096,
+        })
+        .unwrap()
+    else {
+        panic!("a_soft");
+    };
+    let Created::Asset(a_hard) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "vel-hard-96k.wav".into(),
+            sample_rate: 96_000,
+            frames: 4096,
+        })
+        .unwrap()
+    else {
+        panic!("a_hard");
+    };
+    let Created::Asset(a_replacement) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "vel-hard-alt-48k.wav".into(),
+            sample_rate: 48_000,
+            frames: 4096,
+        })
+        .unwrap()
+    else {
+        panic!("a_replacement");
+    };
+
+    let s1 = DeviceAssetSlot::new(1).unwrap();
+    let s2 = DeviceAssetSlot::new(2).unwrap();
+    // Soft layer: vel 1..=60 (slot 1), Hard layer: vel 80..=127 (slot 2), gap: 61..=79 -> silence.
+    let initial_state = MultisampleState {
+        gain: 1.0,
+        overlap_policy: ZoneOverlapPolicy::LayerAll,
+        voice_limit: 8,
+        zones: vec![
+            KeyZoneSpec {
+                slot: s1,
+                low_key: 48,
+                high_key: 72,
+                low_velocity: 1,
+                high_velocity: 60,
+                root_key: 60,
+                detune_cents: 0.0,
+                gain: 1.0,
+                release_seconds: 0.0,
+            },
+            KeyZoneSpec {
+                slot: s2,
+                low_key: 48,
+                high_key: 72,
+                low_velocity: 80,
+                high_velocity: 127,
+                root_key: 60,
+                detune_cents: 0.0,
+                gain: 1.0,
+                release_seconds: 0.0,
+            },
+        ],
+    }
+    .to_native_with_assets(vec![
+        DeviceAssetReference {
+            slot: s1,
+            asset: DeviceAssetKey::new(a_soft.value()).unwrap(),
+        },
+        DeviceAssetReference {
+            slot: s2,
+            asset: DeviceAssetKey::new(a_hard.value()).unwrap(),
+        },
+    ])
+    .unwrap();
+
+    // Two contributor tracks sharing ONE retained multisample NativeSource trigger
+    // the SAME pitch (60) simultaneously at different velocities (50 = soft, 100 = hard),
+    // while a third note on track A at velocity 70 sits in the velocity gap -> silence!
+    let Created::NativeSource(source_id) = editor
+        .execute(Command::CreateNativeSource {
+            name: "vel-ms".into(),
+            devices: vec![initial_state.clone()],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source");
+    };
+    let Created::Track(ta) = editor
+        .execute(Command::AddMidiTrack {
+            name: "soft-in".into(),
+        })
+        .unwrap()
+    else {
+        panic!("ta");
+    };
+    let Created::Track(tb) = editor
+        .execute(Command::AddMidiTrack {
+            name: "hard-in".into(),
+        })
+        .unwrap()
+    else {
+        panic!("tb");
+    };
+    for t in [ta, tb] {
+        editor
+            .execute(Command::BindTrackSource {
+                track: t,
+                source: Some(source_id),
+            })
+            .unwrap();
+    }
+    let Created::Clip(ca) = editor
+        .execute(Command::PlaceMidiClip {
+            track: ta,
+            start: BeatTime::ZERO,
+            length: beat(1),
+        })
+        .unwrap()
+    else {
+        panic!("ca");
+    };
+    let Created::Clip(cb) = editor
+        .execute(Command::PlaceMidiClip {
+            track: tb,
+            start: BeatTime::ZERO,
+            length: beat(1),
+        })
+        .unwrap()
+    else {
+        panic!("cb");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip: ca,
+            start: BeatTime::ZERO,
+            duration: beat_frac(1, 4),
+            pitch: 60,
+            channel: 0,
+            velocity: 50, // soft layer (0.4 * 50/127)
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip: ca,
+            start: BeatTime::ZERO,
+            duration: beat_frac(1, 4),
+            pitch: 64,
+            channel: 0,
+            velocity: 70, // velocity gap 61..=79 -> silence
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip: cb,
+            start: BeatTime::ZERO,
+            duration: beat_frac(1, 64), // releases at frame 375
+            pitch: 60,
+            channel: 0,
+            velocity: 100, // hard layer (0.8 * 100/127)
+        })
+        .unwrap();
+
+    let mut store = ResidentDeviceAssets::default();
+    insert_resident(&mut store, a_soft, 44_100, vec![[0.4, -0.4]; 4096]);
+    insert_resident(&mut store, a_hard, 96_000, vec![[0.8, 0.2]; 4096]);
+
+    let (_res1, mut pb1) = prepare_playback(editor.project(), &store).unwrap();
+    pb1.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut out1 = vec![[0.0_f32; 2]; 512];
+    pb1.render(&mut out1).unwrap();
+    let exp_soft_l = 0.4 * (50.0 / 127.0);
+    let exp_hard_l = 0.8 * (100.0 / 127.0);
+    assert!(
+        (out1[10][0] - (exp_soft_l + exp_hard_l)).abs() < 1e-4,
+        "expected soft+hard sum {}, got {}",
+        exp_soft_l + exp_hard_l,
+        out1[10][0]
+    );
+    // After track B's hard note releases at frame 375, only track A's soft layer sounds!
+    assert!(
+        (out1[400][0] - exp_soft_l).abs() < 1e-4,
+        "expected only soft layer {exp_soft_l}, got {}",
+        out1[400][0]
+    );
+
+    // Source replacement: point slot 2 to a_replacement BEFORE loading it -> prepare refused,
+    // original playback pb1 keeps playing cleanly; then load a_replacement -> new PCM plays!
+    let device_id = editor
+        .project()
+        .track(ta)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    let replaced_state = MultisampleState::from_native(&initial_state)
+        .unwrap()
+        .to_native_with_assets(vec![
+            DeviceAssetReference {
+                slot: s1,
+                asset: DeviceAssetKey::new(a_soft.value()).unwrap(),
+            },
+            DeviceAssetReference {
+                slot: s2,
+                asset: DeviceAssetKey::new(a_replacement.value()).unwrap(),
+            },
+        ])
+        .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: device_id,
+            state: replaced_state.clone(),
+        })
+        .unwrap();
+    // Refusal before a_replacement is resident in store preserves pb1!
+    assert!(prepare_playback(editor.project(), &store).is_err());
+    let mut still_ok = vec![[0.0_f32; 2]; 32];
+    pb1.render(&mut still_ok).unwrap();
+    assert!((still_ok[0][0] - exp_soft_l).abs() < 1e-4);
+
+    // Now admit a_replacement in store -> prepare succeeds with replacement PCM!
+    insert_resident(&mut store, a_replacement, 48_000, vec![[0.3, 0.3]; 4096]);
+    let (_res2, mut pb2) = prepare_playback(editor.project(), &store).unwrap();
+    pb2.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut out2 = vec![[0.0_f32; 2]; 64];
+    pb2.render(&mut out2).unwrap();
+    let exp_repl_l = 0.3 * (100.0 / 127.0);
+    assert!(
+        (out2[10][0] - (exp_soft_l + exp_repl_l)).abs() < 1e-4,
+        "expected soft+replacement {}, got {}",
+        exp_soft_l + exp_repl_l,
+        out2[10][0]
+    );
+
+    // Undo restores original asset binding cleanly.
+    assert!(editor.undo());
+    assert_eq!(
+        editor
+            .project()
+            .track(ta)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .state(),
+        &initial_state
     );
 }

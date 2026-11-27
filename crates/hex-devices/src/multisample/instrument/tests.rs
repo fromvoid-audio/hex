@@ -104,6 +104,8 @@ fn state_codec_parameters_migration_and_malformed_refusals() {
                 slot: s1,
                 low_key: 36,
                 high_key: 60,
+                low_velocity: 1,
+                high_velocity: 80,
                 root_key: 48,
                 detune_cents: -12.5,
                 gain: 0.9,
@@ -113,6 +115,8 @@ fn state_codec_parameters_migration_and_malformed_refusals() {
                 slot: s2,
                 low_key: 55,
                 high_key: 84,
+                low_velocity: 60,
+                high_velocity: 127,
                 root_key: 72,
                 detune_cents: 5.0,
                 gain: 1.1,
@@ -127,7 +131,7 @@ fn state_codec_parameters_migration_and_malformed_refusals() {
         .unwrap()
         .with_output_gain_millidb(150)
         .unwrap();
-    assert_eq!(native.payload().len(), HEADER_BYTES + 2 * ZONE_BYTES);
+    assert_eq!(native.payload().len(), HEADER_BYTES + 2 * ZONE_BYTES_V2);
     assert_eq!(MultisampleState::from_native(&native).unwrap(), authored);
 
     // Parameter read/patch preserves zones and host metadata.
@@ -167,7 +171,8 @@ fn state_codec_parameters_migration_and_malformed_refusals() {
     assert_eq!(decoded.voice_limit, 8);
     assert_eq!(decoded.zones, authored.zones);
 
-    // Migration accepts v1; v0 is refused by NativeDeviceState::new and v2 by migrate_state.
+    // Migration accepts v2, losslessly migrates historical v1 (HMS1 -> HMS2 full velocity 1..=127),
+    // and rejects v0 / v3+.
     assert_eq!(
         MULTISAMPLE_DEFINITION.migrate_state(&patched).unwrap(),
         patched
@@ -176,7 +181,45 @@ fn state_codec_parameters_migration_and_malformed_refusals() {
         NativeDeviceState::new(MULTISAMPLE_TYPE_ID, 0, patched.payload().to_vec()).unwrap_err(),
         DeviceContractError::InvalidStateVersion
     );
-    let newer = NativeDeviceState::new(MULTISAMPLE_TYPE_ID, 2, patched.payload().to_vec())
+    let v1_source = MultisampleState {
+        gain: 0.85,
+        overlap_policy: ZoneOverlapPolicy::FirstMatch,
+        voice_limit: 12,
+        zones: vec![KeyZoneSpec {
+            slot: s1,
+            low_key: 36,
+            high_key: 72,
+            low_velocity: 1,
+            high_velocity: 127,
+            root_key: 60,
+            detune_cents: -5.0,
+            gain: 0.95,
+            release_seconds: 0.02,
+        }],
+    };
+    let v1_native = NativeDeviceState::new(
+        MULTISAMPLE_TYPE_ID,
+        MULTISAMPLE_STATE_VERSION_V1,
+        v1_source.encode_v1_payload().unwrap(),
+    )
+    .unwrap()
+    .with_asset_references(vec![ref_for(1, 101)])
+    .unwrap()
+    .with_input_gain_millidb(-200)
+    .unwrap()
+    .with_output_gain_millidb(100)
+    .unwrap();
+    let migrated_v2 = MULTISAMPLE_DEFINITION.migrate_state(&v1_native).unwrap();
+    assert_eq!(migrated_v2.state_version(), MULTISAMPLE_STATE_VERSION);
+    assert_eq!(migrated_v2.asset_references(), v1_native.asset_references());
+    assert_eq!(migrated_v2.input_gain_millidb(), -200);
+    assert_eq!(migrated_v2.output_gain_millidb(), 100);
+    assert_eq!(
+        MultisampleState::from_native(&migrated_v2).unwrap(),
+        v1_source
+    );
+
+    let newer = NativeDeviceState::new(MULTISAMPLE_TYPE_ID, 3, patched.payload().to_vec())
         .unwrap()
         .with_asset_references(patched.asset_references().to_vec())
         .unwrap();
@@ -268,6 +311,8 @@ fn independent_source_rate_pitch_key_boundary_and_overlap_pcm_oracle() {
             slot: s1,
             low_key: 36,
             high_key: 60,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 48,
             detune_cents: 0.0,
             gain: 0.8,
@@ -277,6 +322,8 @@ fn independent_source_rate_pitch_key_boundary_and_overlap_pcm_oracle() {
             slot: s2,
             low_key: 55,
             high_key: 72,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 60,
             detune_cents: 25.0,
             gain: 1.0,
@@ -286,6 +333,8 @@ fn independent_source_rate_pitch_key_boundary_and_overlap_pcm_oracle() {
             slot: s3,
             low_key: 76,
             high_key: 96,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 84,
             detune_cents: -15.0,
             gain: 0.7,
@@ -463,6 +512,8 @@ fn simultaneous_same_note_note_off_and_voice_stealing_with_declick() {
             slot: s1,
             low_key: 0,
             high_key: 127,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 60,
             detune_cents: 0.0,
             gain: 1.0,
@@ -553,6 +604,8 @@ fn simultaneous_same_note_note_off_and_voice_stealing_with_declick() {
                 slot: s1,
                 low_key: 0,
                 high_key: 60,
+                low_velocity: 1,
+                high_velocity: 127,
                 root_key: 60,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -562,6 +615,8 @@ fn simultaneous_same_note_note_off_and_voice_stealing_with_declick() {
                 slot: s2,
                 low_key: 61,
                 high_key: 127,
+                low_velocity: 1,
+                high_velocity: 127,
                 root_key: 72,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -682,6 +737,8 @@ fn missing_changed_or_stale_resources_fail_preflight_and_preserve_runtime() {
             slot: s1,
             low_key: 48,
             high_key: 72,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 60,
             detune_cents: 0.0,
             gain: 1.0,
@@ -761,4 +818,282 @@ fn missing_changed_or_stale_resources_fail_preflight_and_preserve_runtime() {
     pair.process_block(&[], &mut out, &resources).unwrap();
     pair.commit_block();
     assert!((out[0][0] - 0.25).abs() < 1e-6);
+}
+
+#[test]
+fn velocity_layer_boundaries_overlap_policies_disjoint_limits_and_pcm_oracle() {
+    let pcm_soft: Vec<f32> = (0..512).map(|i| 0.2 + 0.0004 * (i as f32)).collect();
+    let pcm_mid: Vec<[f32; 2]> = (0..512)
+        .map(|i| [0.35 + 0.0002 * (i as f32), -0.25])
+        .collect();
+    let pcm_hard: Vec<f32> = (0..512).map(|i| 0.6 - 0.0003 * (i as f32)).collect();
+
+    let s1 = DeviceAssetSlot::new(1).unwrap();
+    let s2 = DeviceAssetSlot::new(2).unwrap();
+    let s3 = DeviceAssetSlot::new(3).unwrap();
+    let views = [
+        DeviceResourceView {
+            slot: s1,
+            identity: identity(10, 1),
+            sample_rate: 44_100,
+            pcm: DeviceResourcePcm::Mono(&pcm_soft),
+        },
+        DeviceResourceView {
+            slot: s2,
+            identity: identity(20, 1),
+            sample_rate: 48_000,
+            pcm: DeviceResourcePcm::Stereo(&pcm_mid),
+        },
+        DeviceResourceView {
+            slot: s3,
+            identity: identity(30, 1),
+            sample_rate: 96_000,
+            pcm: DeviceResourcePcm::Mono(&pcm_hard),
+        },
+    ];
+    let resources = BorrowedDeviceResources(&views);
+    let mut freqs = *TuningTable::default().frequencies();
+    freqs[62] = 300.0; // custom tuning for key 62
+    let tuning = TuningTable::new(freqs).unwrap();
+    let out_rate = 48_000_u32;
+
+    // Velocity intervals on key 48..=72:
+    // - Zone 0 (soft, root 56): vel 1..=50
+    // - Zone 1 (mid,  root 60): vel 40..=85  (overlaps zone 0 on 40..=50)
+    // - Gap:                    vel 86..=95  (unmapped -> silence!)
+    // - Zone 2 (hard, root 64): vel 96..=127
+    let zones = vec![
+        KeyZoneSpec {
+            slot: s1,
+            low_key: 48,
+            high_key: 72,
+            low_velocity: 1,
+            high_velocity: 50,
+            root_key: 56,
+            detune_cents: 0.0,
+            gain: 1.0,
+            release_seconds: 0.0,
+        },
+        KeyZoneSpec {
+            slot: s2,
+            low_key: 48,
+            high_key: 72,
+            low_velocity: 40,
+            high_velocity: 85,
+            root_key: 60,
+            detune_cents: 0.0,
+            gain: 1.0,
+            release_seconds: 0.0,
+        },
+        KeyZoneSpec {
+            slot: s3,
+            low_key: 48,
+            high_key: 72,
+            low_velocity: 96,
+            high_velocity: 127,
+            root_key: 64,
+            detune_cents: 0.0,
+            gain: 1.0,
+            release_seconds: 0.0,
+        },
+    ];
+    let refs = vec![ref_for(1, 10), ref_for(2, 20), ref_for(3, 30)];
+
+    // Invalid velocity specs rejected explicitly.
+    for (lo, hi) in [(0, 64), (1, 128), (80, 79)] {
+        let bad = MultisampleState {
+            gain: 1.0,
+            overlap_policy: ZoneOverlapPolicy::FirstMatch,
+            voice_limit: 8,
+            zones: vec![KeyZoneSpec {
+                slot: s1,
+                low_key: 48,
+                high_key: 72,
+                low_velocity: lo,
+                high_velocity: hi,
+                root_key: 60,
+                detune_cents: 0.0,
+                gain: 1.0,
+                release_seconds: 0.0,
+            }],
+        };
+        assert_eq!(
+            bad.validate().unwrap_err(),
+            DeviceContractError::MalformedState
+        );
+    }
+
+    // Disjoint velocity splits >8 on the SAME key are valid under LayerAll,
+    // while 9 overlapping zones at one (key, velocity) are rejected!
+    let disjoint_zones: Vec<KeyZoneSpec> = (0..10_u8)
+        .map(|i| KeyZoneSpec {
+            slot: s1,
+            low_key: 60,
+            high_key: 60,
+            low_velocity: 1 + i * 12,
+            high_velocity: 12 + i * 12,
+            root_key: 60,
+            detune_cents: 0.0,
+            gain: 1.0,
+            release_seconds: 0.0,
+        })
+        .collect();
+    let disjoint_map = PreparedMultisampleMap::prepare_on_control(
+        &disjoint_zones,
+        &resources,
+        out_rate,
+        &tuning,
+        ZoneOverlapPolicy::LayerAll,
+        MultisampleLimits::DEFAULT,
+    )
+    .unwrap();
+    assert_eq!(disjoint_map.selected_zones_for(60, 1).as_slice(), &[0]);
+    assert_eq!(disjoint_map.selected_zones_for(60, 12).as_slice(), &[0]);
+    assert_eq!(disjoint_map.selected_zones_for(60, 13).as_slice(), &[1]);
+    assert_eq!(disjoint_map.selected_zones_for(60, 121).as_slice(), &[]); // gap above 120
+
+    let too_many_overlap: Vec<KeyZoneSpec> = (0..9)
+        .map(|_| KeyZoneSpec {
+            slot: s1,
+            low_key: 60,
+            high_key: 60,
+            low_velocity: 50,
+            high_velocity: 60,
+            root_key: 60,
+            detune_cents: 0.0,
+            gain: 1.0,
+            release_seconds: 0.0,
+        })
+        .collect();
+    assert_eq!(
+        PreparedMultisampleMap::prepare_on_control(
+            &too_many_overlap,
+            &resources,
+            out_rate,
+            &tuning,
+            ZoneOverlapPolicy::LayerAll,
+            MultisampleLimits::DEFAULT,
+        )
+        .unwrap_err(),
+        MultisampleError::OverlapLayerLimitExceeded
+    );
+
+    // Independent PCM oracle for key 62 across inclusive velocity boundaries,
+    // overlap vel 45 (zones 0+1), gap vel 90 (silence), and hard boundary vel 96 (zone 2).
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 259,
+        max_active_occurrences: 64,
+        max_tail_frames: 48_000 * 600,
+    };
+    let step_z0 = (freqs[62] / freqs[56]) * (44_100.0 / 48_000.0);
+    let step_z1 = (freqs[62] / freqs[60]) * (48_000.0 / 48_000.0);
+    let step_z2 = (freqs[62] / freqs[64]) * (96_000.0 / 48_000.0);
+
+    for policy in [
+        ZoneOverlapPolicy::FirstMatch,
+        ZoneOverlapPolicy::HighestRootProximity,
+        ZoneOverlapPolicy::LayerAll,
+    ] {
+        let state = MultisampleState {
+            gain: 1.0,
+            overlap_policy: policy,
+            voice_limit: 8,
+            zones: zones.clone(),
+        }
+        .to_native_with_assets(refs.clone())
+        .unwrap();
+        let factory = MULTISAMPLE_DEFINITION
+            .prepare_instrument(
+                &state,
+                &DevicePreparationContext {
+                    sample_rate: out_rate,
+                    tuning: &tuning,
+                    resources: &resources,
+                },
+            )
+            .unwrap()
+            .prepare_mutable_runtime()
+            .unwrap()
+            .unwrap();
+        let mut pair = NativeInstrumentRuntimePair::new(factory.as_ref(), limits).unwrap();
+
+        // 1. Velocity gap (90) on mapped key 62 -> exact silence.
+        let mut gap_out = [[0.0_f32; 2]; 16];
+        pair.begin_block();
+        pair.process_block(
+            &[NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 62,
+                velocity: 90,
+            }],
+            &mut gap_out,
+            &resources,
+        )
+        .unwrap();
+        pair.commit_block();
+        assert!(gap_out.iter().flatten().all(|&s| s == 0.0));
+        assert!(pair.committed_is_quiescent());
+
+        // 2. Overlap velocity 45 (both zone 0 [root 56, dist 6] & zone 1 [root 60, dist 2])
+        //    plus simultaneous same-note at hard boundary velocity 96 (zone 2) at offset 8!
+        let mut out = [[0.0_f32; 2]; 32];
+        pair.begin_block();
+        pair.process_block(
+            &[
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 10,
+                    pitch: 62,
+                    velocity: 45,
+                },
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 8,
+                    occurrence_id: 11,
+                    pitch: 62,
+                    velocity: 96,
+                },
+            ],
+            &mut out,
+            &resources,
+        )
+        .unwrap();
+        pair.commit_block();
+
+        for (n, actual) in out.iter().enumerate() {
+            let mut expected = [0.0_f64; 2];
+            let v10 = 45.0 / 127.0;
+            if matches!(
+                policy,
+                ZoneOverlapPolicy::FirstMatch | ZoneOverlapPolicy::LayerAll
+            ) {
+                let s = oracle_interp_mono(&pcm_soft, (n as f64) * step_z0);
+                expected[0] += s[0] * v10;
+                expected[1] += s[1] * v10;
+            }
+            if matches!(
+                policy,
+                ZoneOverlapPolicy::HighestRootProximity | ZoneOverlapPolicy::LayerAll
+            ) {
+                let s = oracle_interp_stereo(&pcm_mid, (n as f64) * step_z1);
+                expected[0] += s[0] * v10;
+                expected[1] += s[1] * v10;
+            }
+            if n >= 8 {
+                let s = oracle_interp_mono(&pcm_hard, ((n - 8) as f64) * step_z2);
+                let v11 = 96.0 / 127.0;
+                expected[0] += s[0] * v11;
+                expected[1] += s[1] * v11;
+            }
+            for ch in 0..2 {
+                assert!(
+                    (f64::from(actual[ch]) - expected[ch]).abs() < 1e-5,
+                    "policy={policy:?} frame={n} ch={ch} actual={} expected={}",
+                    actual[ch],
+                    expected[ch]
+                );
+            }
+        }
+    }
 }

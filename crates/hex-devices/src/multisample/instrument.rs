@@ -1,13 +1,14 @@
 //! Registered native resident multisample instrument (`hex.instrument.multisample`).
 //!
 //! Distinct from `hex.instrument.sampler` (Simpler-equivalent single-sample
-//! instrument): maps finite resident key zones (`1..=64` zones across
-//! host-leased `DeviceResources`) with per-zone root pitch, detune, gain,
-//! release, explicit deterministic overlap policies (`FirstMatch`,
+//! instrument): maps finite resident key-and-velocity zones (`1..=64` zones
+//! across host-leased `DeviceResources`) with inclusive `[low_key, high_key]`
+//! and `[low_velocity, high_velocity]` (`1..=127`) bounds, per-zone root pitch,
+//! detune, gain, release, explicit deterministic overlap policies (`FirstMatch`,
 //! `HighestRootProximity`, `LayerAll`), simultaneous same-note occurrences,
 //! and bounded voice-limit with oldest-releasing voice stealing.
 //!
-//! # Ownership & Persistence
+//! # Ownership & Supported Persisted Schemas
 //! - Original PCM and source leases stay exclusively with the host
 //!   (`ResidentDeviceAssets` / `PreparedDeviceResources`). The opaque
 //!   `NativeDeviceState` payload stores only authored zone metadata and
@@ -16,13 +17,18 @@
 //!   are 100% fixed inline storage with zero heap children so
 //!   `resource_factory_inline_bytes` and `fixed_storage_bytes` are exact and
 //!   callbacks perform zero allocations or frees.
-//! - Schema v1 (`MULTISAMPLE_STATE_VERSION = 1`) is the initial persisted
-//!   format; version 0 and versions > 1 are explicitly rejected.
+//! - **Supported persisted state versions:**
+//!   - **v1 (`HMS1`, 20 bytes/zone):** historical key-zone-only schema from `#3468`.
+//!     Migrated losslessly in memory to v2 (`low_velocity = 1`, `high_velocity = 127`)
+//!     while preserving host gains and `asset_references`.
+//!   - **v2 (`HMS2`, 24 bytes/zone, current):** key-plus-velocity zone schema from
+//!     `#3480`.
+//!   - Version 0 and versions > 2 are explicitly rejected (`UnsupportedStateVersion`).
 
 use super::{
-    KeySelection, KeyZoneSpec, MAX_LAYERED_ZONES_PER_KEY, MAX_SAMPLE_RATE, MAX_VOICES, MAX_ZONES,
-    MIN_SAMPLE_RATE, MultisampleError, MultisampleLimits, PreparedMultisampleMap,
-    ZoneOverlapPolicy, ZoneSourceKey, interpolate_linear,
+    KeyZoneSpec, MAX_LAYERED_ZONES_PER_KEY, MAX_SAMPLE_RATE, MAX_VELOCITY, MAX_VOICES, MAX_ZONES,
+    MIN_SAMPLE_RATE, MIN_VELOCITY, MultisampleError, MultisampleLimits, PreparedMultisampleMap,
+    SelectedZones, ZoneOverlapPolicy, ZoneSourceKey, interpolate_linear, select_matching_zones,
 };
 use hex_lattice::{
     DevicePreparationContext, DeviceResourceView, DeviceResources, MutableInstrumentRuntime,
@@ -40,13 +46,16 @@ use std::any::Any;
 
 pub const MULTISAMPLE_TYPE_ID: DeviceTypeId =
     DeviceTypeId::from_static("hex.instrument.multisample");
-pub const MULTISAMPLE_STATE_VERSION: u32 = 1;
+pub const MULTISAMPLE_STATE_VERSION_V1: u32 = 1;
+pub const MULTISAMPLE_STATE_VERSION: u32 = 2;
 pub const MAX_INSTRUMENT_EVENTS: usize = 1024;
 pub const DEFAULT_VOICE_LIMIT: u8 = 32;
 
-const PAYLOAD_MAGIC: [u8; 4] = *b"HMS1";
+const PAYLOAD_MAGIC_V1: [u8; 4] = *b"HMS1";
+const PAYLOAD_MAGIC_V2: [u8; 4] = *b"HMS2";
 const HEADER_BYTES: usize = 12;
-const ZONE_BYTES: usize = 20;
+const ZONE_BYTES_V1: usize = 20;
+const ZONE_BYTES_V2: usize = 24;
 
 /// Master linear output gain (`0.0..=4.0`).
 pub const GAIN: ParameterId = ParameterId::from_static(1);
@@ -164,9 +173,18 @@ impl MultisampleState {
         }
         if self.overlap_policy == ZoneOverlapPolicy::LayerAll {
             for key in 0..=127_u8 {
-                let count = self.zones.iter().filter(|z| z.contains_key(key)).count();
-                if count > MAX_LAYERED_ZONES_PER_KEY {
-                    return Err(DeviceContractError::MalformedState);
+                let key_count = self.zones.iter().filter(|z| z.contains_key(key)).count();
+                if key_count > MAX_LAYERED_ZONES_PER_KEY {
+                    for velocity in MIN_VELOCITY..=MAX_VELOCITY {
+                        let count = self
+                            .zones
+                            .iter()
+                            .filter(|z| z.contains(key, velocity))
+                            .count();
+                        if count > MAX_LAYERED_ZONES_PER_KEY {
+                            return Err(DeviceContractError::MalformedState);
+                        }
+                    }
                 }
             }
         }
@@ -179,14 +197,14 @@ impl MultisampleState {
             .checked_add(
                 self.zones
                     .len()
-                    .checked_mul(ZONE_BYTES)
+                    .checked_mul(ZONE_BYTES_V2)
                     .ok_or(DeviceContractError::MalformedState)?,
             )
             .ok_or(DeviceContractError::MalformedState)?;
         let mut out = Vec::new();
         out.try_reserve_exact(total_bytes)
             .map_err(|_| DeviceContractError::MalformedState)?;
-        out.extend_from_slice(&PAYLOAD_MAGIC);
+        out.extend_from_slice(&PAYLOAD_MAGIC_V2);
         out.push(overlap_to_u8(self.overlap_policy));
         out.push(self.voice_limit);
         let zone_count =
@@ -199,6 +217,40 @@ impl MultisampleState {
             out.push(zone.high_key);
             out.push(zone.root_key);
             out.push(0); // reserved flags byte
+            out.push(zone.low_velocity);
+            out.push(zone.high_velocity);
+            out.extend_from_slice(&[0, 0]); // reserved padding bytes
+            out.extend_from_slice(&zone.detune_cents.to_le_bytes());
+            out.extend_from_slice(&zone.gain.to_le_bytes());
+            out.extend_from_slice(&zone.release_seconds.to_le_bytes());
+        }
+        Ok(out)
+    }
+
+    /// Encode historical v1 (`HMS1`, key-zone-only) payload for explicit
+    /// prior-format migration testing. Refuses zones whose velocity range is
+    /// narrower than full (`1..=127`).
+    #[cfg(test)]
+    pub fn encode_v1_payload(&self) -> Result<Vec<u8>, DeviceContractError> {
+        self.validate()?;
+        for zone in &self.zones {
+            if zone.low_velocity != MIN_VELOCITY || zone.high_velocity != MAX_VELOCITY {
+                return Err(DeviceContractError::MalformedState);
+            }
+        }
+        let total_bytes = HEADER_BYTES + self.zones.len() * ZONE_BYTES_V1;
+        let mut out = Vec::with_capacity(total_bytes);
+        out.extend_from_slice(&PAYLOAD_MAGIC_V1);
+        out.push(overlap_to_u8(self.overlap_policy));
+        out.push(self.voice_limit);
+        out.extend_from_slice(&(self.zones.len() as u16).to_le_bytes());
+        out.extend_from_slice(&self.gain.to_le_bytes());
+        for zone in &self.zones {
+            out.extend_from_slice(&zone.slot.value().to_le_bytes());
+            out.push(zone.low_key);
+            out.push(zone.high_key);
+            out.push(zone.root_key);
+            out.push(0);
             out.extend_from_slice(&zone.detune_cents.to_le_bytes());
             out.extend_from_slice(&zone.gain.to_le_bytes());
             out.extend_from_slice(&zone.release_seconds.to_le_bytes());
@@ -207,7 +259,19 @@ impl MultisampleState {
     }
 
     pub fn decode_payload(payload: &[u8]) -> Result<Self, DeviceContractError> {
-        if payload.len() < HEADER_BYTES || payload[0..4] != PAYLOAD_MAGIC {
+        Self::decode_versioned_payload(MULTISAMPLE_STATE_VERSION, payload)
+    }
+
+    pub fn decode_versioned_payload(
+        state_version: u32,
+        payload: &[u8],
+    ) -> Result<Self, DeviceContractError> {
+        let (expected_magic, zone_stride, has_velocity) = match state_version {
+            MULTISAMPLE_STATE_VERSION_V1 => (PAYLOAD_MAGIC_V1, ZONE_BYTES_V1, false),
+            MULTISAMPLE_STATE_VERSION => (PAYLOAD_MAGIC_V2, ZONE_BYTES_V2, true),
+            _ => return Err(DeviceContractError::UnsupportedStateVersion),
+        };
+        if payload.len() < HEADER_BYTES || payload[0..4] != expected_magic {
             return Err(DeviceContractError::MalformedState);
         }
         let overlap_policy = overlap_from_u8(payload[4])?;
@@ -219,7 +283,7 @@ impl MultisampleState {
         let expected_len = HEADER_BYTES
             .checked_add(
                 zone_count
-                    .checked_mul(ZONE_BYTES)
+                    .checked_mul(zone_stride)
                     .ok_or(DeviceContractError::MalformedState)?,
             )
             .ok_or(DeviceContractError::MalformedState)?;
@@ -232,7 +296,7 @@ impl MultisampleState {
             .try_reserve_exact(zone_count)
             .map_err(|_| DeviceContractError::MalformedState)?;
         for index in 0..zone_count {
-            let base = HEADER_BYTES + index * ZONE_BYTES;
+            let base = HEADER_BYTES + index * zone_stride;
             let raw_slot = u32::from_le_bytes([
                 payload[base],
                 payload[base + 1],
@@ -248,28 +312,38 @@ impl MultisampleState {
             if reserved != 0 {
                 return Err(DeviceContractError::MalformedState);
             }
+            let (low_velocity, high_velocity, floats_offset) = if has_velocity {
+                if payload[base + 10] != 0 || payload[base + 11] != 0 {
+                    return Err(DeviceContractError::MalformedState);
+                }
+                (payload[base + 8], payload[base + 9], base + 12)
+            } else {
+                (MIN_VELOCITY, MAX_VELOCITY, base + 8)
+            };
             let detune_cents = f32::from_le_bytes([
-                payload[base + 8],
-                payload[base + 9],
-                payload[base + 10],
-                payload[base + 11],
+                payload[floats_offset],
+                payload[floats_offset + 1],
+                payload[floats_offset + 2],
+                payload[floats_offset + 3],
             ]);
             let zone_gain = f32::from_le_bytes([
-                payload[base + 12],
-                payload[base + 13],
-                payload[base + 14],
-                payload[base + 15],
+                payload[floats_offset + 4],
+                payload[floats_offset + 5],
+                payload[floats_offset + 6],
+                payload[floats_offset + 7],
             ]);
             let release_seconds = f32::from_le_bytes([
-                payload[base + 16],
-                payload[base + 17],
-                payload[base + 18],
-                payload[base + 19],
+                payload[floats_offset + 8],
+                payload[floats_offset + 9],
+                payload[floats_offset + 10],
+                payload[floats_offset + 11],
             ]);
             zones.push(KeyZoneSpec {
                 slot,
                 low_key,
                 high_key,
+                low_velocity,
+                high_velocity,
                 root_key,
                 detune_cents,
                 gain: zone_gain,
@@ -304,10 +378,7 @@ impl MultisampleState {
         if state.type_id() != MULTISAMPLE_TYPE_ID {
             return Err(DeviceContractError::MalformedState);
         }
-        if state.state_version() != MULTISAMPLE_STATE_VERSION {
-            return Err(DeviceContractError::UnsupportedStateVersion);
-        }
-        let decoded = Self::decode_payload(state.payload())?;
+        let decoded = Self::decode_versioned_payload(state.state_version(), state.payload())?;
         validate_asset_references(&decoded.zones, state.asset_references())?;
         Ok(decoded)
     }
@@ -368,8 +439,11 @@ impl NativeDeviceMetadata for MultisampleDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
-        MultisampleState::from_native(state)?;
-        Ok(state.clone())
+        let authored = MultisampleState::from_native(state)?;
+        if state.state_version() == MULTISAMPLE_STATE_VERSION {
+            return Ok(state.clone());
+        }
+        authored.to_native()?.with_host_metadata_from(state)
     }
 
     fn read_parameter(
@@ -511,18 +585,14 @@ fn prepare_multisample(
         zones[index] = Some(InlinePreparedZone {
             low_key: spec.low_key,
             high_key: spec.high_key,
+            low_velocity: spec.low_velocity,
+            high_velocity: spec.high_velocity,
+            root_key: spec.root_key,
             gain: f64::from(spec.gain),
             release_frames,
             root_rate_scale,
             source,
         });
-    }
-
-    let mut key_map = [KeySelection::default(); 128];
-    for (key, entry) in key_map.iter_mut().enumerate() {
-        let selected = map.selected_zones_for_key(key as u8);
-        entry.len = selected.len() as u8;
-        entry.zones[..selected.len()].copy_from_slice(selected);
     }
 
     let steal_fade_frames = ((u64::from(context.sample_rate) + 500) / 1000).max(1);
@@ -539,7 +609,6 @@ fn prepare_multisample(
         zone_count: authored.zones.len(),
         tuning_hz,
         zones,
-        key_map,
     };
     Ok(Box::new(PreparedMultisampleInstrument(factory)))
 }
@@ -606,10 +675,23 @@ impl PreparedNativeInstrument for PreparedMultisampleInstrument {
 struct InlinePreparedZone {
     low_key: u8,
     high_key: u8,
+    low_velocity: u8,
+    high_velocity: u8,
+    root_key: u8,
     gain: f64,
     release_frames: u64,
     root_rate_scale: f64,
     source: ZoneSourceKey,
+}
+
+impl InlinePreparedZone {
+    #[inline]
+    const fn contains(self, key: u8, velocity: u8) -> bool {
+        key >= self.low_key
+            && key <= self.high_key
+            && velocity >= self.low_velocity
+            && velocity <= self.high_velocity
+    }
 }
 
 /// 100% inline fixed-storage factory for `hex.instrument.multisample`.
@@ -626,10 +708,21 @@ pub struct PreparedMultisampleInstrumentRuntime {
     zone_count: usize,
     tuning_hz: [f64; 128],
     zones: [Option<InlinePreparedZone>; MAX_ZONES],
-    key_map: [KeySelection; 128],
 }
 
 impl PreparedMultisampleInstrumentRuntime {
+    #[inline]
+    fn select_zones(&self, key: u8, velocity: u8) -> SelectedZones {
+        if key > 127 || !(MIN_VELOCITY..=MAX_VELOCITY).contains(&velocity) {
+            return SelectedZones::default();
+        }
+        select_matching_zones(self.overlap_policy, key, self.zone_count, |idx| {
+            self.zones[idx]
+                .filter(|z| z.contains(key, velocity))
+                .map(|z| z.root_key)
+        })
+        .unwrap_or_default()
+    }
     #[inline]
     fn zone_step(&self, zone_index: usize, key: u8) -> f64 {
         let Some(zone) = self.zones[zone_index] else {
@@ -1022,8 +1115,8 @@ impl MultisampleInstrumentRuntime {
                     self.advance_pools(active, fading, midi, 0);
                     return Ok(());
                 }
-                let selection = self.prepared.key_map[usize::from(pitch)];
-                let selected = selection.slice();
+                let selection = self.prepared.select_zones(pitch, velocity);
+                let selected = selection.as_slice();
                 if selected.is_empty() {
                     self.advance_pools(active, fading, midi, 0);
                     return Ok(());
