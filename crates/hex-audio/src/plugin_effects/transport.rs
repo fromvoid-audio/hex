@@ -94,19 +94,37 @@ impl EffectTransport {
         timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
         origins: EffectSegmentOrigins<'_>,
         lane: Option<DenseParameterLane<'_>>,
+        output_events: &mut hex_plugin_host::transport::Events,
     ) -> Result<Option<(usize, usize)>, Fault> {
         match self {
             Self::Ordinary(callback) if lane.is_none() => callback
-                .stage_effect_pcm_segment_with_sidechain(
-                    offset, input, sidechain, events, parameters, frames, timing, origins,
+                .stage_effect_pcm_and_events_segment_with_sidechain(
+                    offset,
+                    input,
+                    sidechain,
+                    events,
+                    parameters,
+                    frames,
+                    timing,
+                    origins,
+                    output_events,
                 ),
             Self::Ordinary(callback) => {
                 callback.reject(Fault::InvalidParameters);
                 frames.fill([0.0; 2]);
                 Err(Fault::InvalidParameters)
             }
-            Self::Dense(callback) => callback.stage_effect_pcm_segment_with_sidechain(
-                offset, input, sidechain, events, parameters, frames, timing, origins, lane,
+            Self::Dense(callback) => callback.stage_effect_pcm_and_events_segment_with_sidechain(
+                offset,
+                input,
+                sidechain,
+                events,
+                parameters,
+                frames,
+                timing,
+                origins,
+                lane,
+                output_events,
             ),
         }
     }

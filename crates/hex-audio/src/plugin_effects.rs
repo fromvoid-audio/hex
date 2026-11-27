@@ -491,6 +491,7 @@ impl NativeEffect {
                 tail,
                 bypass: bypass::BypassMix::default(),
                 return_bypass_frame: None,
+                output_events: hex_lattice::ForeignOutputEvents::new(),
             },
         })
     }
@@ -654,6 +655,9 @@ pub struct NativeEffectCallback {
     // Exclusive performance-frame end of the last staged Return bypass PCM.
     // The endpoint entry exposes it only after the physical callback accepts.
     return_bypass_frame: Option<std::num::NonZeroU64>,
+    // Validated segment-relative MIDI output events emitted during the current
+    // callback. Cleared on begin/revocation/concealment; zero callback allocations.
+    output_events: hex_lattice::ForeignOutputEvents,
 }
 impl NativeEffectCallback {
     pub fn binding(&self) -> Binding {
@@ -719,6 +723,7 @@ impl NativeEffectCallback {
     pub fn begin_host_callback(&mut self, frames: usize) -> Result<(), Fault> {
         self.transport.begin_physical_callback(frames)?;
         self.concealed_output = false;
+        self.output_events.clear();
         self.tail.begin();
         Ok(())
     }
@@ -839,6 +844,7 @@ impl NativeEffectCallback {
             tail: tail::TailDrain::new(0, latency),
             bypass: bypass::BypassMix::default(),
             return_bypass_frame: None,
+            output_events: hex_lattice::ForeignOutputEvents::new(),
         }
     }
     #[cfg(test)]
@@ -923,6 +929,24 @@ impl ForeignProcessors for NativeEffectCallback {
         self.stage_segment(node, offset, frames, None, &[], &[], clock, Some(lane))
     }
 
+    fn drain_output_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        out: &mut hex_lattice::ForeignOutputEvents,
+    ) -> Result<usize, DeviceContractError> {
+        if !self.matches(node) || self.transport.is_revoked() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        let mut drained = 0;
+        for &note in self.output_events.as_slice() {
+            if out.push(note) {
+                drained += 1;
+            }
+        }
+        self.output_events.clear();
+        Ok(drained)
+    }
+
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         // Scalar compensated rendering only finishes staging on the last
         // segment. Avoid comparing processor facts for an incomplete callback.
@@ -932,6 +956,7 @@ impl ForeignProcessors for NativeEffectCallback {
     }
 
     fn reject_callback(&mut self) {
+        self.output_events.clear();
         self.transport.reject(Fault::Revoked);
     }
 }
@@ -1110,6 +1135,7 @@ impl NativeEffectCallback {
                 loop_pass: clock.loop_pass_at_offset(index)?,
             })
         };
+        let mut raw_output_events = hex_plugin_host::transport::Events::default();
         let result = self.transport.stage_effect_pcm_segment(
             offset,
             input,
@@ -1129,8 +1155,10 @@ impl NativeEffectCallback {
                 id: lane.id,
                 normalized: lane.normalized,
             }),
+            &mut raw_output_events,
         );
         let Ok(concealed_output) = result else {
+            self.output_events.clear();
             // The transport revoked only this endpoint's epoch. Leave the
             // aligned dry input so a containing carrier can keep rendering.
             frames.copy_from_slice(&self.dry_output[..frames.len()]);
@@ -1148,6 +1176,13 @@ impl NativeEffectCallback {
             // bypass. An instrument's dry history is already silence.
             frames[start..end].copy_from_slice(&self.dry_output[start..end]);
             self.concealed_output = true;
+            self.output_events.clear();
+        } else if !node.bypassed {
+            for &event in raw_output_events.as_slice() {
+                if let Some(translated) = translate_output_midi_event(event, offset) {
+                    let _ = self.output_events.push(translated);
+                }
+            }
         }
         // Both paths advance. Refusal irreversibly revokes this epoch, so dry
         // and foreign history are never rolled back or replayed.
@@ -1168,6 +1203,39 @@ impl NativeEffectCallback {
         }
         Ok(())
     }
+}
+
+fn translate_output_midi_event(event: MidiEvent, segment_offset: usize) -> Option<ForeignNote> {
+    let status = event.bytes[0] & 0xf0;
+    let channel = event.bytes[0] & 0x0f;
+    let frame = u16::try_from(segment_offset.checked_add(usize::from(event.frame))?).ok()?;
+    let (kind, pitch, value) = match status {
+        0x90 if event.bytes[2] == 0 => (ForeignNoteKind::Off, event.bytes[1], 0),
+        0x90 => (ForeignNoteKind::On, event.bytes[1], event.bytes[2]),
+        0x80 => (ForeignNoteKind::Off, event.bytes[1], event.bytes[2]),
+        0xa0 => (
+            ForeignNoteKind::PolyPressure,
+            event.bytes[1],
+            event.bytes[2],
+        ),
+        0xb0 => (
+            ForeignNoteKind::ControlChange,
+            event.bytes[1],
+            event.bytes[2],
+        ),
+        0xd0 => (ForeignNoteKind::ChannelPressure, 0, event.bytes[1]),
+        0xe0 => (ForeignNoteKind::PitchBend, event.bytes[1], event.bytes[2]),
+        _ => return None,
+    };
+    Some(ForeignNote {
+        frame,
+        channel,
+        pitch,
+        kind,
+        value,
+        note_id: event.note_id,
+        is_live: event.is_live,
+    })
 }
 
 fn renewal_preserves_state_authority(
@@ -1247,6 +1315,131 @@ fn next_arrangement_discontinuity(
         expected = actual.checked_add(1)?;
     }
     None
+}
+
+#[cfg(test)]
+#[test]
+fn translate_output_midi_event_preserves_offsets_identities_and_channel_voice_kinds() {
+    let id = std::num::NonZeroU32::new(42);
+    let cases = [
+        (
+            MidiEvent {
+                frame: 5,
+                bytes: [0x92, 60, 110],
+                len: 3,
+                note_id: id,
+                is_live: true,
+            },
+            16,
+            Some(ForeignNote {
+                frame: 21,
+                channel: 2,
+                pitch: 60,
+                kind: ForeignNoteKind::On,
+                value: 110,
+                note_id: id,
+                is_live: true,
+            }),
+        ),
+        (
+            MidiEvent {
+                frame: 7,
+                bytes: [0x92, 60, 0],
+                len: 3,
+                note_id: id,
+                is_live: false,
+            },
+            16,
+            Some(ForeignNote {
+                frame: 23,
+                channel: 2,
+                pitch: 60,
+                kind: ForeignNoteKind::Off,
+                value: 0,
+                note_id: id,
+                is_live: false,
+            }),
+        ),
+        (
+            MidiEvent {
+                frame: 3,
+                bytes: [0xa1, 64, 88],
+                len: 3,
+                note_id: id,
+                is_live: false,
+            },
+            0,
+            Some(ForeignNote {
+                frame: 3,
+                channel: 1,
+                pitch: 64,
+                kind: ForeignNoteKind::PolyPressure,
+                value: 88,
+                note_id: id,
+                is_live: false,
+            }),
+        ),
+        (
+            MidiEvent {
+                frame: 4,
+                bytes: [0xb3, 74, 99],
+                len: 3,
+                note_id: None,
+                is_live: false,
+            },
+            0,
+            Some(ForeignNote {
+                frame: 4,
+                channel: 3,
+                pitch: 74,
+                kind: ForeignNoteKind::ControlChange,
+                value: 99,
+                note_id: None,
+                is_live: false,
+            }),
+        ),
+        (
+            MidiEvent {
+                frame: 6,
+                bytes: [0xd4, 70, 0],
+                len: 2,
+                note_id: None,
+                is_live: false,
+            },
+            0,
+            Some(ForeignNote {
+                frame: 6,
+                channel: 4,
+                pitch: 0,
+                kind: ForeignNoteKind::ChannelPressure,
+                value: 70,
+                note_id: None,
+                is_live: false,
+            }),
+        ),
+        (
+            MidiEvent {
+                frame: 9,
+                bytes: [0xe5, 0x10, 0x40],
+                len: 3,
+                note_id: None,
+                is_live: false,
+            },
+            0,
+            Some(ForeignNote {
+                frame: 9,
+                channel: 5,
+                pitch: 0x10,
+                kind: ForeignNoteKind::PitchBend,
+                value: 0x40,
+                note_id: None,
+                is_live: false,
+            }),
+        ),
+    ];
+    for (event, offset, expected) in cases {
+        assert_eq!(translate_output_midi_event(event, offset), expected);
+    }
 }
 
 #[cfg(test)]

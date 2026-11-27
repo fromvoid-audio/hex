@@ -1059,6 +1059,13 @@ impl hex_lattice::ForeignProcessors for ShiftedForeign<'_> {
         self.inner
             .process_segment_with_modulations(node, offset, frames, lanes, notes, clock)
     }
+    fn drain_output_notes(
+        &mut self,
+        node: hex_lattice::ForeignProcessorNode<'_>,
+        out: &mut hex_lattice::ForeignOutputEvents,
+    ) -> Result<usize, hex_lattice_contract::DeviceContractError> {
+        self.inner.drain_output_notes(node, out)
+    }
     fn committed_tail_is_drained(&self, node: hex_lattice::ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)
     }

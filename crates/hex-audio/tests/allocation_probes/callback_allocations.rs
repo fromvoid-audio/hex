@@ -37,6 +37,8 @@ mod output_capture;
 mod overdrive;
 #[path = "callback_allocations/probe.rs"]
 pub(super) mod probe;
+#[path = "callback_allocations/processor_midi_routing.rs"]
+mod processor_midi_routing;
 #[path = "callback_allocations/project_tuning.rs"]
 mod project_tuning;
 #[path = "callback_allocations/return_tail.rs"]

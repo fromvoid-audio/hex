@@ -752,6 +752,68 @@ impl ForeignNote {
     }
 }
 
+/// Maximum MIDI output events drained from one foreign processor per segment
+/// (matching `hex_plugin_host::transport::MAX_EVENTS`).
+pub const MAX_FOREIGN_OUTPUT_NOTES: usize = 64;
+
+/// Fixed-capacity, allocation-free buffer of MIDI events emitted by a foreign
+/// processor during one render segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ForeignOutputEvents {
+    events: [ForeignNote; MAX_FOREIGN_OUTPUT_NOTES],
+    len: usize,
+}
+
+impl Default for ForeignOutputEvents {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ForeignOutputEvents {
+    const EMPTY_NOTE: ForeignNote = ForeignNote {
+        frame: 0,
+        channel: 0,
+        pitch: 0,
+        kind: ForeignNoteKind::Off,
+        value: 0,
+        note_id: None,
+        is_live: false,
+    };
+
+    pub const fn new() -> Self {
+        Self {
+            events: [Self::EMPTY_NOTE; MAX_FOREIGN_OUTPUT_NOTES],
+            len: 0,
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.len = 0;
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub fn as_slice(&self) -> &[ForeignNote] {
+        &self.events[..self.len]
+    }
+
+    pub fn push(&mut self, note: ForeignNote) -> bool {
+        if self.len >= MAX_FOREIGN_OUTPUT_NOTES {
+            return false;
+        }
+        self.events[self.len] = note;
+        self.len += 1;
+        true
+    }
+}
+
 /// Unique borrowed view of the host's already retained foreign endpoints.
 /// Each call stages the next contiguous graph segment of one actual physical
 /// callback. It must be bounded and free of allocation, I/O, waiting, waking,
@@ -872,6 +934,16 @@ pub trait ForeignProcessors {
         clock: Option<&dyn NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         self.process_segment_with_parameters(node, frame_offset, frames, parameters, clock)
+    }
+    /// Drain validated MIDI output events emitted by `node` during the most
+    /// recently staged segment of the current callback, in sample-offset order.
+    /// Endpoints without MIDI output routing leave `out` untouched and return `Ok(0)`.
+    fn drain_output_notes(
+        &mut self,
+        _node: ForeignProcessorNode<'_>,
+        _out: &mut ForeignOutputEvents,
+    ) -> Result<usize, DeviceContractError> {
+        Ok(0)
     }
     /// Read an accepted drain observation from this exact retained endpoint.
     /// Pending zeros must not advance the proof; pending renewed input must

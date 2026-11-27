@@ -305,6 +305,41 @@ impl Callback {
         )
     }
 
+    /// Stage native PCM alongside an optional sidechain key and capture
+    /// validated segment-relative MIDI output events from the committed reply.
+    #[allow(clippy::too_many_arguments)] // Same borrowed windows as ordinary effect staging.
+    pub fn stage_effect_pcm_and_events_segment_with_sidechain(
+        &mut self,
+        frame_offset: usize,
+        input: &[Frame],
+        sidechain: Option<&[Frame]>,
+        events: &[MidiEvent],
+        parameters: &[ParameterPoint],
+        output: &mut [Frame],
+        timing: SegmentTiming<impl FnMut(usize) -> Option<ProcessTiming>>,
+        origins: EffectSegmentOrigins<'_>,
+        output_events: &mut Events,
+    ) -> Result<Option<(usize, usize)>, Fault> {
+        let mut reply = SegmentReply {
+            events: Events::default(),
+            parameters: Parameters::default(),
+            concealed_output: None,
+        };
+        let concealed = self.stage_effect_segment_with_reply(
+            frame_offset,
+            input,
+            sidechain,
+            events,
+            parameters,
+            output,
+            timing,
+            origins,
+            Some(&mut reply),
+        )?;
+        *output_events = reply.events;
+        Ok(concealed)
+    }
+
     #[allow(clippy::too_many_arguments)] // Borrowed windows share one staging transaction.
     pub(super) fn stage_effect_segment_with_reply(
         &mut self,
