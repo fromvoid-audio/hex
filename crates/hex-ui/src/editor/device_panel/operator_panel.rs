@@ -454,13 +454,9 @@ fn operator_row(
         let owner = context::Owner::capture(view, device);
         let target_selector = format!("operator-fm-target-{}-{src}-{operator}", device.value());
         let depth_selector = format!("operator-fm-depth-{}-{src}-{operator}", device.value());
-        let overlay = div()
+        let overlay = hex_widgets::device_target_outline(accent)
             .id(ElementId::Name(target_selector.clone().into()))
             .debug_selector(move || target_selector.clone())
-            .absolute()
-            .inset_0()
-            .border_1()
-            .border_color(rgb(accent))
             .cursor(gpui::CursorStyle::PointingHand)
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
@@ -501,15 +497,8 @@ fn operator_row(
                 cx.notify();
             }))
             .children(mapped.then(|| {
-                div()
+                hex_widgets::device_depth_tag(theme::color(theme::PaletteRole::Background), accent)
                     .debug_selector(move || depth_selector.clone())
-                    .absolute()
-                    .top_0()
-                    .right_0()
-                    .px(px(2.0))
-                    .text_size(px(7.0))
-                    .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                    .text_color(rgb(accent))
                     .child(theme::text(format!("{:+.0}%", mod_depth * 100.0)))
             }));
         Some(overlay)
@@ -661,21 +650,9 @@ fn operator_fm_handle(
     let selector = format!("operator-fm-handle-{}-{operator}", device.value());
     let role_selector = format!("operator-fm-role-{}-{operator}-{role}", device.value());
     let armed_selector = format!("operator-fm-armed-{}-{operator}", device.value());
-    div()
+    hex_widgets::device_mod_handle_pill(armed, accent, style)
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .w(px(14.0))
-        .h(px(36.0))
-        .flex_shrink_0()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_between()
-        .py(px(2.0))
-        .rounded(px(2.0))
-        .border_1()
-        .border_color(rgb(if armed { accent } else { style.border }))
-        .bg(rgb(if armed { accent } else { style.surface }))
         .cursor(gpui::CursorStyle::PointingHand)
         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_click(cx.listener(move |view, _, _, cx| {

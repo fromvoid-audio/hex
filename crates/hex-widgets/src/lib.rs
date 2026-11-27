@@ -42,9 +42,9 @@ pub use device_housing::{
 mod device_meters;
 mod device_parts;
 pub use device_parts::{
-    DEVICE_HEADER_ACTION_SIZE, device_action, device_badge, device_caption, device_divider,
-    device_focus_target, device_identity_marker, device_inline_caption, device_segment,
-    device_state_indicator,
+    DEVICE_HEADER_ACTION_SIZE, device_action, device_badge, device_caption, device_depth_tag,
+    device_divider, device_focus_target, device_identity_marker, device_inline_caption,
+    device_mod_handle_pill, device_segment, device_state_indicator, device_target_outline,
 };
 mod dial;
 mod discrete;
