@@ -30,6 +30,7 @@ pub fn path(root: &Path, class: DeviceClass, provider: DeviceTypeId) -> Result<P
         .join("device-defaults")
         .join("v1")
         .join(match class {
+            DeviceClass::MidiProcessor => "midi_processor",
             DeviceClass::Instrument => "instrument",
             DeviceClass::Effect => "effect",
         })

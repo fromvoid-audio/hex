@@ -472,6 +472,10 @@ pub fn default_native_device_state_for_class(
     type_id: hex_lattice_contract::DeviceTypeId,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
     match class {
+        NativeDeviceClass::MidiProcessor => hex_devices::native_midi_processor_registry()
+            .map_err(|_| Invalid("invalid built-in native midi processor registry"))?
+            .default_state(type_id)
+            .map_err(|_| Invalid("native midi processor default state is invalid")),
         NativeDeviceClass::Effect => hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?
             .default_state(type_id)
@@ -528,6 +532,9 @@ pub fn patch_native_device_parameter_for_class(
             .map_err(map_device_contract_error);
     }
     let result = match class {
+        NativeDeviceClass::MidiProcessor => hex_devices::native_midi_processor_registry()
+            .map_err(|_| Invalid("invalid built-in native midi processor registry"))?
+            .patch_parameter(state, parameter, value),
         NativeDeviceClass::Effect => hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?
             .patch_parameter(state, parameter, value),
@@ -545,6 +552,19 @@ pub fn patch_native_device_snapshot_for_class(
     snapshot: &hex_lattice_contract::DeviceParameterSnapshot,
 ) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
     let result = match class {
+        NativeDeviceClass::MidiProcessor => {
+            let registry = hex_devices::native_midi_processor_registry()
+                .map_err(|_| Invalid("invalid built-in native midi processor registry"))?;
+            let mut next = registry
+                .migrate_state(state)
+                .map_err(map_device_contract_error)?;
+            for (parameter, value) in snapshot.entries() {
+                next = registry
+                    .patch_parameter(&next, *parameter, *value)
+                    .map_err(map_device_contract_error)?;
+            }
+            return Ok(next);
+        }
         NativeDeviceClass::Effect => hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?
             .patch_parameters(state, snapshot),

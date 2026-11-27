@@ -611,7 +611,8 @@ pub(in crate::editor) fn chain_ids(
                 track
                     .ordered_device_chain()
                     .map(|node| match node {
-                        hex_project::TrackDeviceRef::Instrument(item)
+                        hex_project::TrackDeviceRef::MidiProcessor(item)
+                        | hex_project::TrackDeviceRef::Instrument(item)
                         | hex_project::TrackDeviceRef::Effect(item) => item.id(),
                     })
                     .collect()
@@ -916,7 +917,7 @@ impl EditorView {
                 type_id,
             } => Ok(owner.insert_request(drag.project_generation, drag.revision, before, type_id)),
             drag::NativeDeviceDragSource::Browser {
-                class: NativeDeviceClass::Instrument,
+                class: NativeDeviceClass::Instrument | NativeDeviceClass::MidiProcessor,
                 ..
             } => Err("this effect chain accepts effects only".to_owned()),
             drag::NativeDeviceDragSource::PluginEffect(ref selection) => {
@@ -1070,7 +1071,8 @@ impl EditorView {
         };
         if let Some(anchor) = drop_target.before
             && !target_track.ordered_device_chain().any(|node| match node {
-                hex_project::TrackDeviceRef::Instrument(device)
+                hex_project::TrackDeviceRef::MidiProcessor(device)
+                | hex_project::TrackDeviceRef::Instrument(device)
                 | hex_project::TrackDeviceRef::Effect(device) => device.id() == anchor,
             })
         {
@@ -1093,7 +1095,8 @@ impl EditorView {
                 .ordered_device_chain()
                 .next()
                 .map(|node| match node {
-                    hex_project::TrackDeviceRef::Instrument(device)
+                    hex_project::TrackDeviceRef::MidiProcessor(device)
+                    | hex_project::TrackDeviceRef::Instrument(device)
                     | hex_project::TrackDeviceRef::Effect(device) => device.id(),
                 })
         } else {
@@ -1255,7 +1258,8 @@ pub(in crate::editor) fn device_move_would_be_noop(
 ) -> bool {
     let Some(source_track) = project.tracks().iter().find(|track| {
         track.ordered_device_chain().any(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(candidate)
+            hex_project::TrackDeviceRef::MidiProcessor(candidate)
+            | hex_project::TrackDeviceRef::Instrument(candidate)
             | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id() == device,
         })
     }) else {
@@ -1270,7 +1274,8 @@ pub(in crate::editor) fn device_move_would_be_noop(
     let current: Vec<_> = source_track
         .ordered_device_chain()
         .map(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(candidate)
+            hex_project::TrackDeviceRef::MidiProcessor(candidate)
+            | hex_project::TrackDeviceRef::Instrument(candidate)
             | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id(),
         })
         .collect();

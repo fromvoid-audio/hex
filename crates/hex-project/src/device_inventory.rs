@@ -82,7 +82,7 @@ impl Project {
     pub fn devices(&self) -> impl Iterator<Item = &Device> {
         self.tracks()
             .iter()
-            .flat_map(|track| track.devices())
+            .flat_map(|track| track.midi_processor().into_iter().chain(track.devices()))
             .chain(
                 self.return_tracks()
                     .iter()
@@ -104,7 +104,17 @@ impl Project {
     pub fn device_location(&self, id: DeviceId) -> Option<DeviceLocation<'_>> {
         self.tracks()
             .iter()
-            .find_map(|track| find_effect(track.devices(), DeviceOwner::Track(track.id()), id))
+            .find_map(|track| {
+                track
+                    .midi_processor()
+                    .filter(|device| device.id() == id)
+                    .map(|device| DeviceLocation {
+                        device,
+                        owner: DeviceOwner::Track(track.id()),
+                        class: DeviceUnitClass::MidiProcessor,
+                    })
+                    .or_else(|| find_effect(track.devices(), DeviceOwner::Track(track.id()), id))
+            })
             .or_else(|| {
                 self.return_tracks().iter().find_map(|track| {
                     find_effect(track.devices(), DeviceOwner::Return(track.id()), id)
@@ -128,10 +138,19 @@ impl Project {
         match chain {
             DeviceChainOwner::Track(owner) => {
                 let track = self.track(owner)?;
-                find_effect(track.devices(), DeviceOwner::Track(owner), id).or_else(|| {
-                    let source = self.native_source(track.source_id()?)?;
-                    find_source(source, id)
-                })
+                track
+                    .midi_processor()
+                    .filter(|device| device.id() == id)
+                    .map(|device| DeviceLocation {
+                        device,
+                        owner: DeviceOwner::Track(owner),
+                        class: DeviceUnitClass::MidiProcessor,
+                    })
+                    .or_else(|| find_effect(track.devices(), DeviceOwner::Track(owner), id))
+                    .or_else(|| {
+                        let source = self.native_source(track.source_id()?)?;
+                        find_source(source, id)
+                    })
             }
             DeviceChainOwner::Return(owner) => {
                 let track = self
@@ -147,6 +166,14 @@ impl Project {
     pub(crate) fn validate_serial_units(&self) -> Result<(), Invalid> {
         validate_chain(self.main_devices().iter())?;
         for track in self.tracks() {
+            if let Some(midi_processor) = track.midi_processor() {
+                if track.is_group() {
+                    return Err(Invalid("group tracks cannot host a midi processor"));
+                }
+                if midi_processor.parent().is_some() {
+                    return Err(Invalid("midi processor must be a serial root"));
+                }
+            }
             if let Some(position) = track.instrument_position() {
                 // The retained instrument interrupts local signal order and is
                 // a different canonical owner, never a local unit ancestor.

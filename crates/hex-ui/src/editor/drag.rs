@@ -894,6 +894,9 @@ impl super::EditorView {
                 state.project.tracks().iter().any(|track| {
                     track.ordered_device_chain().any(|node| {
                         let (candidate, candidate_class) = match node {
+                            hex_project::TrackDeviceRef::MidiProcessor(device) => {
+                                (device, hex_engine::NativeDeviceClass::MidiProcessor)
+                            }
                             hex_project::TrackDeviceRef::Instrument(device) => {
                                 (device, hex_engine::NativeDeviceClass::Instrument)
                             }

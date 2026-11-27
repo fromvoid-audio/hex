@@ -816,10 +816,21 @@ impl MutableInstrumentTrackRuntime {
         identity: std::num::NonZeroU64,
         prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
     ) -> Result<midi_processor::MidiProcessorStage, MutableInstrumentRuntimeError> {
+        self.prepare_midi_processor_with_bypass(identity, prepared, false)
+    }
+
+    /// Prepare the processor pair with host bypass state on control before the
+    /// graph admits its storage.
+    pub(crate) fn prepare_midi_processor_with_bypass(
+        &self,
+        identity: std::num::NonZeroU64,
+        prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
+        bypassed: bool,
+    ) -> Result<midi_processor::MidiProcessorStage, MutableInstrumentRuntimeError> {
         if !self.committed_is_quiescent() || !self.committed_state_available() {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
-        midi_processor::MidiProcessorStage::new(identity, prepared)
+        midi_processor::MidiProcessorStage::new_with_bypass(identity, prepared, bypassed)
     }
 
     pub(crate) fn install_prepared_midi_processor(
@@ -2145,7 +2156,27 @@ pub(crate) fn validate_prepared_graph_budget(
     arrangement: &crate::Project,
     session: &crate::PreparedSessionInventory,
 ) -> Result<(), MutableInstrumentRuntimeError> {
-    validate_prepared_graph_with_midi_processors(arrangement, session, 0, 0)
+    let mut midi_count = 0_usize;
+    let mut midi_bytes = 0_usize;
+    for track in arrangement.tracks() {
+        let Some(track_id) = track.canonical_track_id() else {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        };
+        if let Some((_, _, prepared)) = session.mutable_midi_processor(track_id) {
+            midi_count = midi_count
+                .checked_add(1)
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            midi_bytes = midi_bytes
+                .checked_add(
+                    prepared
+                        .declared_twin_bytes()
+                        .checked_mul(2)
+                        .ok_or(MutableInstrumentRuntimeError::Budget)?,
+                )
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        }
+    }
+    validate_prepared_graph_with_midi_processors(arrangement, session, midi_count, midi_bytes)
 }
 
 pub(crate) fn validate_prepared_graph_with_midi_processors(

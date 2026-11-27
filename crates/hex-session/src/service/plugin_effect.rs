@@ -895,7 +895,8 @@ mod tests {
             .unwrap()
             .ordered_device_chain()
             .map(|node| match node {
-                hex_project::TrackDeviceRef::Effect(d)
+                hex_project::TrackDeviceRef::MidiProcessor(d)
+                | hex_project::TrackDeviceRef::Effect(d)
                 | hex_project::TrackDeviceRef::Instrument(d) => d.id(),
             })
             .collect();

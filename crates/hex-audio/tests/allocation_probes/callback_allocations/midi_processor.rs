@@ -43,8 +43,7 @@ fn subtractive_state() -> hex_lattice_contract::NativeDeviceState {
     .unwrap()
 }
 
-#[test]
-fn pre_instrument_midi_processor_route_and_handoff_allocate_nothing_on_callback() {
+fn build_project() -> (Editor, hex_project::TrackId, hex_project::ClipId) {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
         .execute(Command::AddMidiTrack {
@@ -136,6 +135,12 @@ fn pre_instrument_midi_processor_route_and_handoff_allocate_nothing_on_callback(
             velocity: 100,
         })
         .unwrap();
+    (editor, track, session_clip)
+}
+
+#[test]
+fn pre_instrument_midi_processor_route_and_handoff_allocate_nothing_on_callback() {
+    let (editor, track, session_clip) = build_project();
 
     // All preparation, admission, and buffer allocation stay strictly on control.
     let table = Arc::new(SineTable::new());
@@ -220,5 +225,90 @@ fn pre_instrument_midi_processor_route_and_handoff_allocate_nothing_on_callback(
     drop(candidate);
     drop(active);
     drop(revision);
+    drop(table);
+}
+
+#[test]
+fn canonical_pitch_midi_processor_transposition_and_bypass_handoff_allocate_nothing_on_callback() {
+    let (mut editor, track, _session_clip) = build_project();
+    let pitch_7 = hex_devices::midi_pitch::PitchSettings {
+        semitones: 7,
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    let Created::Device(pitch_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: pitch_7,
+        })
+        .unwrap()
+    else {
+        panic!("expected midi processor id");
+    };
+
+    let table = Arc::new(SineTable::new());
+    let rev_7 = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let pitch_12 = hex_devices::midi_pitch::PitchSettings {
+        semitones: 12,
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: pitch_id,
+            state: pitch_12,
+        })
+        .unwrap();
+    let rev_12 = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: pitch_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_7)).unwrap();
+    let mut shifted = SessionPlayback::new(Arc::clone(&rev_12)).unwrap();
+    let mut bypassed = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        // Mid-note transposition change (+7 -> +12)
+        shifted.try_inherit_state_from(&mut active).unwrap();
+        shifted.render(&mut buf).unwrap();
+        // Mid-note bypass toggle
+        bypassed.try_inherit_state_from(&mut shifted).unwrap();
+        bypassed.render(&mut buf).unwrap();
+        bypassed.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(bypassed);
+    drop(shifted);
+    drop(active);
+    drop(rev_bypassed);
+    drop(rev_12);
+    drop(rev_7);
     drop(table);
 }

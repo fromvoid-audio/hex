@@ -47,6 +47,7 @@ pub struct Owner {
 
 fn storage_class(class: NativeDeviceClass) -> DeviceClass {
     match class {
+        NativeDeviceClass::MidiProcessor => DeviceClass::MidiProcessor,
         NativeDeviceClass::Instrument => DeviceClass::Instrument,
         NativeDeviceClass::Effect => DeviceClass::Effect,
     }

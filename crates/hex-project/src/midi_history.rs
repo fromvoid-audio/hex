@@ -1166,6 +1166,7 @@ fn same_shell(
             muted,
             soloed,
             devices,
+            midi_processor,
             instrument,
             retained_source_path,
             instrument_position,
@@ -1196,6 +1197,7 @@ fn same_shell(
             && muted == &b.muted
             && soloed == &b.soloed
             && devices == &b.devices
+            && midi_processor == &b.midi_processor
             && instrument == &b.instrument
             && retained_source_path == &b.retained_source_path
             && instrument_position == &b.instrument_position

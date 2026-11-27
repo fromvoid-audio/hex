@@ -1997,6 +1997,7 @@ fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
                 _ => ArrangementDeviceDestination::NewTrack { before_track: None },
             };
             let type_id = DeviceTypeId::from_static(match class {
+                NativeDeviceClass::MidiProcessor => "hex.midi.pitch",
                 NativeDeviceClass::Instrument => "hex.instrument.fm4",
                 NativeDeviceClass::Effect => "hex.utility",
             });
@@ -2021,6 +2022,9 @@ fn arrangement_catalog_drop_routes_all_destinations_and_is_one_undo() {
             let target_index = usize::from(destination_kind == 1);
             let target = &applied.state.project.tracks()[target_index];
             match class {
+                NativeDeviceClass::MidiProcessor => {
+                    assert_eq!(target.midi_processor().unwrap().state().type_id(), type_id)
+                }
                 NativeDeviceClass::Instrument => {
                     assert_eq!(target.instrument().unwrap().state().type_id(), type_id)
                 }

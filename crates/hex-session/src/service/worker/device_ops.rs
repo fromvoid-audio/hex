@@ -59,16 +59,22 @@ pub(crate) fn arrangement_device_command(
     let state = hex_engine::default_native_device_state_for_class(class, type_id)
         .map_err(|error| hex_storage::text::lowercase_outside_verbatim(&error.to_string()))?;
     match destination {
-        ArrangementDeviceDestination::NewTrack { before_track } => Ok(device_track_command(
-            before_track,
-            match class {
+        ArrangementDeviceDestination::NewTrack { before_track } => {
+            let slot = match class {
                 NativeDeviceClass::Instrument => hex_project::TrackDeviceSlot::Instrument,
                 NativeDeviceClass::Effect => hex_project::TrackDeviceSlot::Effect,
-            },
-            state,
-            native_device_name(class, type_id)?,
-            new_track_gain,
-        )),
+                NativeDeviceClass::MidiProcessor => {
+                    return Err("drop a midi processor onto an existing ordinary track".into());
+                }
+            };
+            Ok(device_track_command(
+                before_track,
+                slot,
+                state,
+                native_device_name(class, type_id)?,
+                new_track_gain,
+            ))
+        }
         ArrangementDeviceDestination::ExistingTrack { track, instrument } => {
             let target = project
                 .track(track)
@@ -77,6 +83,17 @@ pub(crate) fn arrangement_device_command(
                 return Err("instrument replacement target changed".into());
             }
             Ok(match class {
+                NativeDeviceClass::MidiProcessor => {
+                    if let Some(existing) = target.midi_processor() {
+                        Command::ReplaceTrackMidiProcessor {
+                            track,
+                            replacing: existing.id(),
+                            state,
+                        }
+                    } else {
+                        Command::InsertMidiProcessor { track, state }
+                    }
+                }
                 NativeDeviceClass::Effect => Command::InsertDevice {
                     track,
                     before: None,

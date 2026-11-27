@@ -12,8 +12,8 @@
 use crate::{
     AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION, CAPABILITY_MANIFEST_SCHEMA_VERSION,
     LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION, MAX_PROJECT_DOCUMENT_BYTES,
-    MIDI_EXPRESSION_SCHEMA_VERSION, Project, SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError,
-    TRACK_IO_ROUTING_SCHEMA_VERSION,
+    MIDI_EXPRESSION_SCHEMA_VERSION, MIDI_PROCESSOR_SCHEMA_VERSION, Project,
+    SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError, TRACK_IO_ROUTING_SCHEMA_VERSION,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -306,6 +306,13 @@ pub(crate) const SCHEMA_FEATURES: &[SchemaFeature] = &[
         present: contains_midi_expression,
     },
     SchemaFeature {
+        capability: "midi_processor",
+        schema_version: crate::MIDI_PROCESSOR_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save track midi processors",
+        present: contains_midi_processor,
+    },
+    SchemaFeature {
         capability: "mix_modulator",
         schema_version: crate::MIX_MODULATOR_SCHEMA_VERSION,
         post_112_wrapper: false,
@@ -537,6 +544,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "macro_four_modulator",
     "math_modulator",
     "midi_expression",
+    "midi_processor",
     "mix_modulator",
     "modulation_slot_color",
     "musical_event_source",
@@ -663,12 +671,22 @@ pub(crate) fn contains_linked_scene_placements(project: &Project) -> bool {
         .any(|section| section.linked_scene().is_some())
 }
 
-/// True when `project` should be saved directly as unified schema 126..=131
+/// True when any ordinary track carries a pre-instrument native MIDI processor,
+/// requiring schema 132 (`midi_processor`).
+pub(crate) fn contains_midi_processor(project: &Project) -> bool {
+    project
+        .tracks()
+        .iter()
+        .any(|track| track.midi_processor().is_some())
+}
+
+/// True when `project` should be saved directly as unified schema 126..=132
 /// rather than stacking historical post-112 `RawValue` wrappers.
 /// Projects with zero post-112 features retain their oldest compatible format;
 /// historical schemas `1..=125` remain readable via explicit versioned decoders.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    contains_linked_scene_placements(project)
+    contains_midi_processor(project)
+        || contains_linked_scene_placements(project)
         || contains_session_follow_action(project)
         || contains_track_io_routing(project)
         || contains_automation_curves_and_freeze(project)
@@ -795,6 +813,37 @@ struct ProjectSer<'a> {
     track_io: Vec<TrackIoDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     scene_follow_actions: Vec<SceneFollowActionDto>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    track_midi_processors: Vec<TrackMidiProcessorSer>,
+}
+
+#[derive(Serialize)]
+struct TrackMidiProcessorSer {
+    track: u64,
+    device: DeviceSer,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrackMidiProcessorDe<'a> {
+    track: u64,
+    #[serde(borrow)]
+    device: DeviceDe<'a>,
+}
+
+fn read_track_midi_processors<'de, D>(
+    deserializer: D,
+) -> Result<Vec<TrackMidiProcessorDe<'de>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let items: Vec<TrackMidiProcessorDe<'de>> = Vec::deserialize(deserializer)?;
+    if items.len() > MAX_TRACKS {
+        return Err(de::Error::custom(
+            "track midi processor count exceeds limit",
+        ));
+    }
+    Ok(items)
 }
 
 #[derive(Serialize, Deserialize)]
@@ -878,6 +927,8 @@ struct ProjectDe<'a> {
     track_io: Vec<TrackIoDto>,
     #[serde(default, deserialize_with = "read_scene_follow_actions")]
     scene_follow_actions: Vec<SceneFollowActionDto>,
+    #[serde(default, borrow, deserialize_with = "read_track_midi_processors")]
+    track_midi_processors: Vec<TrackMidiProcessorDe<'a>>,
 }
 
 #[derive(Deserialize)]
@@ -995,8 +1046,23 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             entries.sort_by_key(|entry| entry.scene);
             entries
         },
+        track_midi_processors: {
+            let mut entries = Vec::new();
+            for track in project.tracks() {
+                if let Some(device) = track.midi_processor() {
+                    entries.push(TrackMidiProcessorSer {
+                        track: track.id().value(),
+                        device: DeviceSer::from_model(device)?,
+                    });
+                }
+            }
+            entries.sort_by_key(|entry| entry.track);
+            entries
+        },
     };
-    let version = if contains_linked_scene_placements(project) {
+    let version = if contains_midi_processor(project) {
+        MIDI_PROCESSOR_SCHEMA_VERSION
+    } else if contains_linked_scene_placements(project) {
         LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
     } else if contains_session_follow_action(project) {
         SESSION_FOLLOW_ACTION_SCHEMA_VERSION
@@ -1037,6 +1103,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 | TRACK_IO_ROUTING_SCHEMA_VERSION
                 | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
                 | LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
+                | MIDI_PROCESSOR_SCHEMA_VERSION
         )
     {
         return Err(StorageError::Invalid(
@@ -1099,6 +1166,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid(
             "schemas before 131 cannot carry linked_scene_placements",
+        ));
+    }
+    if document.version < MIDI_PROCESSOR_SCHEMA_VERSION
+        && (document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "midi_processor")
+            || !document.project.track_midi_processors.is_empty())
+    {
+        return Err(StorageError::Invalid(
+            "schemas before 132 cannot carry midi_processor",
         ));
     }
 
@@ -1172,6 +1250,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 after_bars: entry.after_bars,
             })
             .collect(),
+        track_midi_processors: body
+            .track_midi_processors
+            .into_iter()
+            .map(|entry| {
+                Ok::<_, StorageError>(hex_project::TrackMidiProcessorSnapshot {
+                    track: entry.track,
+                    device: entry.device.into_snapshot()?,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?,
         audio_feeds: body.audio_feeds.into_iter().map(Into::into).collect(),
         midi_routes: body.midi_routes.into_iter().map(Into::into).collect(),
         sidechains: body.sidechains.into_iter().map(Into::into).collect(),
