@@ -30,6 +30,11 @@ pub(super) fn track_picker_command(
         TrackCatalogPlacement::ReplaceInstrument(device) => {
             Command::ReplaceDeviceState { device, state }
         }
+        TrackCatalogPlacement::ReplaceMidiProcessor(device) => Command::ReplaceTrackMidiProcessor {
+            track,
+            replacing: device,
+            state,
+        },
         TrackCatalogPlacement::Insert { .. } if class == NativeDeviceClass::Instrument => {
             Command::LoadInstrument {
                 track,
@@ -37,6 +42,9 @@ pub(super) fn track_picker_command(
                 state,
                 device_name: native_device_name(class, type_id)?,
             }
+        }
+        TrackCatalogPlacement::Insert { .. } if class == NativeDeviceClass::MidiProcessor => {
+            Command::InsertMidiProcessor { track, state }
         }
         TrackCatalogPlacement::Insert { before } => Command::InsertDevice {
             track,
@@ -56,6 +64,8 @@ pub(super) fn initialize(
     let state = match &mut command {
         Command::InsertDevice { state, .. }
         | Command::InsertNestedDevice { state, .. }
+        | Command::InsertMidiProcessor { state, .. }
+        | Command::ReplaceTrackMidiProcessor { state, .. }
         | Command::InsertInstrument { state, .. }
         | Command::LoadInstrument { state, .. }
         | Command::InsertMainDevice { state, .. }

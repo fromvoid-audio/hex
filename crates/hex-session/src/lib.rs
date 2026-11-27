@@ -805,6 +805,9 @@ impl Session {
             .device_location(device)
             .ok_or(SessionError::Invalid("device no longer exists"))?;
         Ok(match location.class {
+            hex_project::DeviceUnitClass::MidiProcessor => {
+                hex_engine::NativeDeviceClass::MidiProcessor
+            }
             hex_project::DeviceUnitClass::Instrument => hex_engine::NativeDeviceClass::Instrument,
             hex_project::DeviceUnitClass::Effect => hex_engine::NativeDeviceClass::Effect,
         })

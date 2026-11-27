@@ -37,6 +37,7 @@ pub mod fm4;
 pub mod gate;
 pub mod installed_package;
 pub mod limiter;
+pub mod midi_pitch;
 pub mod modulation;
 pub mod multisample;
 pub mod operator_envelope;
@@ -61,7 +62,8 @@ mod signed_envelope;
 mod signed_envelope_tests;
 
 use hex_lattice::{
-    NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument, StereoFrame,
+    NativeInstrumentDefinition, NativeMidiProcessorDefinition, PreparedAnalyticNote,
+    PreparedNativeInstrument, StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -92,6 +94,8 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 5] = [
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
 ];
+static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 1] =
+    [&midi_pitch::PITCH_DEFINITION];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
 
@@ -112,6 +116,12 @@ pub fn native_registry()
 pub fn native_instrument_registry()
 -> Result<hex_lattice::NativeInstrumentRegistry<'static>, DeviceContractError> {
     hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_NATIVE_INSTRUMENTS)
+}
+
+/// The immutable catalog of original bounded native MIDI processors.
+pub fn native_midi_processor_registry()
+-> Result<hex_lattice::NativeMidiProcessorRegistry<'static>, DeviceContractError> {
+    hex_lattice::NativeMidiProcessorRegistry::new(&BUILTIN_NATIVE_MIDI_PROCESSORS)
 }
 
 /// The immutable catalog of all 16 built-in native modulators.

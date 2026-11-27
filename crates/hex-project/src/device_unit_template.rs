@@ -14,6 +14,7 @@ pub const MAX_PORTABLE_DEVICE_UNIT_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeviceUnitClass {
+    MidiProcessor,
     Instrument,
     Effect,
 }

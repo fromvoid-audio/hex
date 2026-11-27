@@ -92,6 +92,8 @@ pub(in crate::editor) struct DevicePanelState {
             Result<NativeDeviceView, String>,
         ),
     >,
+    pub(super) midi_processor_catalog:
+        Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) effect_catalog: Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,
     pub(super) instrument_catalog:
         Option<Result<Vec<hex_engine::NativeDeviceCatalogEntry>, String>>,

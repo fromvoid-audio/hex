@@ -197,6 +197,7 @@ pub fn project_device_modulation_target_supported(
     }
     let state = device.state();
     let definition: Option<&dyn NativeDeviceMetadata> = match location.class {
+        DeviceUnitClass::MidiProcessor => None,
         DeviceUnitClass::Instrument => hex_devices::native_instrument_registry()
             .ok()
             .and_then(|registry| registry.definition(state.type_id()))

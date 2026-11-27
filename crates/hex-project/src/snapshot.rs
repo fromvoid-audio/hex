@@ -34,6 +34,8 @@ pub struct Snapshot {
     pub track_io: Vec<crate::TrackIoSnapshot>,
     /// Strictly ascending scene IDs carrying a non-default next-scene follow action.
     pub scene_follow_actions: Vec<crate::SceneFollowActionSnapshot>,
+    /// Strictly ascending ordinary track IDs carrying a pre-instrument native MIDI processor.
+    pub track_midi_processors: Vec<TrackMidiProcessorSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub sidechains: Vec<crate::SidechainRouteSnapshot>,
@@ -118,6 +120,12 @@ pub struct AssetSnapshot {
     pub source_frames: u64,
     pub playback_frames: u64,
     pub conversion_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrackMidiProcessorSnapshot {
+    pub track: u64,
+    pub device: DeviceSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -400,6 +408,31 @@ impl Project {
                     })
                     .collect();
                 entries.sort_by_key(|entry| entry.scene);
+                entries
+            },
+            track_midi_processors: {
+                let mut entries: Vec<_> = self
+                    .tracks
+                    .iter()
+                    .filter_map(|track| {
+                        track
+                            .midi_processor
+                            .as_ref()
+                            .map(|device| TrackMidiProcessorSnapshot {
+                                track: track.id.0,
+                                device: DeviceSnapshot {
+                                    modulation: device.modulation.clone(),
+                                    parent: device.parent.map(|id| id.value()),
+                                    automation: device.automation().to_vec(),
+                                    comparison: device.comparison.clone(),
+                                    id: device.id.0,
+                                    state: device.state.clone(),
+                                    bypassed: device.bypassed,
+                                },
+                            })
+                    })
+                    .collect();
+                entries.sort_by_key(|entry| entry.track);
                 entries
             },
             import_provenance: self.import_provenance.clone(),
@@ -837,6 +870,21 @@ impl Project {
         let mixer_automation_entries = std::mem::take(&mut snapshot.mixer_automation);
         let frozen_track_entries = std::mem::take(&mut snapshot.frozen_tracks);
         let track_io_entries = std::mem::take(&mut snapshot.track_io);
+        let track_midi_processor_entries = std::mem::take(&mut snapshot.track_midi_processors);
+        if track_midi_processor_entries.len() > MAX_TRACKS
+            || track_midi_processor_entries
+                .windows(2)
+                .any(|pair| pair[0].track >= pair[1].track)
+        {
+            return Err(Invalid(
+                "track midi processor entries must have unique ascending track ids",
+            ));
+        }
+        let mut track_midi_processor_map: BTreeMap<u64, DeviceSnapshot> =
+            track_midi_processor_entries
+                .into_iter()
+                .map(|entry| (entry.track, entry.device))
+                .collect();
         if mixer_automation_entries.len() > MAX_TRACKS
             || mixer_automation_entries
                 .windows(2)
@@ -1389,6 +1437,32 @@ impl Project {
                         crate::InputMonitoring::Auto,
                     )
                 };
+            let midi_processor = if let Some(device) = track_midi_processor_map.remove(&track.id) {
+                if track.kind == crate::TrackKind::Group {
+                    return Err(Invalid("group tracks cannot host a midi processor"));
+                }
+                if device.parent.is_some() {
+                    return Err(Invalid("midi processor must be a serial root"));
+                }
+                total_devices = total_devices
+                    .checked_add(1)
+                    .ok_or(Invalid("device count overflow"))?;
+                if total_devices > MAX_DEVICES {
+                    return Err(Invalid("project device limit reached"));
+                }
+                insert_id(device.id, &mut ids, &mut max_id)?;
+                Some(Device {
+                    modulation: device.modulation,
+                    parent: None,
+                    automation: device.automation,
+                    comparison: device.comparison,
+                    id: DeviceId(device.id),
+                    state: device.state,
+                    bypassed: device.bypassed,
+                })
+            } else {
+                None
+            };
             tracks.push(Track::from_data(crate::TrackData {
                 group_output_mutes: crate::group_output_mute::snapshot_ranges(
                     track.kind,
@@ -1417,6 +1491,7 @@ impl Project {
                 muted: track.muted,
                 soloed: track.soloed,
                 devices,
+                midi_processor,
                 instrument,
                 retained_source_path: retained_source_paths.remove(&track.id),
                 instrument_position: track.instrument_position,
@@ -1439,6 +1514,9 @@ impl Project {
         }
         if !track_io_map.is_empty() {
             return Err(Invalid("track io owner is missing"));
+        }
+        if !track_midi_processor_map.is_empty() {
+            return Err(Invalid("track midi processor owner is missing"));
         }
         let mut total_mixer_points = 0_usize;
         for track in &tracks {

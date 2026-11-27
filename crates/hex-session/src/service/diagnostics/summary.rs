@@ -585,6 +585,19 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("load_instrument"; ["track" => track.value(), "replacing" => replacing.map(|id| id.value()), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len(), "device_name_redacted_bytes" => device_name.len()]; omitted="")
         }
+        Command::InsertMidiProcessor { track, state } => {
+            describe!("insert_midi_processor"; ["track" => track.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
+        Command::RemoveMidiProcessor { track } => {
+            describe!("remove_midi_processor"; ["track" => track.value()]; omitted="")
+        }
+        Command::ReplaceTrackMidiProcessor {
+            track,
+            replacing,
+            state,
+        } => {
+            describe!("replace_track_midi_processor"; ["track" => track.value(), "replacing" => replacing.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
+        }
         Command::InsertInstrument { track, state } => {
             describe!("insert_instrument"; ["track" => track.value(), "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="")
         }

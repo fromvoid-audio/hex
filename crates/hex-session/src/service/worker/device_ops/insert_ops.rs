@@ -372,7 +372,8 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     .track(track)
                     .is_some_and(|target| {
                         target.ordered_device_chain().any(|node| match node {
-                            hex_project::TrackDeviceRef::Instrument(device)
+                            hex_project::TrackDeviceRef::MidiProcessor(device)
+                            | hex_project::TrackDeviceRef::Instrument(device)
                             | hex_project::TrackDeviceRef::Effect(device) => device.id() == anchor,
                         })
                     })
@@ -393,6 +394,31 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             } else {
                 match source {
                     NativeDeviceDropSource::Browser { class, type_id } => match class {
+                        hex_engine::NativeDeviceClass::MidiProcessor => ctx
+                            .worker
+                            .session
+                            .project()
+                            .track(track)
+                            .ok_or_else(|| "track no longer exists".to_owned())
+                            .and_then(|target| {
+                                let state = hex_engine::default_native_device_state_for_class(
+                                    class, type_id,
+                                )
+                                .map_err(|reason| {
+                                    hex_storage::text::lowercase_outside_verbatim(
+                                        &reason.to_string(),
+                                    )
+                                })?;
+                                if let Some(existing) = target.midi_processor() {
+                                    Ok(Command::ReplaceTrackMidiProcessor {
+                                        track,
+                                        replacing: existing.id(),
+                                        state,
+                                    })
+                                } else {
+                                    Ok(Command::InsertMidiProcessor { track, state })
+                                }
+                            }),
                         hex_engine::NativeDeviceClass::Effect => {
                             hex_engine::default_native_device_state_for_class(class, type_id)
                                 .map(|state| Command::InsertDevice {
@@ -586,6 +612,17 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             before,
         } => {
             let command = match class {
+                hex_engine::NativeDeviceClass::MidiProcessor if before.is_some() => Err(
+                    hex_engine::Invalid("midi processors cannot be inserted at an effect anchor"),
+                ),
+                hex_engine::NativeDeviceClass::MidiProcessor => {
+                    hex_engine::default_native_device_state_for_class(class, *type_id).map(
+                        |state| Command::InsertMidiProcessor {
+                            track: track_id,
+                            state,
+                        },
+                    )
+                }
                 hex_engine::NativeDeviceClass::Effect => {
                     hex_engine::default_native_device_state_for_class(class, *type_id).map(
                         |state| Command::InsertDevice {
