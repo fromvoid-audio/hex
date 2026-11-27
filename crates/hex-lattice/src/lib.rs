@@ -152,6 +152,14 @@ pub use instrument_outputs::{
     NativeOutputPortDescriptor, NativeOutputPortId, PreparedMultiOutputRouter,
     validate_output_port_descriptors,
 };
+mod drum_rack;
+pub use drum_rack::{
+    DRUM_RACK_MAX_ACTIVE_OCCURRENCES, DRUM_RACK_MAX_CHOKE_GROUPS,
+    DRUM_RACK_MAX_COMPENSATION_DELAY_FRAMES, DRUM_RACK_MAX_EVENTS_PER_BLOCK,
+    DRUM_RACK_MAX_PAD_GAIN, DRUM_RACK_MAX_PAD_NAME_BYTES, DRUM_RACK_MAX_PADS,
+    DRUM_RACK_RUNTIME_VERSION, DRUM_RACK_STATE_VERSION, DRUM_RACK_TYPE_ID, DrumRackDefinition,
+    DrumRackPadSpec, DrumRackSpec, PARAM_DRUM_RACK_GAIN,
+};
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
 };

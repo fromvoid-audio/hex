@@ -3279,3 +3279,6 @@ mod instrument_rack_tests;
 
 #[cfg(test)]
 mod multisample_tests;
+
+#[cfg(test)]
+mod drum_rack_tests;
