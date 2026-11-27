@@ -48,6 +48,12 @@ impl Callback {
         self.accepted_manual = None;
         self.accepted_editor = None;
     }
+    pub fn revoke_for_stop(&mut self) {
+        self.revoked.revoke_for_stop();
+        self.staged = None;
+        self.accepted_manual = None;
+        self.accepted_editor = None;
+    }
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
     }

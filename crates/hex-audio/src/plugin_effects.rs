@@ -962,6 +962,11 @@ impl ForeignProcessors for NativeEffectCallback {
 }
 
 impl NativeEffectCallback {
+    pub(super) fn revoke_for_stop(&mut self) {
+        self.output_events.clear();
+        self.transport.revoke_for_stop();
+    }
+
     #[allow(clippy::too_many_arguments)] // Separate borrowed views share one physical acceptance.
     pub(super) fn stage_segment(
         &mut self,

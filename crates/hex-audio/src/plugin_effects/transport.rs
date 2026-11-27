@@ -172,6 +172,13 @@ impl EffectTransport {
         }
     }
 
+    pub(super) fn revoke_for_stop(&mut self) {
+        match self {
+            Self::Ordinary(callback) => callback.revoke_for_stop(),
+            Self::Dense(callback) => callback.revoke_for_stop(),
+        }
+    }
+
     #[cfg(any(test, feature = "allocation-probe"))]
     pub(super) fn fault(&self) -> Option<Fault> {
         match self {

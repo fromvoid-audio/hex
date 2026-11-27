@@ -2430,3 +2430,37 @@ fn publish_timestamp_callback_path_has_zero_total_and_net_allocations() {
         "publish timestamp callback/worker exchange must allocate zero bytes"
     );
 }
+
+#[test]
+fn revoke_for_stop_marks_live_endpoint_without_fault_and_never_masks_prior_faults() {
+    // 1. Healthy live endpoint cleanly revoked by PriorityStop.
+    let (control, mut cb, _worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 4, 0).expect("open channel");
+    assert!(!control.is_revoked());
+    assert!(!control.was_revoked_for_stop());
+    cb.revoke_for_stop();
+    assert!(control.is_revoked());
+    assert!(control.was_revoked_for_stop());
+    assert_eq!(control.take_callback_fault(), None);
+
+    // 2. Endpoint that faulted with MissingOutput before Stop preserves its real fault.
+    let (fault_control, mut fault_cb, _fault_worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 4, 0).expect("open channel");
+    fault_cb.reject(Fault::MissingOutput);
+    fault_cb.revoke_for_stop();
+    assert!(fault_control.is_revoked());
+    assert!(!fault_control.was_revoked_for_stop());
+    assert_eq!(
+        fault_control.take_callback_fault(),
+        Some(Fault::MissingOutput)
+    );
+
+    // 3. Endpoint whose worker already revoked (crash/failure) before Stop is not stop-revoked.
+    let (worker_control, mut worker_cb, worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 4, 0).expect("open channel");
+    worker.revoke();
+    worker_cb.revoke_for_stop();
+    assert!(worker_control.is_revoked());
+    assert!(!worker_control.was_revoked_for_stop());
+    assert_eq!(worker_control.take_callback_fault(), None);
+}

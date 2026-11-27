@@ -136,6 +136,10 @@ impl NativeEffectEntry {
         self.callback.reject_callback();
         self.staged = false;
     }
+    pub(crate) fn revoke_for_stop(&mut self) {
+        self.callback.revoke_for_stop();
+        self.staged = false;
+    }
 }
 /// Scalar state for one complete physical callback. An endpoint set's permanent
 /// revocation is separate from which original entries were actually visited.

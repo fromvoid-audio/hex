@@ -318,6 +318,10 @@ impl DenseEffectCallback {
         self.callback.reject(fault);
     }
 
+    pub fn revoke_for_stop(&mut self) {
+        self.callback.revoke_for_stop();
+    }
+
     pub fn has_complete_staged_callback(&self) -> bool {
         self.callback.has_complete_staged_callback()
     }

@@ -388,6 +388,11 @@ impl Callback {
         self.revoke_forwarded_output_transport();
     }
 
+    pub(crate) fn revoke_output_transport_for_stop(&mut self) {
+        self.revoke_native_effects_for_stop();
+        self.revoke_forwarded_output_transport();
+    }
+
     pub(in crate::prepared) fn revoke_forwarded_output_transport(&mut self) {
         if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();

@@ -86,9 +86,9 @@ impl Plugins {
             for source in &mut self.sources {
                 if source.accepted && !source.retiring {
                     let status = control.native_source_endpoint_status(source.binding);
-                    if status == Some((true, false))
-                        || self.degraded.is_binding_degraded(output_id, source.binding)
-                    {
+                    let faulted = status == Some((true, false))
+                        && !control.native_source_revoked_for_stop(source.binding);
+                    if faulted || self.degraded.is_binding_degraded(output_id, source.binding) {
                         let diagnostic =
                             control.take_native_source_failure_diagnostic(source.binding);
                         source.accepted = false;

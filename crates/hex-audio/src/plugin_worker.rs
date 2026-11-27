@@ -235,6 +235,20 @@ impl Signal {
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn has_failure_diagnostic(&self) -> bool {
+        !self.failure_diagnostics.is_empty()
+            || self
+                .failure_diagnostics_dropped
+                .load(std::sync::atomic::Ordering::Relaxed)
+                > 0
+    }
+
+    #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+    fn has_failure_diagnostic(&self) -> bool {
+        false
+    }
+
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(super) fn record_deadline_leave_failure(&self, error: &str) {
         self.deadline_leave_failures
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1260,6 +1274,12 @@ impl NativeWorker {
     /// custody or native ACK; graph admission also validates the retained pair.
     pub(crate) fn transport_is_live_on_control(&self) -> bool {
         !self.retirement_requested && !self.reaper.control.is_revoked()
+    }
+
+    pub(crate) fn revoked_for_stop_on_control(&self) -> bool {
+        !self.retirement_requested
+            && self.reaper.control.was_revoked_for_stop()
+            && !self.reaper.completed.has_failure_diagnostic()
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

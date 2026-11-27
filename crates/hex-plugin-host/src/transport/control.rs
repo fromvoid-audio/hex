@@ -191,11 +191,16 @@ impl Control {
             overflowed,
         })
     }
+    /// Whether this transport was revoked cleanly by an intentional PriorityStop
+    /// while still live and unfaulted.
+    pub fn was_revoked_for_stop(&self) -> bool {
+        self.revoked.is_stop_revoked()
+    }
     /// The exact callback's first actionable fault, once. A control/worker
     /// revocation alone and a later callback observing it have no new cause.
     pub fn take_callback_fault(&self) -> Option<Fault> {
         let code = self.revoked.callback_fault.load(Acquire);
-        if code == 0 || code & Revocation::REPORTED != 0 {
+        if code == 0 || code == Revocation::STOP_REVOKED_CODE || code & Revocation::REPORTED != 0 {
             return None;
         }
         let previous = self

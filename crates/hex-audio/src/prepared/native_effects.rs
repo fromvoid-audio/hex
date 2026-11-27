@@ -163,6 +163,17 @@ impl Callback {
             }
         }
     }
+    pub(crate) fn revoke_native_effects_for_stop(&mut self) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            if self.native_sources.has_endpoints() {
+                self.native_sources.revoke_rendering_for_stop();
+            }
+            if self.paused_native_sources.has_endpoints() {
+                self.paused_native_sources.revoke_rendering_for_stop();
+            }
+        }
+    }
     pub(crate) fn begin_native_effect_callback(&mut self, frames: usize) -> Result<(), Invalid> {
         self.foreign_parameter_delivery.prepare();
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
