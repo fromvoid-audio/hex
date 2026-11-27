@@ -231,6 +231,7 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
         sidechains: Vec::new(),
+        device_output_routes: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,
         sample_rate_mode: Default::default(),

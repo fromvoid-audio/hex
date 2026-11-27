@@ -429,6 +429,12 @@ pub enum Command {
         device: DeviceId,
         source: Option<TrackId>,
     },
+    /// Assign or clear a hosted multi-output device's audio bus destination.
+    SetDeviceOutputRoute {
+        device: DeviceId,
+        bus_index: u16,
+        destination: Option<crate::DeviceOutputDestination>,
+    },
     /// Select authored MIDI from another track; None restores local MIDI.
     SetMidiSource {
         destination: TrackId,

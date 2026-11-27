@@ -618,6 +618,7 @@ impl Command {
             | Self::SetRouting(..)
             | Self::SetAudioFeed { .. }
             | Self::SetSidechain { .. }
+            | Self::SetDeviceOutputRoute { .. }
             | Self::SetMidiSource { .. }
             | Self::AssignTrackAudioInput { .. }
             | Self::SetTrackOutput { .. }

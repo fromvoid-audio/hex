@@ -88,7 +88,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = MIDI_PROCESSOR_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION;
+/// Schema133 adds canonical multi-output device bus routes
+/// (`device_output_routes` capability) on top of the unified capability
+/// manifest layout. Older schema132 readers refuse schema133 cleanly.
+pub const DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION: u32 = 133;
 /// Schema132 adds optional per-track pre-instrument native MIDI processors
 /// (`midi_processor` capability) on top of the unified capability manifest
 /// layout. Older schema131 readers refuse schema132 cleanly.
@@ -898,6 +902,7 @@ fn decode_impl_within(
             | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
             | LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
             | MIDI_PROCESSOR_SCHEMA_VERSION
+            | DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION
     ) && !inside_envelope
     {
         return schema::manifest::decode(bytes);

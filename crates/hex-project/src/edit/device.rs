@@ -15,6 +15,11 @@ impl Project {
                 gain,
             } => self.set_audio_feed(source, destination, gain),
             Command::SetSidechain { device, source } => self.set_sidechain(device, source),
+            Command::SetDeviceOutputRoute {
+                device,
+                bus_index,
+                destination,
+            } => self.set_device_output_route(device, bus_index, destination),
             Command::SetMidiSource {
                 destination,
                 source,

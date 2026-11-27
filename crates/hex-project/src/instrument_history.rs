@@ -74,6 +74,7 @@ impl Project {
             audio_feeds,
             midi_routes,
             sidechains,
+            device_output_routes,
             import_provenance,
             sample_rate,
             sample_rate_mode,
@@ -99,6 +100,7 @@ impl Project {
             || audio_feeds != &target.audio_feeds
             || midi_routes != &target.midi_routes
             || sidechains != &target.sidechains
+            || device_output_routes != &target.device_output_routes
             || import_provenance != &target.import_provenance
             || sample_rate != &target.sample_rate
             || sample_rate_mode != &target.sample_rate_mode

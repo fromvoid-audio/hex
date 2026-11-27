@@ -13,22 +13,23 @@ use hex_project::{
     Asset, AssetSnapshot, AudioFeed, AudioFeedSnapshot, AutomationInterpolation, AutomationPoint,
     AutomationReadSelection, AutomationValue, BeatTime, Device, DeviceAutomation,
     DeviceAutomationTouchSpan, DeviceAutomationTouchStep, DeviceComparison, DeviceModulation,
-    DeviceModulationRoute, DeviceSnapshot, DeviceVariant, ElementColor, GainInterpolation,
-    GainPoint, GainTouchContext, GainTouchSpan, GainTouchStep, GroupOutputMuteRange,
-    ImportProvenance, LoopRegion, MAX_ARRANGEMENT_LOCATORS, MAX_ARRANGEMENT_SECTIONS,
-    MAX_AUDIO_FEEDS, MAX_CLIPS, MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
-    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE, MAX_DEVICES,
-    MAX_DEVICES_PER_TRACK, MAX_GAIN_POINTS_PER_TRACK, MAX_GAIN_TOUCH_SPANS_PER_TRACK,
-    MAX_GAIN_TOUCH_STEPS_PER_SPAN, MAX_GROUP_OUTPUT_MUTE_RANGES, MAX_IMPORT_DOCUMENT_BYTES,
-    MAX_MIDI_ROUTES, MAX_MODULATION_ROUTES_PER_DEVICE, MAX_MODULATORS_PER_DEVICE,
-    MAX_PROJECT_MODULATOR_STATE_BYTES, MAX_RETURN_FEEDS, MAX_RETURN_SENDS_PER_TRACK,
-    MAX_SIDECHAIN_ROUTES, MAX_SOURCE_DEVICES, MAX_TRACK_TAGS, Meter, MeterPoint, MidiRoute,
-    MidiRouteSnapshot, ModulationAmount, ModulationDestination, ModulationOutputId,
-    ModulationRange, ModulationRouteId, ModulationSourceId, Modulator, NativeSource,
-    NativeSourceSnapshot, OriginalSourceFacts, Project, ReturnFeed, ReturnFeedSnapshot,
-    ReturnTrack, ReturnTrackSnapshot, RoutingOwner, SampleRateMode, SendLevelSnapshot,
-    SidechainRoute, SidechainRouteSnapshot, Tempo, TempoPoint, Track, TrackContentSnapshot,
-    TrackId, TrackKind, TrackSnapshot,
+    DeviceModulationRoute, DeviceOutputDestination, DeviceOutputRoute, DeviceOutputRouteSnapshot,
+    DeviceSnapshot, DeviceVariant, ElementColor, GainInterpolation, GainPoint, GainTouchContext,
+    GainTouchSpan, GainTouchStep, GroupOutputMuteRange, ImportProvenance, LoopRegion,
+    MAX_ARRANGEMENT_LOCATORS, MAX_ARRANGEMENT_SECTIONS, MAX_AUDIO_FEEDS, MAX_CLIPS,
+    MAX_DEVICE_AUTOMATION_LANES, MAX_DEVICE_AUTOMATION_POINTS_PER_LANE,
+    MAX_DEVICE_AUTOMATION_TOUCH_SPANS, MAX_DEVICE_AUTOMATION_TOUCH_STEPS_PER_LANE,
+    MAX_DEVICE_OUTPUT_ROUTES, MAX_DEVICES, MAX_DEVICES_PER_TRACK, MAX_GAIN_POINTS_PER_TRACK,
+    MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, MAX_GROUP_OUTPUT_MUTE_RANGES,
+    MAX_IMPORT_DOCUMENT_BYTES, MAX_MIDI_ROUTES, MAX_MODULATION_ROUTES_PER_DEVICE,
+    MAX_MODULATORS_PER_DEVICE, MAX_PROJECT_MODULATOR_STATE_BYTES, MAX_RETURN_FEEDS,
+    MAX_RETURN_SENDS_PER_TRACK, MAX_SIDECHAIN_ROUTES, MAX_SOURCE_DEVICES, MAX_TRACK_TAGS, Meter,
+    MeterPoint, MidiRoute, MidiRouteSnapshot, ModulationAmount, ModulationDestination,
+    ModulationOutputId, ModulationRange, ModulationRouteId, ModulationSourceId, Modulator,
+    NativeSource, NativeSourceSnapshot, OriginalSourceFacts, Project, ReturnFeed,
+    ReturnFeedSnapshot, ReturnTrack, ReturnTrackSnapshot, RoutingOwner, SampleRateMode,
+    SendLevelSnapshot, SidechainRoute, SidechainRouteSnapshot, Tempo, TempoPoint, Track,
+    TrackContentSnapshot, TrackId, TrackKind, TrackSnapshot,
 };
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
@@ -1726,6 +1727,42 @@ impl From<SidechainDto> for SidechainRouteSnapshot {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct DeviceOutputRouteDto {
+    device: u64,
+    bus_index: u16,
+    destination: RoutingOwnerDto,
+}
+
+impl From<&DeviceOutputRoute> for DeviceOutputRouteDto {
+    fn from(r: &DeviceOutputRoute) -> Self {
+        Self {
+            device: r.device.value(),
+            bus_index: r.bus_index,
+            destination: match r.destination {
+                DeviceOutputDestination::Track(id) => RoutingOwnerDto::Track { id: id.value() },
+                DeviceOutputDestination::Return(id) => RoutingOwnerDto::Return { id: id.value() },
+                DeviceOutputDestination::Main => RoutingOwnerDto::Main,
+            },
+        }
+    }
+}
+
+impl From<DeviceOutputRouteDto> for DeviceOutputRouteSnapshot {
+    fn from(r: DeviceOutputRouteDto) -> Self {
+        Self {
+            device: r.device,
+            bus_index: r.bus_index,
+            destination: match r.destination {
+                RoutingOwnerDto::Track { id } => RoutingOwner::track_from_raw(id),
+                RoutingOwnerDto::Return { id } => RoutingOwner::return_from_raw(id),
+                RoutingOwnerDto::Main => RoutingOwner::Main,
+            },
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub(super) struct SectionSer<'a> {
     id: u64,
@@ -2087,6 +2124,12 @@ pub(super) fn read_sidechains<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> Result<Vec<SidechainDto>, D::Error> {
     bounded(d, MAX_SIDECHAIN_ROUTES)
+}
+
+pub(super) fn read_device_output_routes<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<DeviceOutputRouteDto>, D::Error> {
+    bounded(d, MAX_DEVICE_OUTPUT_ROUTES)
 }
 
 pub(super) fn read_sections<'de, D: serde::Deserializer<'de>>(

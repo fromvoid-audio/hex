@@ -134,6 +134,7 @@ pub fn project(
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
         sidechains: Vec::new(),
+        device_output_routes: Vec::new(),
         import_provenance: None,
         sample_rate: SAMPLE_RATE,
         sample_rate_mode: Default::default(),

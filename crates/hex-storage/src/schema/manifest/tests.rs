@@ -1262,10 +1262,123 @@ fn schema_132_round_trips_track_midi_processors_migrates_legacy_and_refuses_down
     let downgraded = serde_json::to_vec(&json).unwrap();
     assert!(crate::decode(&downgraded).is_err());
 
-    // Schema 133 is refused as newer.
-    json["version"] = serde_json::json!(crate::MIDI_PROCESSOR_SCHEMA_VERSION + 1);
+    // Schema newer than NEWEST_SCHEMA_VERSION is refused as newer.
+    json["version"] = serde_json::json!(crate::NEWEST_SCHEMA_VERSION + 1);
     let newer = serde_json::to_vec(&json).unwrap();
     assert!(crate::decode(&newer).is_err());
+}
+
+#[test]
+fn schema_133_round_trips_device_output_routes_preserves_schema_132_and_refuses_downgrade() {
+    use hex_project::{Command, Created, DeviceOutputDestination, Editor, TrackDeviceSlot};
+
+    // A Schema 132 project without device_output_routes stays at Schema 132 on save and opens cleanly.
+    let mut legacy_editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Track(inst_track) = legacy_editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "drums".into(),
+            before_track: None,
+            slot: TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("instrument track");
+    };
+    let Created::Track(kick_track) = legacy_editor
+        .execute(Command::AddTrack {
+            name: "kick".into(),
+        })
+        .unwrap()
+    else {
+        panic!("kick track");
+    };
+    let Created::ReturnTrack(room_return) = legacy_editor
+        .execute(Command::AddReturnTrack {
+            name: "room".into(),
+        })
+        .unwrap()
+    else {
+        panic!("room return");
+    };
+    let legacy_bytes = crate::encode(legacy_editor.project()).unwrap();
+    assert!(
+        crate::schema_version_for(legacy_editor.project())
+            < crate::DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION
+    );
+    assert_eq!(
+        crate::decode(&legacy_bytes).unwrap(),
+        *legacy_editor.project()
+    );
+
+    // Adding canonical multi-output routes promotes to Schema 133 with `device_output_routes`.
+    let device = legacy_editor
+        .project()
+        .track(inst_track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .id();
+    legacy_editor
+        .execute(Command::SetDeviceOutputRoute {
+            device,
+            bus_index: 1,
+            destination: Some(DeviceOutputDestination::Track(kick_track)),
+        })
+        .unwrap();
+    legacy_editor
+        .execute(Command::SetDeviceOutputRoute {
+            device,
+            bus_index: 3,
+            destination: Some(DeviceOutputDestination::Return(room_return)),
+        })
+        .unwrap();
+    legacy_editor
+        .execute(Command::SetDeviceOutputRoute {
+            device,
+            bus_index: 0,
+            destination: Some(DeviceOutputDestination::Main),
+        })
+        .unwrap();
+
+    let project = legacy_editor.project();
+    assert_eq!(
+        crate::schema_version_for(project),
+        crate::DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION
+    );
+    let encoded = crate::encode(project).unwrap();
+    let mut json: Value = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(json["version"], crate::DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION);
+    let caps = json["capabilities"].as_array().unwrap();
+    assert!(caps.iter().any(|c| c == "device_output_routes"));
+
+    let decoded = crate::decode(&encoded).unwrap();
+    assert_eq!(&decoded, project);
+    assert_eq!(decoded.device_output_routes().len(), 3);
+    assert_eq!(decoded.device_output_routes()[0].bus_index, 0);
+    assert_eq!(
+        decoded.device_output_routes()[1].destination,
+        DeviceOutputDestination::Track(kick_track)
+    );
+    assert_eq!(
+        decoded.device_output_routes()[2].destination,
+        DeviceOutputDestination::Return(room_return)
+    );
+
+    // Schema 132 must refuse device_output_routes capability/payloads cleanly.
+    let mut downgraded = json.clone();
+    downgraded["version"] = serde_json::json!(crate::MIDI_PROCESSOR_SCHEMA_VERSION);
+    assert!(crate::decode(&serde_json::to_vec(&downgraded).unwrap()).is_err());
+
+    // Malformed out-of-range bus_index is refused cleanly.
+    let mut malformed = json.clone();
+    malformed["project"]["device_output_routes"][0]["bus_index"] =
+        serde_json::json!(hex_project::MAX_DEVICE_OUTPUT_BUSES);
+    assert!(crate::decode(&serde_json::to_vec(&malformed).unwrap()).is_err());
+
+    // Schema 134 is refused as newer.
+    json["version"] = serde_json::json!(crate::DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION + 1);
+    assert!(crate::decode(&serde_json::to_vec(&json).unwrap()).is_err());
 }
 
 #[test]

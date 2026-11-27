@@ -465,6 +465,7 @@ impl Project {
         if self.audio_feeds.is_empty()
             && self.midi_routes.is_empty()
             && self.sidechains.is_empty()
+            && self.device_output_routes.is_empty()
             && !self.has_custom_track_io()
         {
             return Ok(());
@@ -593,6 +594,26 @@ impl Project {
                 RoutingOwner::Track(route.source),
                 self.sidechain_destination(route.device)?,
             ));
+        }
+        for route in &self.device_output_routes {
+            let source = self.device_output_source_owner(route.device)?;
+            let target = route.destination.into_routing_owner();
+            if target == source {
+                return Err(Invalid("routing cycles are unsupported"));
+            }
+            match route.destination {
+                crate::DeviceOutputDestination::Track(id) => {
+                    self.track(id)
+                        .ok_or(Invalid("output destination track no longer exists"))?;
+                }
+                crate::DeviceOutputDestination::Return(id) => {
+                    if !self.returns.iter().any(|bus| bus.id() == id) {
+                        return Err(Invalid("output destination return no longer exists"));
+                    }
+                }
+                crate::DeviceOutputDestination::Main => {}
+            }
+            audio.insert((source, target));
         }
         Ok(audio)
     }

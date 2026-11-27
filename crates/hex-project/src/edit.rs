@@ -274,6 +274,7 @@ impl Project {
             device_command @ (Command::SetRouting(..)
             | Command::SetAudioFeed { .. }
             | Command::SetSidechain { .. }
+            | Command::SetDeviceOutputRoute { .. }
             | Command::SetMidiSource { .. }
             | Command::AssignTrackAudioInput { .. }
             | Command::SetTrackOutput { .. }

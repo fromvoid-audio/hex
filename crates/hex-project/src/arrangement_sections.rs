@@ -268,6 +268,7 @@ impl Project {
             audio_feeds,
             midi_routes,
             sidechains,
+            device_output_routes,
             import_provenance,
             sample_rate,
             sample_rate_mode,
@@ -297,6 +298,7 @@ impl Project {
             && *audio_feeds == other.audio_feeds
             && *midi_routes == other.midi_routes
             && *sidechains == other.sidechains
+            && *device_output_routes == other.device_output_routes
             && *import_provenance == other.import_provenance
             && *assets == other.assets
             && *offline_assets == other.offline_assets

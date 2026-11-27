@@ -532,6 +532,11 @@ pub(super) fn command(value: &Command) -> Description {
         Command::SetSidechain { device, source } => {
             describe!("set_sidechain"; ["device" => device.value(), "source" => source.map(|id| id.value())]; omitted="")
         }
+        Command::SetDeviceOutputRoute {
+            device, bus_index, ..
+        } => {
+            describe!("set_device_output_route"; ["device" => device.value(), "bus_index" => bus_index]; omitted="destination")
+        }
         Command::SetMidiSource {
             destination,
             source,

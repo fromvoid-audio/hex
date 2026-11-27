@@ -38,6 +38,11 @@ pub use midi::{
     MAX_NOTE_PITCH_OFFSET_CENTS, MIN_NOTE_PITCH_OFFSET_CENTS, MidiExpressionLane, MidiLaneKind,
     MidiLanePoint, NoteExpression, NoteExpressionPoint,
 };
+mod device_output_routing;
+pub use device_output_routing::{
+    DeviceOutputDestination, DeviceOutputRoute, DeviceOutputRouteSnapshot, MAX_DEVICE_OUTPUT_BUSES,
+    MAX_DEVICE_OUTPUT_ROUTES,
+};
 mod sidechain;
 pub use sidechain::{MAX_SIDECHAIN_ROUTES, SidechainRoute, SidechainRouteSnapshot};
 mod arrangement_locators;
@@ -887,6 +892,7 @@ pub struct Project {
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
     pub(crate) sidechains: Vec<SidechainRoute>,
+    pub(crate) device_output_routes: Vec<DeviceOutputRoute>,
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) sample_rate_mode: SampleRateMode,
@@ -921,6 +927,7 @@ impl Project {
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
             sidechains: Vec::new(),
+            device_output_routes: Vec::new(),
             sample_rate,
             sample_rate_mode: SampleRateMode::Fixed,
             next_id: 1,
@@ -955,6 +962,7 @@ impl Project {
             audio_feeds,
             midi_routes,
             sidechains,
+            device_output_routes,
             import_provenance,
             sample_rate,
             sample_rate_mode,
@@ -978,6 +986,7 @@ impl Project {
             && audio_feeds == &other.audio_feeds
             && midi_routes == &other.midi_routes
             && sidechains == &other.sidechains
+            && device_output_routes == &other.device_output_routes
             && import_provenance == &other.import_provenance
             && sample_rate == &other.sample_rate
             && sample_rate_mode == &other.sample_rate_mode

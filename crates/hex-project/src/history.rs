@@ -587,6 +587,7 @@ impl Editor {
             }
             _ => {
                 candidate.prune_deleted_sidechains();
+                candidate.prune_deleted_device_output_routes();
                 if alias_changed {
                     candidate.validate_aliases()?;
                 }
@@ -671,6 +672,7 @@ impl Editor {
             }
             _ => {
                 candidate.prune_deleted_sidechains();
+                candidate.prune_deleted_device_output_routes();
                 if alias_changed {
                     candidate.validate_aliases()?;
                 }
@@ -832,6 +834,7 @@ impl Editor {
                 let alias_plan = crate::clip_alias_edit::Plan::capture(&candidate, &mut command)?;
                 results.push(candidate.apply(command)?);
                 candidate.prune_deleted_sidechains();
+                candidate.prune_deleted_device_output_routes();
                 alias_changed |= alias_plan.finish(&mut candidate)?;
             }
             if alias_changed {
