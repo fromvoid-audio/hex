@@ -397,3 +397,89 @@ fn canonical_chord_midi_processor_fanout_voicing_edit_and_bypass_allocate_nothin
     drop(rev_major);
     drop(table);
 }
+
+#[test]
+fn canonical_velocity_midi_processor_mapping_live_edit_and_bypass_allocate_nothing_on_callback() {
+    let (mut editor, track, _session_clip) = build_project();
+    let fixed = hex_devices::midi_velocity::VelocitySettings {
+        mode: hex_devices::midi_velocity::VelocityMode::Fixed,
+        out_high: 100,
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    let Created::Device(vel_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: fixed,
+        })
+        .unwrap()
+    else {
+        panic!("expected velocity processor id");
+    };
+
+    let table = Arc::new(SineTable::new());
+    let rev_fixed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let gated = hex_devices::midi_velocity::VelocitySettings {
+        mode: hex_devices::midi_velocity::VelocityMode::Gate,
+        lowest: 60,
+        range: 67,
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: vel_id,
+            state: gated,
+        })
+        .unwrap();
+    let rev_gated = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: vel_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_fixed)).unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&rev_gated)).unwrap();
+    let mut bypassed = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        next.try_inherit_state_from(&mut active).unwrap();
+        next.render(&mut buf).unwrap();
+        bypassed.try_inherit_state_from(&mut next).unwrap();
+        bypassed.render(&mut buf).unwrap();
+        bypassed.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(bypassed);
+    drop(next);
+    drop(active);
+    drop(rev_bypassed);
+    drop(rev_gated);
+    drop(rev_fixed);
+    drop(table);
+}
