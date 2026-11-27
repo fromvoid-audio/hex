@@ -1778,3 +1778,155 @@ fn timed_future_midi_events_match_pcm_oracle_across_partitions_tempo_change_loop
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn canonical_note_length_device_matches_pcm_oracle_across_sync_tempo_trigger_and_live_edits() {
+    use hex_devices::midi_note_length::{NoteLengthMode, NoteLengthSettings, NoteLengthTrigger};
+    use hex_project::Tempo;
+
+    // 1. Sync mode (1/64 = 1/16 beat, gate 50% -> 1/32 beat) with a tempo jump 120 -> 240 BPM at 1/64 beat!
+    // Authored note is short (1/128 beat), Note Length stretches it to exact 1/32 beat across the tempo step.
+    let (mut editor, track) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 128), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 128), 64, 100),
+    ]);
+    let (mut oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 100),
+    ]);
+    for ed in [&mut editor, &mut oracle_editor] {
+        ed.execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 64),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    }
+
+    let sync_50 = NoteLengthSettings {
+        trigger: NoteLengthTrigger::NoteOn,
+        mode: NoteLengthMode::Sync,
+        sync_rate: 0, // 1/64 note = 1/16 beat
+        gate_percent: 50,
+        ..Default::default()
+    };
+    let Created::Device(nl_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: sync_50.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected note length processor id");
+    };
+
+    let rev_50 = prepare_revision(editor.project());
+    let total_frames = 2_600_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_50)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        pb.render(&mut actual[cursor..cursor + len]).unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Live mid-note edit (gate 50% -> 100%) while Note 1 is held:
+    // Note 1 keeps its already-scheduled 1/32 beat duration; Note 2 uses 1/16 beat!
+    let sync_100 = NoteLengthSettings {
+        gate_percent: 100,
+        ..sync_50
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: nl_id,
+            state: sync_100.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_100 = prepare_revision(editor.project());
+
+    let (mut mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 16), 64, 100),
+    ]);
+    mixed_oracle_editor
+        .execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 64),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(rev_50).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..256]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_100).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[256..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 3. Trigger::NoteOff starts generated note at incoming NoteOff (beat 1/64) for 1/32 beat!
+    let (mut off_editor, off_track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 64), 60, 105)]);
+    let off_settings = NoteLengthSettings {
+        trigger: NoteLengthTrigger::NoteOff,
+        mode: NoteLengthMode::Sync,
+        sync_rate: 0,
+        gate_percent: 50,
+        ..Default::default()
+    };
+    off_editor
+        .execute(Command::InsertMidiProcessor {
+            track: off_track,
+            state: off_settings.encode().unwrap(),
+        })
+        .unwrap();
+    let (off_oracle_editor, _) =
+        build_subtractive_project(&[(beat_frac(1, 64), beat_frac(1, 32), 60, 105)]);
+    let mut off_oracle =
+        SessionPlayback::new(prepare_revision(off_oracle_editor.project())).unwrap();
+    off_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_off = vec![[0.0_f32; 2]; 2_000];
+    off_oracle.render(&mut expected_off).unwrap();
+
+    let mut off_pb = SessionPlayback::new(prepare_revision(off_editor.project())).unwrap();
+    off_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_off = vec![[0.0_f32; 2]; 2_000];
+    for chunk in actual_off.chunks_mut(128) {
+        off_pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual_off, expected_off);
+    assert!(
+        off_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
