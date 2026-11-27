@@ -315,7 +315,12 @@ fn definition_is_admitted_by_builtin_and_explicit_registries() {
             .definition(hex_lattice::DRUM_RACK_TYPE_ID)
             .is_some()
     );
-    assert_eq!(builtins.definitions().len(), 7);
+    assert!(
+        builtins
+            .definition(crate::wavetable::WAVETABLE_TYPE_ID)
+            .is_some()
+    );
+    assert_eq!(builtins.definitions().len(), 8);
 }
 
 #[test]
