@@ -84,10 +84,8 @@ impl CandidateRoot {
             .0
             .eligible
             .with_live_capture(captured.binding(), |owner| match owner {
-                Owner::Effect(effect) => effect.approve_captured_state_on_control(captured.state()),
-                Owner::Loaned(control) => {
-                    control.approve_captured_state_on_control(captured.state())
-                }
+                Owner::Effect(effect) => effect.approve_manual_base_on_control(captured),
+                Owner::Loaned(control) => control.approve_manual_base_on_control(captured),
                 _ => Err("native captured state source is unavailable"),
             })?;
         self.require_native_source_control_open()?;

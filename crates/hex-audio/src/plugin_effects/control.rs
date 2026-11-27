@@ -549,6 +549,7 @@ impl NativeEffectControl {
         }
         callback.configuration.program_revision = self.configuration.program_revision;
         callback.configuration.authored = self.configuration.authored;
+        callback.configuration.manual_persistence = self.configuration.manual_persistence;
         Ok(NativeEffect {
             worker: self.worker,
             callback,

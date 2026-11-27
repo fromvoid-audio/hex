@@ -613,6 +613,7 @@ impl NativeDeviceDefinition for NativeEffectDefinition<'_> {
             )
             .map(|mut source| {
                 source.dense_parameters = effect.dense_raw_id.as_slice();
+                source.unpersisted_parameters = effect.manual_persistence.unpersisted_slice();
                 source
             }))
     }

@@ -231,6 +231,7 @@ fn running_main_off_requires_the_exact_real_512_frame_source_facts() {
             },
             authored: Default::default(),
             dense_raw_id: None,
+            manual_persistence: Default::default(),
             program_revision: std::num::NonZeroU64::new(1).unwrap(),
             state_verifier: None,
         };
