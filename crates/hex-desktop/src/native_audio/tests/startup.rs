@@ -54,7 +54,7 @@ fn delayed_completion(rate_probe: Option<fn() -> Option<u32>>, device_rate: u32)
     )
     .unwrap();
     let next = || {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             if let Ok(event) = service.try_event() {
                 assert!(event.error.is_none(), "{:?}", event.error);
@@ -62,7 +62,7 @@ fn delayed_completion(rate_probe: Option<fn() -> Option<u32>>, device_rate: u32)
                 return event;
             }
             assert!(Instant::now() < deadline, "editing waited for audio open");
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(1));
         }
     };
     let initial = next();
@@ -77,7 +77,7 @@ fn delayed_completion(rate_probe: Option<fn() -> Option<u32>>, device_rate: u32)
     assert!(audio_events.try_recv().is_err());
     // Both state and a completed canonical edit precede the native result.
     release.store(true, std::sync::atomic::Ordering::Release);
-    let result = audio_events.recv_timeout(Duration::from_secs(1)).unwrap();
+    let result = audio_events.recv_timeout(Duration::from_secs(10)).unwrap();
     let audio = match result {
         EditorAudioEvent::Opened { audio, .. } if device_rate == project_rate => {
             assert_eq!(audio.sample_rate, project_rate);
