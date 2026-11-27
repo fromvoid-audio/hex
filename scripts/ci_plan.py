@@ -456,7 +456,10 @@ UI_DEFAULT_LIB_UNIT_MODULES: dict[str, tuple[str, ...]] = {
     "src/editor/device_panel/operator_panel/envelope.rs": ("editor::device_panel::operator_panel::envelope::tests::",),
     "src/editor/device_panel/operator_panel/filter_response.rs": ("editor::device_panel::operator_panel::filter_response::tests::",),
     "src/editor/device_panel/operator_panel/harmonics.rs": ("editor::device_panel::operator_panel::harmonics::tests::",),
+    "src/editor/device_panel/operator_panel/lfo_editor.rs": ("editor::device_panel::operator_panel::lfo_editor::tests::",),
+    "src/editor/device_panel/operator_panel/pitch_page.rs": ("editor::device_panel::operator_panel::pitch_page::tests::",),
     "src/editor/device_panel/operator_panel/waveform_editor.rs": ("editor::device_panel::operator_panel::waveform_editor::tests::",),
+    "src/editor/device_panel/package_panel.rs": ("editor::device_panel::package_panel::tests::",),
     "src/editor/tracks.rs": ("editor::tracks::midi_trim_unit_tests::",),
     "src/editor/pending_clip_move.rs": ("editor::pending_clip_move::tests::",),
     "src/editor/midi_loop.rs": ("editor::midi_ruler::loop_brace::tests::",),
@@ -783,6 +786,12 @@ UI_MODULE_TEST_DEPENDENCIES = {
     ),
     "editor::device_panel::operator_panel::algorithms::": (
         "editor::device_panel::tests::operator_algorithm_ui_tests::",
+    ),
+    "editor::device_panel::operator_panel::lfo_editor::": (
+        "editor::device_panel::tests::operator_navigation_tests::lfo_slot_editor_exposes_waveform_extended_params_and_routes_with_undo",
+    ),
+    "editor::device_panel::operator_panel::pitch_page::": (
+        "editor::device_panel::tests::operator_navigation_tests::pitch_page_binds_bipolar_envelope_transpose_spread_and_destinations_with_undo",
     ),
     "editor::device_panel::operator_panel::waveform_editor::": (
         "editor::device_panel::tests::operator_waveform_editor_tests::",
