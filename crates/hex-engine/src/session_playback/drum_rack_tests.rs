@@ -7,7 +7,8 @@ use hex_lattice::{
     NativeInstrumentRegistry,
 };
 use hex_lattice_contract::{
-    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceState, ParameterValue,
+    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceMetadata, NativeDeviceState,
+    ParameterValue,
 };
 use hex_project::{BeatTime, Command, Created, Editor, Project, SourceId, TrackId};
 use std::{
@@ -252,6 +253,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_matches_exact_summed_pcm_and_choke_
                     choke_group: None,
                     gain: 0.75,
                     muted: false,
+                    output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                     state: Some(sampler_pad_state(asset)),
                 },
                 DrumRackPadSpec {
@@ -263,6 +265,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_matches_exact_summed_pcm_and_choke_
                     choke_group: None,
                     gain: 0.5,
                     muted: false,
+                    output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                     state: Some(subtractive_pad_state()),
                 },
             ],
@@ -415,6 +418,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_matches_exact_summed_pcm_and_choke_
                 choke_group: NonZeroU8::new(1),
                 gain: 0.75,
                 muted: false,
+                output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                 state: Some(sampler_pad_state(asset)),
             },
             DrumRackPadSpec {
@@ -426,6 +430,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_matches_exact_summed_pcm_and_choke_
                 choke_group: NonZeroU8::new(1),
                 gain: 0.5,
                 muted: false,
+                output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                 state: Some(subtractive_pad_state()),
             },
         ],
@@ -484,6 +489,7 @@ fn live_drum_rack_pad_rename_remap_removal_undo_redo_and_snapshot_roundtrip() {
                         choke_group: None,
                         gain: 1.0,
                         muted: false,
+                        output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                         state: Some(sampler_pad_state(asset)),
                     },
                     DrumRackPadSpec {
@@ -495,6 +501,7 @@ fn live_drum_rack_pad_rename_remap_removal_undo_redo_and_snapshot_roundtrip() {
                         choke_group: None,
                         gain: 0.5,
                         muted: false,
+                        output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                         state: Some(subtractive_pad_state()),
                     },
                 ],
@@ -616,4 +623,302 @@ fn live_drum_rack_pad_rename_remap_removal_undo_redo_and_snapshot_roundtrip() {
     let mut stopped = [[0.0_f32; 2]; 128];
     pb_b.render(&mut stopped).unwrap();
     assert!(stopped.iter().all(|f| f[0] == 0.0 && f[1] == 0.0));
+}
+
+#[test]
+fn two_pad_multi_output_drum_rack_sampler_main_and_subtractive_aux_oracle_choke_and_migration() {
+    use hex_lattice::{
+        DRUM_RACK_STATE_VERSION, DRUM_RACK_STATE_VERSION_V1, DevicePreparationContext,
+        MultiOutputDestinationBuffer, MultiOutputInstrumentRuntime, NativeInstrumentEvent,
+        NativeMultiOutputLimits, NativeMultiOutputPlan, NativeMultiOutputRoute,
+        NativeMultiOutputTopology, NativeOutputDestination, NativeOutputDestinationInfo,
+        NativeOutputPortId, PreparedMultiOutputRouter, TuningTable,
+    };
+
+    let (mut editor, store, asset, source, _track_a, _track_b) =
+        build_shared_drum_project(|asset| {
+            DrumRackSpec {
+                rack_id: id(30),
+                gain: 1.0,
+                pads: vec![
+                    DrumRackPadSpec {
+                        pad_id: id(1),
+                        device_id: id(301),
+                        name: "kick-main".into(),
+                        receive_note: 36,
+                        play_note: 60,
+                        choke_group: None,
+                        gain: 0.75,
+                        muted: false,
+                        output_port: NativeOutputPortId::MAIN_STEREO,
+                        state: Some(sampler_pad_state(asset)),
+                    },
+                    DrumRackPadSpec {
+                        pad_id: id(2),
+                        device_id: id(302),
+                        name: "snare-aux".into(),
+                        receive_note: 38,
+                        play_note: 64,
+                        choke_group: None,
+                        gain: 0.5,
+                        muted: false,
+                        output_port: NativeOutputPortId::AUX_STEREO,
+                        state: Some(subtractive_pad_state()),
+                    },
+                ],
+            }
+            .encode_state()
+            .unwrap()
+        });
+
+    let builtin = hex_devices::native_instrument_registry().unwrap();
+    let drum_def = DrumRackDefinition::new(&builtin).unwrap();
+    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
+    defs.push(&drum_def);
+    let instruments = NativeInstrumentRegistry::new(&defs).unwrap();
+    let cancel = AtomicBool::new(false);
+    let resources = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        20_000_000,
+        &cancel,
+    )
+    .unwrap();
+    let views = [hex_lattice::DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: hex_lattice::DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            content: [7_u8; 32],
+            derivation_version: 1,
+            derivation: [1_u8; 32],
+        },
+        sample_rate: RATE,
+        pcm: hex_lattice::DeviceResourcePcm::Stereo(&KICK_PCM),
+    }];
+    let borrowed_resources = hex_lattice::BorrowedDeviceResources(&views);
+    let tuning = TuningTable::default();
+    let ctx = DevicePreparationContext {
+        sample_rate: RATE,
+        tuning: &tuning,
+        resources: &borrowed_resources,
+    };
+
+    let rack_state = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .state()
+        .clone();
+    let prepared_mo = drum_def
+        .prepare_multi_output_runtime(&rack_state, &ctx, None)
+        .unwrap();
+    let ports = prepared_mo.output_port_descriptors();
+    assert_eq!(ports.len(), 2);
+
+    let mut drum_rt = prepared_mo.create_runtime();
+
+    // Isolated Sampler oracle (pitch 60, vel 110) and isolated Subtractive oracle (pitch 64, vel 95).
+    let sampler_state = sampler_pad_state(asset);
+    let mut sampler_rt = builtin
+        .prepare_instrument(&sampler_state, &ctx)
+        .unwrap()
+        .prepare_mutable_runtime()
+        .unwrap()
+        .unwrap()
+        .create_runtime();
+    let sub_state = subtractive_pad_state();
+    let sub_ctx = DevicePreparationContext {
+        sample_rate: RATE,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    let mut sub_rt = builtin
+        .prepare_instrument(&sub_state, &sub_ctx)
+        .unwrap()
+        .prepare_mutable_runtime()
+        .unwrap()
+        .unwrap()
+        .create_runtime();
+
+    let source_nz = id(source.value());
+    let topology = NativeMultiOutputTopology {
+        source_host: NativeOutputDestination::Track(id(1)),
+        destinations: vec![
+            NativeOutputDestinationInfo {
+                destination: NativeOutputDestination::Track(id(2)),
+                latency_frames: 0,
+            },
+            NativeOutputDestinationInfo {
+                destination: NativeOutputDestination::Return(id(10)),
+                latency_frames: 0,
+            },
+        ],
+        edges: Vec::new(),
+    };
+    let plan = NativeMultiOutputPlan {
+        source_id: source_nz,
+        routes: vec![
+            NativeMultiOutputRoute {
+                route_id: id(1),
+                source_id: source_nz,
+                port_id: NativeOutputPortId::MAIN_STEREO,
+                destination: NativeOutputDestination::Track(id(2)),
+                gain: 1.0,
+                enabled: true,
+            },
+            NativeMultiOutputRoute {
+                route_id: id(2),
+                source_id: source_nz,
+                port_id: NativeOutputPortId::AUX_STEREO,
+                destination: NativeOutputDestination::Return(id(10)),
+                gain: 1.0,
+                enabled: true,
+            },
+        ],
+    };
+    let mut router = PreparedMultiOutputRouter::prepare_on_control(
+        &plan,
+        ports,
+        &topology,
+        NativeMultiOutputLimits::default(),
+    )
+    .unwrap();
+
+    // Render 512 frames: kick (36) at frame 0, snare (38) at frame 128.
+    let drum_events = [
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 36,
+            velocity: 110,
+        },
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 128,
+            occurrence_id: 2,
+            pitch: 38,
+            velocity: 95,
+        },
+    ];
+    let mut port_main = [[0.0_f32; 2]; 512];
+    let mut port_aux = [[0.0_f32; 2]; 512];
+    drum_rt
+        .process_block_multi_output(
+            &drum_events,
+            &mut [&mut port_main, &mut port_aux],
+            None,
+            &borrowed_resources,
+        )
+        .unwrap();
+
+    let mut dest_track = [[0.0_f32; 2]; 512];
+    let mut dest_return = [[0.0_f32; 2]; 512];
+    router.begin_block();
+    router
+        .route_ports(
+            &[&port_main, &port_aux],
+            &mut [
+                MultiOutputDestinationBuffer {
+                    destination: NativeOutputDestination::Track(id(2)),
+                    frames: &mut dest_track,
+                },
+                MultiOutputDestinationBuffer {
+                    destination: NativeOutputDestination::Return(id(10)),
+                    frames: &mut dest_return,
+                },
+            ],
+        )
+        .unwrap();
+    router.commit_block();
+
+    let mut oracle_main = [[0.0_f32; 2]; 512];
+    sampler_rt.process_block(
+        &[NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 110,
+        }],
+        &mut oracle_main,
+        &borrowed_resources,
+    );
+    drop(resources);
+    let mut oracle_aux = [[0.0_f32; 2]; 512];
+    sub_rt.process_block(
+        &[NativeInstrumentEvent::NoteOn {
+            frame_offset: 128,
+            occurrence_id: 2,
+            pitch: 64,
+            velocity: 95,
+        }],
+        &mut oracle_aux,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    );
+
+    // Exact per-destination PCM oracle: Track(2) == 0.75 * Sampler (zero Subtractive leakage);
+    // Return(10) == 0.5 * Subtractive (zero Sampler leakage, silence before frame 128)!
+    assert!(
+        dest_return[..128]
+            .iter()
+            .all(|f| f[0] == 0.0 && f[1] == 0.0)
+    );
+    let mut err_main = 0.0_f32;
+    let mut err_aux = 0.0_f32;
+    for i in 0..512 {
+        err_main = err_main
+            .max((dest_track[i][0] - oracle_main[i][0] * 0.75).abs())
+            .max((dest_track[i][1] - oracle_main[i][1] * 0.75).abs());
+        err_aux = err_aux
+            .max((dest_return[i][0] - oracle_aux[i][0] * 0.5).abs())
+            .max((dest_return[i][1] - oracle_aux[i][1] * 0.5).abs());
+    }
+    assert!(err_main < 1e-6, "main dest mismatch: {err_main}");
+    assert!(err_aux < 1e-6, "aux dest mismatch: {err_aux}");
+
+    // Canonical Editor Undo/Redo + Snapshot save/reopen preserve pad output_port assignments,
+    // and historical v1 HXDR projects migrate cleanly to v2.
+    let source_device = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    let mut v1_spec = DrumRackSpec::decode_state(&rack_state).unwrap();
+    v1_spec
+        .set_pad_output_port(id(2), NativeOutputPortId::MAIN_STEREO)
+        .unwrap();
+    let v1_bytes = v1_spec.encode_state_v1().unwrap();
+    assert_eq!(v1_bytes.state_version(), DRUM_RACK_STATE_VERSION_V1);
+    let migrated = drum_def.migrate_state(&v1_bytes).unwrap();
+    assert_eq!(migrated.state_version(), DRUM_RACK_STATE_VERSION);
+
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: source_device,
+            state: migrated,
+        })
+        .unwrap();
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    let reopened_spec =
+        DrumRackSpec::decode_state(reopened.native_source(source).unwrap().instrument().state())
+            .unwrap();
+    assert_eq!(
+        reopened_spec.pads[1].output_port,
+        NativeOutputPortId::MAIN_STEREO
+    );
+    assert!(editor.undo());
+    let undone_spec = DrumRackSpec::decode_state(
+        editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .state(),
+    )
+    .unwrap();
+    assert_eq!(
+        undone_spec.pads[1].output_port,
+        NativeOutputPortId::AUX_STEREO
+    );
 }
