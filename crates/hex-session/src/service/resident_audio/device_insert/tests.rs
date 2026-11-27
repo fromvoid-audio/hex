@@ -2560,6 +2560,8 @@ fn resident_device_graph_edits_and_history_defer_while_publication_is_pending() 
         Request::Edit(Command::RemoveDevice(device)),
         Request::Undo,
         Request::Redo,
+        Request::RestorePlayback { generation: 1 },
+        Request::RepublishPausedPlayback,
     ] {
         assert!(
             defers_behind_resident_publication(&deferred),

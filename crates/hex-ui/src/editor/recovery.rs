@@ -1124,6 +1124,17 @@ impl EditorView {
             return true;
         }
         if let Some(position) = self.audio_pub.recovery.seek_needed(graph_is_current) {
+            let publication_busy = self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.status())
+                .is_some_and(|status| status.publication_in_flight())
+                || self.audio_pub.pending_playback.is_some()
+                || self.audio_pub.pending_resident_publication.is_some()
+                || !self.audio_pub.playback_candidates.is_empty();
+            if publication_busy {
+                return false;
+            }
             let prepared = position != 0
                 && self.current_seek_requires_preroll() == Some(true)
                 && self
@@ -1144,11 +1155,7 @@ impl EditorView {
                             })
                     })
                 });
-                if !source_ready
-                    || self.audio_pub.pending_playback.is_some()
-                    || self.audio_pub.pending_resident_publication.is_some()
-                    || !self.audio_pub.playback_candidates.is_empty()
-                {
+                if !source_ready {
                     return false;
                 }
                 let Some(generation) = self.audio_pub.recovery.generation() else {

@@ -37,6 +37,8 @@ impl<C, D> Default for RecoveryState<C, D> {
     }
 }
 
+const MAX_BUSY_SEEK_RETRIES: u8 = 4;
+
 struct Attempt<C> {
     generation: u64,
     position: u64,
@@ -45,6 +47,7 @@ struct Attempt<C> {
     seek_ticket: Option<u64>,
     seek_outcome: Option<SeekOutcome>,
     seek_position: Option<u64>,
+    busy_seek_retries: u8,
     prepared_retry_used: bool,
     prepared_seek: Option<u64>,
     prepared_revision: Option<u64>,
@@ -95,6 +98,7 @@ impl<C: Copy + PartialEq, D> RecoveryState<C, D> {
             seek_ticket: None,
             seek_outcome: None,
             seek_position: None,
+            busy_seek_retries: 0,
             prepared_retry_used: false,
             prepared_seek: None,
             prepared_revision: None,
@@ -171,6 +175,24 @@ impl<C: Copy + PartialEq, D> RecoveryState<C, D> {
         {
             attempt.seek_outcome = Some(outcome);
         }
+    }
+
+    /// Re-arm the recovery seek after a transient `StreamActionBusy` rejection
+    /// (for example when a post-restart publication landed in the same block),
+    /// up to a bounded retry count so a permanently wedged stream still fails.
+    pub fn retry_busy_seek(&mut self, ticket: u64) -> bool {
+        let Some(attempt) = self.active.as_mut() else {
+            return false;
+        };
+        if attempt.seek_ticket != Some(ticket) || attempt.busy_seek_retries >= MAX_BUSY_SEEK_RETRIES
+        {
+            return false;
+        }
+        attempt.busy_seek_retries += 1;
+        attempt.seek_ticket = None;
+        attempt.seek_position = None;
+        attempt.seek_outcome = None;
+        true
     }
 
     pub fn seek_failed(&self) -> bool {
@@ -438,5 +460,29 @@ mod tests {
         state.seeking(2);
         assert!(!state.complete(true, 1, 0, false));
         assert!(state.complete(true, 2, 0, false));
+    }
+
+    #[test]
+    fn transient_busy_seek_retries_up_to_bound_before_failing() {
+        let mut state: RecoveryState<(), ()> = RecoveryState::default();
+        let generation = state.begin(97_944).expect("recovery");
+        state.opened(generation);
+        state.restored(generation);
+
+        for ticket in 1..=u64::from(super::MAX_BUSY_SEEK_RETRIES) {
+            assert_eq!(state.seek_needed(true), Some(97_944));
+            state.seeking(ticket);
+            assert!(state.retry_busy_seek(ticket));
+            assert!(!state.seek_failed());
+        }
+
+        // Next attempt succeeds cleanly on Applied receipt.
+        let final_ticket = u64::from(super::MAX_BUSY_SEEK_RETRIES) + 1;
+        assert_eq!(state.seek_needed(true), Some(97_944));
+        state.seeking(final_ticket);
+        // Exceeding the retry bound returns false so the caller records Rejected.
+        assert!(!state.retry_busy_seek(final_ticket));
+        state.observe_receipt(final_ticket, SeekOutcome::Rejected);
+        assert!(state.seek_failed());
     }
 }
