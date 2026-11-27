@@ -112,3 +112,41 @@ pub fn device_inline_caption(label: SharedString, style: ControlStyle) -> Div {
         .h_auto()
         .justify_start()
 }
+
+/// Accent border overlay highlighting an eligible modulation/FM target control.
+pub fn device_target_outline(accent: u32) -> Div {
+    div()
+        .absolute()
+        .inset_0()
+        .border_1()
+        .border_color(rgb(accent))
+}
+
+/// Compact corner readout tag for a mapped modulation/FM depth badge.
+pub fn device_depth_tag(background: u32, accent: u32) -> Div {
+    div()
+        .absolute()
+        .top_0()
+        .right_0()
+        .px(px(2.0))
+        .text_size(px(7.0))
+        .bg(rgb(background))
+        .text_color(rgb(accent))
+}
+
+/// Vertical source handle pill used to arm audio-rate or modulation routing.
+pub fn device_mod_handle_pill(armed: bool, accent: u32, style: ControlStyle) -> Div {
+    div()
+        .w(px(14.0))
+        .h(px(36.0))
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_between()
+        .py(px(2.0))
+        .rounded(px(2.0))
+        .border_1()
+        .border_color(rgb(if armed { accent } else { style.border }))
+        .bg(rgb(if armed { accent } else { style.surface }))
+}
