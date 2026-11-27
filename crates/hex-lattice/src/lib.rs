@@ -19,12 +19,14 @@ pub use audio_rack::{
     AUDIO_RACK_MAX_COMPENSATION_DELAY_FRAMES, AUDIO_RACK_MAX_DEPTH,
     AUDIO_RACK_MAX_DEVICES_PER_BRANCH, AUDIO_RACK_MAX_MACROS, AUDIO_RACK_MAX_MAPPINGS_PER_MACRO,
     AUDIO_RACK_MAX_NESTED_RACKS_PER_BRANCH, AUDIO_RACK_MAX_PAIR_BYTES,
-    AUDIO_RACK_MAX_TOTAL_DEVICES, AUDIO_RACK_MAX_WORK_UNITS_PER_BLOCK, AUDIO_RACK_STATE_VERSION,
-    AUDIO_RACK_STATE_VERSION_V1_FLAT, AUDIO_RACK_STATE_VERSION_V2_NESTED, AUDIO_RACK_TYPE_ID,
-    AudioRackBranchSpec, AudioRackDeviceSpec, AudioRackEdit, AudioRackError, AudioRackHistory,
-    AudioRackLimits, AudioRackMacroMapping, AudioRackMacroPolarity, AudioRackMacroPrecedence,
-    AudioRackMacroSpec, AudioRackMacroTarget, AudioRackRuntime, AudioRackSpec,
-    ResolvedMacroAssignment, resolve_rack_macros_on_control,
+    AUDIO_RACK_MAX_TOTAL_DEVICES, AUDIO_RACK_MAX_VARIATION_NAME_BYTES, AUDIO_RACK_MAX_VARIATIONS,
+    AUDIO_RACK_MAX_WORK_UNITS_PER_BLOCK, AUDIO_RACK_STATE_VERSION,
+    AUDIO_RACK_STATE_VERSION_V1_FLAT, AUDIO_RACK_STATE_VERSION_V2_NESTED,
+    AUDIO_RACK_STATE_VERSION_V3_MACROS, AUDIO_RACK_TYPE_ID, AudioRackBranchSpec,
+    AudioRackDeviceSpec, AudioRackEdit, AudioRackError, AudioRackHistory, AudioRackLimits,
+    AudioRackMacroMapping, AudioRackMacroPolarity, AudioRackMacroPrecedence, AudioRackMacroSpec,
+    AudioRackMacroTarget, AudioRackMacroVariation, AudioRackMacroVariationEntry, AudioRackRuntime,
+    AudioRackSpec, ResolvedMacroAssignment, resolve_rack_macros_on_control,
 };
 pub use aux_input::{AuxiliaryBlockError, StereoAuxiliaryBlock};
 mod foreign_modulation;

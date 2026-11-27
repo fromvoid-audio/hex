@@ -20,9 +20,10 @@ mod macros;
 mod tests;
 
 pub use macros::{
-    AUDIO_RACK_MAX_MACROS, AUDIO_RACK_MAX_MAPPINGS_PER_MACRO, AudioRackMacroMapping,
-    AudioRackMacroPolarity, AudioRackMacroPrecedence, AudioRackMacroSpec, AudioRackMacroTarget,
-    ResolvedMacroAssignment, resolve_rack_macros_on_control,
+    AUDIO_RACK_MAX_MACROS, AUDIO_RACK_MAX_MAPPINGS_PER_MACRO, AUDIO_RACK_MAX_VARIATION_NAME_BYTES,
+    AUDIO_RACK_MAX_VARIATIONS, AudioRackMacroMapping, AudioRackMacroPolarity,
+    AudioRackMacroPrecedence, AudioRackMacroSpec, AudioRackMacroTarget, AudioRackMacroVariation,
+    AudioRackMacroVariationEntry, ResolvedMacroAssignment, resolve_rack_macros_on_control,
 };
 
 use crate::{
@@ -40,10 +41,13 @@ use std::{fmt, num::NonZeroU64, sync::Arc};
 pub const AUDIO_RACK_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.rack.audio");
 /// Prior flat-only wire format version migrated cleanly to `AUDIO_RACK_STATE_VERSION`.
 pub const AUDIO_RACK_STATE_VERSION_V1_FLAT: u32 = 1;
-/// Prior depth-2 nested wire format version (without macros) migrated cleanly to v3.
+/// Prior depth-2 nested wire format version (without macros) migrated cleanly to v4.
 pub const AUDIO_RACK_STATE_VERSION_V2_NESTED: u32 = 2;
-/// Current persisted wire format version supporting depth-2 nested racks and macro mappings.
-pub const AUDIO_RACK_STATE_VERSION: u32 = 3;
+/// Prior macro-mapping wire format version (without variations) migrated cleanly to v4.
+pub const AUDIO_RACK_STATE_VERSION_V3_MACROS: u32 = 3;
+/// Current persisted wire format version supporting depth-2 nested racks, macro
+/// mappings, and named macro variations.
+pub const AUDIO_RACK_STATE_VERSION: u32 = 4;
 const AUDIO_RACK_STATE_MAGIC: &[u8; 4] = b"HXAR";
 /// Fixed parallel branch count for this bounded Audio Rack contract.
 pub const AUDIO_RACK_BRANCH_COUNT: usize = 2;
@@ -123,6 +127,10 @@ pub enum AudioRackError {
     DuplicateMacroTarget,
     InvalidMacroTarget,
     UnsupportedMacroTarget,
+    DuplicateVariationId,
+    InvalidVariationName,
+    VariationCapacityExceeded,
+    InvalidVariationEntry,
     DeviceContract(DeviceContractError),
 }
 
@@ -168,6 +176,14 @@ impl AudioRackError {
             Self::UnsupportedMacroTarget => {
                 "audio rack macro target parameter is unknown, read-only, or structural"
             }
+            Self::DuplicateVariationId => "audio rack variations must have distinct identities",
+            Self::InvalidVariationName => {
+                "audio rack variation name must be non-empty and within length limit"
+            }
+            Self::VariationCapacityExceeded => "audio rack variation limit is exceeded",
+            Self::InvalidVariationEntry => {
+                "audio rack variation references a missing, stale, or duplicate macro"
+            }
             Self::DeviceContract(_) => "audio rack child device contract failed",
         }
     }
@@ -212,6 +228,7 @@ pub struct AudioRackSpec {
     pub bypassed: bool,
     pub branches: [AudioRackBranchSpec; AUDIO_RACK_BRANCH_COUNT],
     pub macros: Vec<AudioRackMacroSpec>,
+    pub variations: Vec<AudioRackMacroVariation>,
 }
 
 impl AudioRackSpec {
@@ -322,27 +339,37 @@ impl AudioRackSpec {
         Ok(())
     }
 
-    /// Encode this Audio Rack spec into a strictly validated v3 `NativeDeviceState`
-    /// supporting bounded depth-2 nesting and macro mappings.
+    /// Encode this Audio Rack spec into a strictly validated v4 `NativeDeviceState`
+    /// supporting bounded depth-2 nesting, macro mappings, and macro variations.
     pub fn encode_state(&self) -> Result<NativeDeviceState, AudioRackError> {
         self.validate(&AudioRackLimits::default())?;
         self.encode_state_version(AUDIO_RACK_STATE_VERSION)
     }
 
-    /// Encode a depth-2 nested Audio Rack spec without macros into the prior v2
-    /// wire format for migration testing. Rejects specs with macros.
+    /// Encode an Audio Rack spec without variations into the prior v3 wire format
+    /// for migration testing. Rejects specs with variations.
+    pub fn encode_v3_macros_state(&self) -> Result<NativeDeviceState, AudioRackError> {
+        if !self.variations.is_empty() {
+            return Err(AudioRackError::InvalidNestedState);
+        }
+        self.validate(&AudioRackLimits::default())?;
+        self.encode_state_version(AUDIO_RACK_STATE_VERSION_V3_MACROS)
+    }
+
+    /// Encode a depth-2 nested Audio Rack spec without macros or variations into
+    /// the prior v2 wire format for migration testing.
     pub fn encode_v2_nested_state(&self) -> Result<NativeDeviceState, AudioRackError> {
-        if !self.macros.is_empty() {
+        if !self.macros.is_empty() || !self.variations.is_empty() {
             return Err(AudioRackError::InvalidNestedState);
         }
         self.validate(&AudioRackLimits::default())?;
         self.encode_state_version(AUDIO_RACK_STATE_VERSION_V2_NESTED)
     }
 
-    /// Encode a flat (depth-1 only) Audio Rack spec without macros into the
-    /// prior v1 wire format for migration testing. Rejects nested racks or macros.
+    /// Encode a flat (depth-1 only) Audio Rack spec without macros or variations
+    /// into the prior v1 wire format for migration testing.
     pub fn encode_v1_flat_state(&self) -> Result<NativeDeviceState, AudioRackError> {
-        if !self.macros.is_empty() {
+        if !self.macros.is_empty() || !self.variations.is_empty() {
             return Err(AudioRackError::InvalidNestedState);
         }
         let flat_limits = AudioRackLimits {
@@ -390,7 +417,7 @@ impl AudioRackSpec {
                 }
             }
         }
-        if version >= AUDIO_RACK_STATE_VERSION {
+        if version >= AUDIO_RACK_STATE_VERSION_V3_MACROS {
             let macro_count = u16::try_from(self.macros.len())
                 .map_err(|_| AudioRackError::MacroCapacityExceeded)?;
             bytes.extend_from_slice(&macro_count.to_le_bytes());
@@ -422,19 +449,43 @@ impl AudioRackSpec {
                 }
             }
         }
+        if version >= AUDIO_RACK_STATE_VERSION {
+            let var_count = u16::try_from(self.variations.len())
+                .map_err(|_| AudioRackError::VariationCapacityExceeded)?;
+            bytes.extend_from_slice(&var_count.to_le_bytes());
+            for variation in &self.variations {
+                bytes.extend_from_slice(&variation.variation_id.get().to_le_bytes());
+                bytes.extend_from_slice(&variation.rack_id.get().to_le_bytes());
+                let name_bytes = variation.name.as_bytes();
+                let name_len = u16::try_from(name_bytes.len())
+                    .map_err(|_| AudioRackError::InvalidVariationName)?;
+                bytes.extend_from_slice(&name_len.to_le_bytes());
+                bytes.extend_from_slice(name_bytes);
+                let entry_count = u16::try_from(variation.entries.len())
+                    .map_err(|_| AudioRackError::InvalidVariationEntry)?;
+                bytes.extend_from_slice(&entry_count.to_le_bytes());
+                for entry in &variation.entries {
+                    bytes.extend_from_slice(&entry.macro_id.get().to_le_bytes());
+                    bytes.extend_from_slice(&entry.value.to_le_bytes());
+                }
+                if bytes.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
+                    return Err(AudioRackError::RuntimeBudgetExceeded);
+                }
+            }
+        }
         Ok(NativeDeviceState::new(AUDIO_RACK_TYPE_ID, version, bytes)?)
     }
 
-    /// Strictly decode and validate a current v3 Audio Rack `NativeDeviceState`.
+    /// Strictly decode and validate a current v4 Audio Rack `NativeDeviceState`.
     pub fn decode_state(state: &NativeDeviceState) -> Result<Self, AudioRackError> {
         let spec = Self::decode_state_raw(state, false)?;
         spec.validate(&AudioRackLimits::default())?;
         Ok(spec)
     }
 
-    /// Decode and migrate a v1 flat, v2 nested, or v3 macro-capable Audio Rack
-    /// `NativeDeviceState` into the current canonical `AudioRackSpec`, rejecting
-    /// unsupported or malformed payloads explicitly.
+    /// Decode and migrate a v1 flat, v2 nested, v3 macro, or v4 variation Audio
+    /// Rack `NativeDeviceState` into the current canonical `AudioRackSpec`,
+    /// rejecting unsupported or malformed payloads explicitly.
     pub fn decode_and_migrate_state(state: &NativeDeviceState) -> Result<Self, AudioRackError> {
         let mut spec = Self::decode_state_raw(state, true)?;
         if state.state_version() == AUDIO_RACK_STATE_VERSION_V1_FLAT {
@@ -445,7 +496,7 @@ impl AudioRackSpec {
             spec.validate(&flat_limits)?;
             return Ok(spec);
         }
-        // Upgrade any prior-version nested rack states to current v3 before validation.
+        // Upgrade any prior-version nested rack states to current v4 before validation.
         for branch in &mut spec.branches {
             for device in &mut branch.devices {
                 if device.state.type_id() == AUDIO_RACK_TYPE_ID
@@ -471,7 +522,8 @@ impl AudioRackSpec {
         let valid_version = version == AUDIO_RACK_STATE_VERSION
             || (allow_prior
                 && (version == AUDIO_RACK_STATE_VERSION_V1_FLAT
-                    || version == AUDIO_RACK_STATE_VERSION_V2_NESTED));
+                    || version == AUDIO_RACK_STATE_VERSION_V2_NESTED
+                    || version == AUDIO_RACK_STATE_VERSION_V3_MACROS));
         if !valid_version || !state.asset_references().is_empty() {
             return Err(AudioRackError::InvalidNestedState);
         }
@@ -599,7 +651,7 @@ impl AudioRackSpec {
             });
         }
         let mut macros_vec = Vec::new();
-        if version >= AUDIO_RACK_STATE_VERSION {
+        if version >= AUDIO_RACK_STATE_VERSION_V3_MACROS {
             let macro_count = usize::from(u16::from_le_bytes(
                 read_bytes(&mut cursor, 2)?
                     .try_into()
@@ -703,6 +755,77 @@ impl AudioRackSpec {
                 });
             }
         }
+        let mut variations_vec = Vec::new();
+        if version >= AUDIO_RACK_STATE_VERSION {
+            let var_count = usize::from(u16::from_le_bytes(
+                read_bytes(&mut cursor, 2)?
+                    .try_into()
+                    .map_err(|_| AudioRackError::InvalidNestedState)?,
+            ));
+            if var_count > AUDIO_RACK_MAX_VARIATIONS {
+                return Err(AudioRackError::VariationCapacityExceeded);
+            }
+            for _ in 0..var_count {
+                let var_raw = u64::from_le_bytes(
+                    read_bytes(&mut cursor, 8)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                );
+                let variation_id =
+                    NonZeroU64::new(var_raw).ok_or(AudioRackError::InvalidNestedState)?;
+                let var_rack_raw = u64::from_le_bytes(
+                    read_bytes(&mut cursor, 8)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                );
+                let var_rack_id =
+                    NonZeroU64::new(var_rack_raw).ok_or(AudioRackError::InvalidNestedState)?;
+                let name_len = usize::from(u16::from_le_bytes(
+                    read_bytes(&mut cursor, 2)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                ));
+                if name_len > AUDIO_RACK_MAX_VARIATION_NAME_BYTES {
+                    return Err(AudioRackError::InvalidVariationName);
+                }
+                let name = std::str::from_utf8(read_bytes(&mut cursor, name_len)?)
+                    .map_err(|_| AudioRackError::InvalidNestedState)?
+                    .to_owned();
+                let entry_count = usize::from(u16::from_le_bytes(
+                    read_bytes(&mut cursor, 2)?
+                        .try_into()
+                        .map_err(|_| AudioRackError::InvalidNestedState)?,
+                ));
+                if entry_count > AUDIO_RACK_MAX_MACROS {
+                    return Err(AudioRackError::InvalidVariationEntry);
+                }
+                let mut entries = Vec::with_capacity(entry_count);
+                for _ in 0..entry_count {
+                    let e_macro_raw = u64::from_le_bytes(
+                        read_bytes(&mut cursor, 8)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    let e_macro_id =
+                        NonZeroU64::new(e_macro_raw).ok_or(AudioRackError::InvalidNestedState)?;
+                    let e_value = f32::from_le_bytes(
+                        read_bytes(&mut cursor, 4)?
+                            .try_into()
+                            .map_err(|_| AudioRackError::InvalidNestedState)?,
+                    );
+                    entries.push(AudioRackMacroVariationEntry {
+                        macro_id: e_macro_id,
+                        value: e_value,
+                    });
+                }
+                variations_vec.push(AudioRackMacroVariation {
+                    variation_id,
+                    rack_id: var_rack_id,
+                    name,
+                    entries,
+                });
+            }
+        }
         if cursor != payload.len() {
             return Err(AudioRackError::InvalidNestedState);
         }
@@ -715,6 +838,7 @@ impl AudioRackSpec {
             bypassed,
             branches,
             macros: macros_vec,
+            variations: variations_vec,
         })
     }
 }
@@ -812,6 +936,19 @@ pub enum AudioRackEdit {
         macro_id: NonZeroU64,
         mapping: AudioRackMacroMapping,
     },
+    /// Snapshot all current canonical macro values into a new bounded named variation.
+    SaveMacroVariation {
+        variation_id: NonZeroU64,
+        name: String,
+    },
+    /// Recall a saved named macro variation atomically in one history step.
+    RecallMacroVariation {
+        variation_id: NonZeroU64,
+    },
+    /// Remove a saved named macro variation by stable identity.
+    DeleteMacroVariation {
+        variation_id: NonZeroU64,
+    },
 }
 
 /// Control-side atomic one-step Undo/Redo history over `AudioRackSpec`.
@@ -859,6 +996,27 @@ impl AudioRackHistory {
         self.undo_stack.push(previous);
         self.redo_stack.clear();
         Ok(&self.current)
+    }
+
+    /// Recall a named macro variation atomically only after verifying every
+    /// mapped target resolves semantically against `registry` (refusing
+    /// missing, read-only, or structural targets without mutating state or history).
+    pub fn recall_variation_on_control(
+        &mut self,
+        variation_id: NonZeroU64,
+        registry: &NativeDeviceRegistry<'_>,
+    ) -> Result<Vec<ResolvedMacroAssignment>, AudioRackError> {
+        let mut candidate = self.current.clone();
+        Self::apply_edit_to_spec(
+            &mut candidate,
+            AudioRackEdit::RecallMacroVariation { variation_id },
+        )?;
+        candidate.validate(&self.limits)?;
+        let (_, ledger) = macros::resolve_rack_macros_on_control(&candidate, registry, &[])?;
+        let previous = std::mem::replace(&mut self.current, candidate);
+        self.undo_stack.push(previous);
+        self.redo_stack.clear();
+        Ok(ledger)
     }
 
     fn apply_edit_to_spec(
@@ -977,6 +1135,7 @@ impl AudioRackHistory {
                         },
                     ],
                     macros: Vec::new(),
+                    variations: Vec::new(),
                 };
                 let nested_state = nested.encode_state()?;
                 devices.insert(
@@ -1104,6 +1263,49 @@ impl AudioRackHistory {
                     .find(|entry| entry.target == mapping.target)
                     .ok_or(AudioRackError::UnknownTargetId)?;
                 *existing = mapping;
+            }
+            AudioRackEdit::SaveMacroVariation { variation_id, name } => {
+                let entries: Vec<AudioRackMacroVariationEntry> = candidate
+                    .macros
+                    .iter()
+                    .map(|m| AudioRackMacroVariationEntry {
+                        macro_id: m.macro_id,
+                        value: m.value,
+                    })
+                    .collect();
+                candidate.variations.push(AudioRackMacroVariation {
+                    variation_id,
+                    rack_id: candidate.rack_id,
+                    name,
+                    entries,
+                });
+            }
+            AudioRackEdit::RecallMacroVariation { variation_id } => {
+                let variation = candidate
+                    .variations
+                    .iter()
+                    .find(|v| v.variation_id == variation_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?
+                    .clone();
+                if variation.rack_id != candidate.rack_id {
+                    return Err(AudioRackError::InvalidVariationEntry);
+                }
+                for entry in &variation.entries {
+                    let m = candidate
+                        .macros
+                        .iter_mut()
+                        .find(|m| m.macro_id == entry.macro_id)
+                        .ok_or(AudioRackError::InvalidVariationEntry)?;
+                    m.value = entry.value;
+                }
+            }
+            AudioRackEdit::DeleteMacroVariation { variation_id } => {
+                let pos = candidate
+                    .variations
+                    .iter()
+                    .position(|v| v.variation_id == variation_id)
+                    .ok_or(AudioRackError::UnknownTargetId)?;
+                candidate.variations.remove(pos);
             }
         }
         Ok(())

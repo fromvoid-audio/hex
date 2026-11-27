@@ -169,3 +169,33 @@ mod macro_gesture_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod macro_variation_gesture_tests {
+    use super::*;
+
+    #[test]
+    fn macro_variation_recall_receipt_handles_delayed_ack_cancellation_and_project_replacement() {
+        // Triggering one atomic variation recall enqueues a single receipt at generation 12.
+        let mut recall = Receipt::new(12);
+        assert!(recall.is_queued());
+        // Before worker admission, a project replacement cancels custody immediately.
+        let mut cancelled_before_submit = Receipt::new(12);
+        assert_eq!(
+            cancelled_before_submit.observe(12, true, false),
+            Disposition::Invalidated
+        );
+
+        // Once admitted with 1 prior request ahead (pending = 2), repaints hold the
+        // recalled variation preview steady until exact terminal ACK arrives.
+        assert!(recall.submitted(2));
+        assert_eq!(recall.observe(12, false, false), Disposition::Waiting);
+        assert_eq!(recall.observe(12, false, true), Disposition::Waiting);
+        assert_eq!(recall.observe(12, false, true), Disposition::Terminal);
+
+        // Prepare refusal or reload bumps generation -> invalidates without leaving stale preview.
+        let mut refused = Receipt::new(12);
+        assert!(refused.submitted(1));
+        assert_eq!(refused.observe(13, false, false), Disposition::Invalidated);
+    }
+}

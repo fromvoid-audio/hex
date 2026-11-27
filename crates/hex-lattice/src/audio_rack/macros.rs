@@ -24,6 +24,26 @@ use std::num::NonZeroU64;
 pub const AUDIO_RACK_MAX_MACROS: usize = 8;
 /// Maximum parameter targets mapped to a single Rack macro.
 pub const AUDIO_RACK_MAX_MAPPINGS_PER_MACRO: usize = 8;
+/// Maximum named macro variations retained on one Audio Rack.
+pub const AUDIO_RACK_MAX_VARIATIONS: usize = 8;
+/// Maximum UTF-8 byte length of a named macro variation.
+pub const AUDIO_RACK_MAX_VARIATION_NAME_BYTES: usize = 64;
+
+/// One canonical macro value captured inside a Rack macro variation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AudioRackMacroVariationEntry {
+    pub macro_id: NonZeroU64,
+    pub value: f32,
+}
+
+/// Bounded named snapshot of canonical Rack macro values with stable rack/variation IDs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AudioRackMacroVariation {
+    pub variation_id: NonZeroU64,
+    pub rack_id: NonZeroU64,
+    pub name: String,
+    pub entries: Vec<AudioRackMacroVariationEntry>,
+}
 
 /// Stable canonical target coordinate for a Rack macro mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -205,6 +225,47 @@ pub(super) fn validate_macros(spec: &AudioRackSpec) -> Result<(), AudioRackError
                 return Err(AudioRackError::DuplicateMacroTarget);
             }
             seen_targets.push(key);
+        }
+    }
+    validate_variations(spec)
+}
+
+/// Validate all bounded named macro variations on `spec`: unique variation IDs,
+/// matching owning `rack_id`, valid non-empty names, distinct finite entries,
+/// and live `macro_id` existence on this rack.
+pub(super) fn validate_variations(spec: &AudioRackSpec) -> Result<(), AudioRackError> {
+    if spec.variations.len() > AUDIO_RACK_MAX_VARIATIONS {
+        return Err(AudioRackError::VariationCapacityExceeded);
+    }
+    let mut seen_variations = Vec::with_capacity(spec.variations.len());
+    for variation in &spec.variations {
+        if seen_variations.contains(&variation.variation_id) {
+            return Err(AudioRackError::DuplicateVariationId);
+        }
+        seen_variations.push(variation.variation_id);
+        if variation.rack_id != spec.rack_id {
+            return Err(AudioRackError::InvalidVariationEntry);
+        }
+        if variation.name.trim().is_empty()
+            || variation.name.len() > AUDIO_RACK_MAX_VARIATION_NAME_BYTES
+        {
+            return Err(AudioRackError::InvalidVariationName);
+        }
+        if variation.entries.is_empty() || variation.entries.len() > AUDIO_RACK_MAX_MACROS {
+            return Err(AudioRackError::InvalidVariationEntry);
+        }
+        let mut seen_entry_macros = Vec::with_capacity(variation.entries.len());
+        for entry in &variation.entries {
+            if seen_entry_macros.contains(&entry.macro_id) {
+                return Err(AudioRackError::InvalidVariationEntry);
+            }
+            seen_entry_macros.push(entry.macro_id);
+            if !entry.value.is_finite() || !(0.0..=1.0).contains(&entry.value) {
+                return Err(AudioRackError::InvalidMacroValue);
+            }
+            if !spec.macros.iter().any(|m| m.macro_id == entry.macro_id) {
+                return Err(AudioRackError::InvalidVariationEntry);
+            }
         }
     }
     Ok(())
