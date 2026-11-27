@@ -204,6 +204,9 @@ impl NativeDeviceMetadata for SamplerDefinition {
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &DESCRIPTORS
     }
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
+    }
     fn descriptors_for_state(
         &self,
         state: &NativeDeviceState,

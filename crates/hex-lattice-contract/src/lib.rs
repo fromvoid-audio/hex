@@ -13,7 +13,16 @@ mod automation_target;
 mod descriptor_validation;
 pub use descriptor_validation::validate_parameter_descriptors;
 mod device_assets;
+mod device_ports;
 pub use automation_target::DeviceAutomationTarget;
+pub use device_ports::{
+    DevicePortCapabilities, DevicePortDescriptor, DevicePortDirection, DevicePortId,
+    DevicePortKind, MAX_DEVICE_PORT_CHANNELS, MAX_DEVICE_PORT_NAME_BYTES, MAX_DEVICE_PORTS,
+    MIDI_CONTROLLED_STEREO_EFFECT_PORTS, MIDI_EFFECT_PORTS, PORT_MAIN_AUDIO_IN,
+    PORT_MAIN_AUDIO_OUT, PORT_MIDI_IN, PORT_MIDI_OUT, PORT_SIDECHAIN_AUDIO_IN,
+    SIDECHAIN_STEREO_EFFECT_PORTS, STEREO_AUDIO_EFFECT_PORTS, STEREO_INSTRUMENT_PORTS,
+    validate_device_ports,
+};
 mod host_gain;
 mod modulation_source_id;
 pub mod modulator;
@@ -633,6 +642,15 @@ pub trait NativeDeviceMetadata: Sync {
     /// One optional stereo key input, or none for existing single-bus devices.
     fn auxiliary_input(&self) -> AuxiliaryInput {
         AuxiliaryInput::None
+    }
+    /// Static typed audio, sidechain, MIDI, and auxiliary-output port declarations.
+    /// Defaults to stereo audio I/O, automatically exposing a stereo sidechain
+    /// input when `auxiliary_input()` declares `AuxiliaryInput::Stereo`.
+    fn ports(&self) -> &'static [DevicePortDescriptor] {
+        match self.auxiliary_input() {
+            AuxiliaryInput::None => STEREO_AUDIO_EFFECT_PORTS,
+            AuxiliaryInput::Stereo => SIDECHAIN_STEREO_EFFECT_PORTS,
+        }
     }
     /// Optional lowercase presentation name. The type identifier remains the
     /// stable storage/registry identity; unnamed definitions display that ID.

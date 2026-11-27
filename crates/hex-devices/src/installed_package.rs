@@ -1031,6 +1031,10 @@ impl NativeDeviceMetadata for InstalledPackageInstrument {
         &[]
     }
 
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
+    }
+
     fn descriptors_for_state(
         &self,
         state: &NativeDeviceState,
@@ -2087,6 +2091,10 @@ impl NativeDeviceMetadata for UnavailablePackageInstrument {
 
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &[]
+    }
+
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
     }
 
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {

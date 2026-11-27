@@ -255,6 +255,9 @@ impl NativeDeviceMetadata for SineInstrumentDefinition {
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &[]
     }
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
+    }
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         NativeDeviceState::new(self.type_id(), 1, Vec::new())
     }
@@ -623,6 +626,135 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn registry_device_ports_are_valid_and_reflect_catalog_capabilities() {
+        use hex_lattice::{DevicePortConnection, DevicePortNode, validate_port_graph};
+        use hex_lattice_contract::{
+            DevicePortCapabilities, PORT_MAIN_AUDIO_IN, PORT_MAIN_AUDIO_OUT, PORT_MIDI_IN,
+            PORT_MIDI_OUT, PORT_SIDECHAIN_AUDIO_IN, validate_device_ports,
+        };
+
+        for def in &BUILTIN_NATIVE_DEVICES {
+            let ports = def.ports();
+            validate_device_ports(ports).expect("built-in effect ports must validate");
+            let caps = DevicePortCapabilities::from_ports(ports).unwrap();
+            assert_eq!(caps.main_audio_input_channels, 2);
+            assert_eq!(caps.main_audio_output_channels, 2);
+            let id = def.type_id();
+            if id == compressor::COMPRESSOR_TYPE_ID || id == gate::GATE_TYPE_ID {
+                assert!(caps.has_sidechain_input(), "{id:?} must expose sidechain");
+            } else {
+                assert!(!caps.has_sidechain_input(), "{id:?} has no sidechain");
+            }
+            if id == shifter::SHIFTER_TYPE_ID {
+                assert!(
+                    caps.is_midi_controlled_audio_effect(),
+                    "shifter must expose optional MIDI control input"
+                );
+            } else {
+                assert!(
+                    !caps.is_midi_controlled_audio_effect(),
+                    "{id:?} is not a MIDI-controlled effect"
+                );
+            }
+        }
+
+        let instruments = native_instrument_registry().unwrap();
+        for def in &BUILTIN_LEAF_INSTRUMENTS {
+            let caps = DevicePortCapabilities::from_ports(def.ports()).unwrap();
+            assert!(caps.accepts_midi);
+            assert!(!caps.emits_midi);
+            assert_eq!(caps.main_audio_input_channels, 0);
+            assert_eq!(caps.main_audio_output_channels, 2);
+        }
+        let drum_rack = instruments
+            .definition(hex_lattice::DRUM_RACK_TYPE_ID)
+            .expect("drum rack registered");
+        let drum_caps = DevicePortCapabilities::from_ports(drum_rack.ports()).unwrap();
+        assert!(drum_caps.accepts_midi);
+        assert_eq!(drum_caps.main_audio_output_channels, 2);
+
+        let midi_registry = native_midi_processor_registry().unwrap();
+        for def in &BUILTIN_LEAF_MIDI_PROCESSORS {
+            let caps = DevicePortCapabilities::from_ports(def.ports()).unwrap();
+            assert!(caps.accepts_midi);
+            assert!(caps.emits_midi);
+            assert_eq!(caps.main_audio_input_channels, 0);
+            assert_eq!(caps.main_audio_output_channels, 0);
+        }
+        let midi_rack = midi_registry
+            .definition(hex_lattice::MIDI_RACK_TYPE_ID)
+            .expect("midi rack registered");
+        let midi_rack_caps = DevicePortCapabilities::from_ports(midi_rack.ports()).unwrap();
+        assert!(midi_rack_caps.accepts_midi && midi_rack_caps.emits_midi);
+
+        // Cross-catalog typed graph: MIDI Pitch -> Subtractive -> Shifter (MIDI-controlled)
+        // plus parallel Sine -> Compressor sidechain with PDC alignment.
+        let nodes = [
+            DevicePortNode {
+                node_id: 1,
+                ports: midi_pitch::PITCH_DEFINITION.ports(),
+                latency_frames: 0,
+            },
+            DevicePortNode {
+                node_id: 2,
+                ports: subtractive::SUBTRACTIVE_DEFINITION.ports(),
+                latency_frames: 64,
+            },
+            DevicePortNode {
+                node_id: 3,
+                ports: shifter::SHIFTER_DEFINITION.ports(),
+                latency_frames: 128,
+            },
+            DevicePortNode {
+                node_id: 4,
+                ports: SINE_INSTRUMENT.ports(),
+                latency_frames: 0,
+            },
+            DevicePortNode {
+                node_id: 5,
+                ports: compressor::COMPRESSOR_DEFINITION.ports(),
+                latency_frames: 32,
+            },
+        ];
+        let connections = [
+            DevicePortConnection {
+                source_node: 1,
+                source_port: PORT_MIDI_OUT,
+                target_node: 2,
+                target_port: PORT_MIDI_IN,
+            },
+            DevicePortConnection {
+                source_node: 2,
+                source_port: PORT_MAIN_AUDIO_OUT,
+                target_node: 3,
+                target_port: PORT_MAIN_AUDIO_IN,
+            },
+            DevicePortConnection {
+                source_node: 1,
+                source_port: PORT_MIDI_OUT,
+                target_node: 3,
+                target_port: PORT_MIDI_IN,
+            },
+            DevicePortConnection {
+                source_node: 3,
+                source_port: PORT_MAIN_AUDIO_OUT,
+                target_node: 5,
+                target_port: PORT_MAIN_AUDIO_IN,
+            },
+            DevicePortConnection {
+                source_node: 4,
+                source_port: PORT_MAIN_AUDIO_OUT,
+                target_node: 5,
+                target_port: PORT_SIDECHAIN_AUDIO_IN,
+            },
+        ];
+        let graph = validate_port_graph(&nodes, &connections).expect("valid cross-domain graph");
+        assert_eq!(graph.topological_order, vec![1, 2, 3, 4, 5]);
+        // Node 3 arrives at node 5 with 64 + 128 = 192 frames; node 4 arrives with 0 frames.
+        assert_eq!(graph.connection_compensation_frames, vec![0, 0, 64, 0, 192]);
     }
 }
 

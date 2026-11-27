@@ -324,6 +324,10 @@ impl NativeDeviceMetadata for NoteLengthMidiProcessorDefinition {
         &DESCRIPTORS
     }
 
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::MIDI_EFFECT_PORTS
+    }
+
     fn default_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
         NoteLengthSettings::default().encode()
     }

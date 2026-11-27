@@ -1002,6 +1002,9 @@ impl NativeDeviceMetadata for ShifterDefinition {
     fn display_name(&self) -> Option<&'static str> {
         Some("shifter")
     }
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::MIDI_CONTROLLED_STEREO_EFFECT_PORTS
+    }
     fn state_version(&self) -> u32 {
         SHIFTER_STATE_VERSION
     }

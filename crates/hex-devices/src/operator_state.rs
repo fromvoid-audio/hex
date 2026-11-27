@@ -1343,6 +1343,9 @@ impl NativeDeviceMetadata for OperatorMetadata {
     fn descriptors(&self) -> &'static [ParameterDescriptor] {
         &PARAMETERS
     }
+    fn ports(&self) -> &'static [hex_lattice_contract::DevicePortDescriptor] {
+        hex_lattice_contract::STEREO_INSTRUMENT_PORTS
+    }
     fn parameter_semantics_for_state(
         &self,
         state: &NativeDeviceState,
