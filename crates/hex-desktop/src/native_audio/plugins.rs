@@ -411,7 +411,8 @@ impl Plugins {
         control
             .output_identity()
             .is_some_and(|output| self.degraded.is_binding_degraded(output, binding))
-            || control.native_source_endpoint_status(binding) == Some((true, false))
+            || (control.native_source_endpoint_status(binding) == Some((true, false))
+                && !control.native_source_revoked_for_stop(binding))
     }
 
     pub(super) fn is_device_degraded_on_control(
@@ -432,6 +433,7 @@ impl Plugins {
                 && source.accepted
                 && !source.retiring
                 && control.native_source_endpoint_status(source.binding) == Some((true, false))
+                && !control.native_source_revoked_for_stop(source.binding)
         })
     }
 

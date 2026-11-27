@@ -321,4 +321,31 @@ mod tests {
             Some(vec![(2, "deadline".to_owned())])
         );
     }
+
+    #[test]
+    fn clean_stop_revocation_keeps_healthy_devices_clear_while_retaining_faulted_siblings() {
+        let mut report = DegradedReport::default();
+        // Device 1 is healthy; device 2 genuinely faulted before Stop.
+        assert_eq!(
+            report.observe(
+                7,
+                [
+                    (10, 1, Some((true, true)), None),
+                    (20, 2, Some((true, false)), Some("missed deadline".into())),
+                ],
+                Some(&[1, 2]),
+            ),
+            Some(vec![(2, "missed deadline".to_owned())])
+        );
+        // PriorityStop cleanly revokes device 1 (mapped to None by polling), while
+        // device 2 keeps its genuine prior fault.
+        assert_eq!(
+            report.observe(7, [(10, 1, None, None), (20, 2, None, None)], Some(&[1, 2]),),
+            None
+        );
+        assert!(!report.is_binding_degraded(7, 10));
+        assert!(!report.is_device_degraded(7, 1));
+        assert!(report.is_binding_degraded(7, 20));
+        assert!(report.is_device_degraded(7, 2));
+    }
 }

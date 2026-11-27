@@ -623,6 +623,12 @@ impl NativeEffectReference<'_> {
             Self::Loaned(control) => control.transport_is_live_on_control(),
         }
     }
+    pub(crate) fn revoked_for_stop_on_control(&self) -> bool {
+        match self {
+            Self::Unsplit(effect) => effect.worker.revoked_for_stop_on_control(),
+            Self::Loaned(control) => control.worker.revoked_for_stop_on_control(),
+        }
+    }
     pub(crate) fn take_failure_diagnostic_on_control(&self) -> Option<String> {
         match self {
             Self::Unsplit(effect) => effect.worker.take_failure_diagnostic_on_control(),

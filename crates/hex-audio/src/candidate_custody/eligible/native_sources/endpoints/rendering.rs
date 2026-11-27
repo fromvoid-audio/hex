@@ -152,6 +152,17 @@ impl NativeEndpointBank {
             }
         }
     }
+    pub(crate) fn revoke_rendering_for_stop(&mut self) {
+        self.cycle.reject();
+        for index in 0..self.routing_len {
+            if let Some(entry) = self.entries[self.routing[index]]
+                .as_mut()
+                .and_then(|e| e.0.callback.as_mut())
+            {
+                entry.revoke_for_stop();
+            }
+        }
+    }
 }
 impl NativeEndpointBank {
     #[allow(clippy::too_many_arguments)] // Borrowed views share one physical acceptance.

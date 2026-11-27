@@ -1054,6 +1054,13 @@ impl CandidateRoot {
         })
     }
 
+    pub(crate) fn native_source_revoked_for_stop(&self, binding: Binding) -> bool {
+        self.with_native_source_endpoint(binding, |loaned, endpoint| {
+            loaned && endpoint.revoked_for_stop_on_control()
+        })
+        .unwrap_or(false)
+    }
+
     pub(crate) fn take_native_source_transport_space(&self, binding: Binding) -> bool {
         let cancellation = {
             let Ok(bank) = self.0.eligible.bank.try_lock() else {

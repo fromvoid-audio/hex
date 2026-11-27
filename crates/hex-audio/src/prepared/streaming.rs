@@ -479,7 +479,7 @@ impl Callback {
                     0,
                 );
                 self.finish_midi_before_stop();
-                self.revoke_output_transport();
+                self.revoke_output_transport_for_stop();
                 self.revoke_current_sampler_keyboard();
             }
             if fault {

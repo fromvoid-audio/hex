@@ -1222,6 +1222,12 @@ impl PublicationControl {
         }
         self.candidate_root.native_source_endpoint_status(binding)
     }
+    /// Whether this loaned native source was cleanly revoked by PriorityStop
+    /// (not by a callback or worker fault) and is awaiting stopped-epoch renewal.
+    pub fn native_source_revoked_for_stop(&self, binding: Binding) -> bool {
+        !self.status.closing.load(Acquire)
+            && self.candidate_root.native_source_revoked_for_stop(binding)
+    }
     /// Consume at most one editor Space press from the exact accepted helper.
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub fn take_native_source_transport_space(&self, binding: Binding) -> bool {

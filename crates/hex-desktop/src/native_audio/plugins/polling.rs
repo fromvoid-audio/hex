@@ -66,6 +66,8 @@ impl Plugins {
                 .filter(|source| source.project_generation == generation)
                 .map(|source| {
                     let status = control.native_source_endpoint_status(source.binding);
+                    let revoked_for_stop = status == Some((true, false))
+                        && control.native_source_revoked_for_stop(source.binding);
                     if let Some(log) = &self.diagnostics
                         && let Some(sample) = control.take_native_source_slow_exchange(source.binding)
                     {
@@ -90,7 +92,8 @@ impl Plugins {
                         );
                     }
                     let mut failure_diagnostic = None;
-                    if status == Some((true, false)) {
+                    let degraded_status = if revoked_for_stop { None } else { status };
+                    if degraded_status == Some((true, false)) {
                         source.edit_backlog = false;
                         if let Some(diagnostic) =
                             control.take_native_source_failure_diagnostic(source.binding)
@@ -114,7 +117,12 @@ impl Plugins {
                             failure_diagnostic = Some(diagnostic);
                         }
                     }
-                    (source.binding, source.device, status, failure_diagnostic)
+                    (
+                        source.binding,
+                        source.device,
+                        degraded_status,
+                        failure_diagnostic,
+                    )
                 });
             if let Some(entries) =
                 self.degraded

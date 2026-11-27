@@ -627,7 +627,7 @@ impl Callback {
                 );
                 self.flush_session_route_transitions();
                 self.finish_midi_before_stop();
-                self.revoke_output_transport();
+                self.revoke_output_transport_for_stop();
                 self.revoke_current_sampler_keyboard();
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));

@@ -172,6 +172,7 @@ pub(super) struct Revocation {
 }
 impl Revocation {
     pub(super) const REPORTED: u8 = 1 << 7;
+    pub(super) const STOP_REVOKED_CODE: u8 = 1 << 6;
 
     pub(super) fn new(binding: Binding) -> Result<Self, Fault> {
         let worker_wakeup = WorkerWakeup::new()?;
@@ -229,6 +230,24 @@ impl Revocation {
         self.parameter_input_generation
             .fetch_or(parameter_fence::REVOKED_BIT, AcqRel);
         self.wake_worker();
+    }
+
+    pub(super) fn revoke_for_stop(&self) {
+        let was_revoked = self
+            .parameter_input_generation
+            .fetch_or(parameter_fence::REVOKED_BIT, AcqRel)
+            & parameter_fence::REVOKED_BIT
+            != 0;
+        if !was_revoked {
+            let _ =
+                self.callback_fault
+                    .compare_exchange(0, Self::STOP_REVOKED_CODE, Release, Relaxed);
+        }
+        self.wake_worker();
+    }
+
+    pub(super) fn is_stop_revoked(&self) -> bool {
+        (self.callback_fault.load(Acquire) & !Self::REPORTED) == Self::STOP_REVOKED_CODE
     }
 
     pub(super) fn is_revoked(&self) -> bool {
