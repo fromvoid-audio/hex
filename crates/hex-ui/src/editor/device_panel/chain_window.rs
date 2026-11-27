@@ -235,7 +235,8 @@ pub(super) fn must_mount(
     };
     panel.chain_window.visible(device, Some(f32::from(window.viewport_size().width)))
         // Keep the housing's keyed disclosure state while it is scrolled offscreen.
-        || panel.chain_window.source_effect_width(device) > modulators::SOURCE_EFFECT_CARD_WIDTH
+        || panel.chain_window.source_effect_width(device)
+            > modulators::SOURCE_EFFECT_CARD_WIDTH + device_meter::WIDTH
         || panel.chain_window.focus.get(&device).is_some_and(|focus| focus.contains_focused(window, cx))
         || panel.controls.iter().any(|(key, control)| key.device == device && matches!(control,
             ParameterControl::Float { entity, .. } if entity.read_with(cx, |control, _| control.is_interacting() || control.is_editing())))
