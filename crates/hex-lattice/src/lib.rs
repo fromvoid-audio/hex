@@ -119,6 +119,7 @@ pub use analytic_continuation::{
 
 mod instrument;
 mod instrument_gain;
+mod instrument_outputs;
 mod instrument_pair;
 mod instrument_rack;
 mod instrument_runtime;
@@ -131,6 +132,18 @@ pub use instrument::{
 };
 pub use instrument_gain::{
     INSTRUMENT_GAIN_UNITY, MAX_INSTRUMENT_OCCURRENCE_GAIN, NativeInstrumentOccurrenceGain,
+};
+pub use instrument_outputs::{
+    MAX_NATIVE_OUTPUT_BLOCK_FRAMES, MAX_NATIVE_OUTPUT_COMPENSATION_DELAY_FRAMES,
+    MAX_NATIVE_OUTPUT_DESTINATIONS, MAX_NATIVE_OUTPUT_FANOUT_PER_PORT,
+    MAX_NATIVE_OUTPUT_GRAPH_EDGES, MAX_NATIVE_OUTPUT_PORTS, MAX_NATIVE_OUTPUT_ROUTE_GAIN,
+    MAX_NATIVE_OUTPUT_ROUTES, MultiOutputDestinationBuffer, MultiOutputInstrumentRuntime,
+    MultiOutputRoutingError, NATIVE_MULTI_OUTPUT_PLAN_VERSION, NativeGraphEdge,
+    NativeMultiOutputEdit, NativeMultiOutputHistory, NativeMultiOutputLimits,
+    NativeMultiOutputPlan, NativeMultiOutputRoute, NativeMultiOutputTopology,
+    NativeOutputChannelLayout, NativeOutputDestination, NativeOutputDestinationInfo,
+    NativeOutputPortDescriptor, NativeOutputPortId, PreparedMultiOutputRouter,
+    validate_output_port_descriptors,
 };
 pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
