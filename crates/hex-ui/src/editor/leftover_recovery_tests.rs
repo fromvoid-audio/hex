@@ -280,6 +280,12 @@ fn launch_offers_each_untitled_leftover_and_sets_a_recovered_foreign_slot_aside(
         !foreign.exists(),
         "recovered foreign slot is not offered again"
     );
+    assert!(!cx.has_pending_prompt(), "nothing else to offer");
+    // Stop this window's recovery worker before inspecting next-launch leftovers so
+    // an in-flight checkpoint cannot change `own`'s fingerprint mid-read.
+    editor.update(cx, |view, _| {
+        view.service = Service::new(48_000, 8, 128).unwrap();
+    });
     let kept: Vec<Vec<u8>> = std::fs::read_dir(root.0.join("recovery"))
         .unwrap()
         .filter_map(Result::ok)
@@ -302,5 +308,4 @@ fn launch_offers_each_untitled_leftover_and_sets_a_recovered_foreign_slot_aside(
         .map(|found| found.journal)
         .collect();
     assert_eq!(leftovers, [own], "only this window's own slot remains");
-    assert!(!cx.has_pending_prompt(), "nothing else to offer");
 }
