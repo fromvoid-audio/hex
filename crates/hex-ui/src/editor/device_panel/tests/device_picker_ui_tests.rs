@@ -53,8 +53,18 @@ fn native_picker_search_clear_keyboard_cancel_and_one_insertion(cx: &mut TestApp
         visual.simulate_keystrokes("down");
         visual.simulate_keystrokes("up");
         visual.run_until_parked();
+        let first_row =
+            hex_engine::native_device_catalog_for_class(NativeDeviceClass::MidiProcessor)
+                .ok()
+                .and_then(|mut entries| (!entries.is_empty()).then(|| entries.remove(0)))
+                .map_or("add-native-effect-hex.utility", |entry| {
+                    Box::leak(
+                        format!("add-native-midi-{}", entry.type_id.as_str().unwrap())
+                            .into_boxed_str(),
+                    )
+                });
         assert_eq!(
-            visual.rendered_background("add-native-effect-hex.utility"),
+            visual.rendered_background(first_row),
             Some(gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into())
         );
         visual.simulate_keystrokes("escape");
