@@ -20,7 +20,7 @@ impl PlaybackCancel {
         Self::default()
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn from_flag(flag: Arc<AtomicBool>) -> Self {
         Self {
             flag,
