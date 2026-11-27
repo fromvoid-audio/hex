@@ -314,6 +314,67 @@ mod tests {
         assert!(Arc::ptr_eq(preview.canonical(), source));
         assert_eq!(preview.project.clip(clip.id()).unwrap().source_phase(), 384);
 
+        // Warped VerifiedFile clip refuses AudioTrimStart in capture without touching the sink.
+        let mut warped_editor = hex_project::Editor::new(imported_project.clone(), 1).unwrap();
+        warped_editor
+            .execute(Command::SetAudioClipWarp {
+                clip: clip_id,
+                settings: Some(hex_project::WarpSettings {
+                    mode: hex_project::WarpMode::RePitch,
+                    markers: vec![
+                        hex_project::WarpMarker {
+                            source_frame: 0,
+                            beat: BeatTime::ZERO,
+                        },
+                        hex_project::WarpMarker {
+                            source_frame: 1_024,
+                            beat: BeatTime::from_quarters(1).unwrap(),
+                        },
+                    ],
+                }),
+            })
+            .unwrap();
+        let warped_project = warped_editor.project();
+        let warped_trim = ArrangementPlayStartAudition {
+            context: imported_source.context(),
+            edit: PlayStartEdit::AudioTrimStart {
+                clip: clip_id,
+                start: 0,
+                duration: 768,
+                source_offset: 256,
+                source_length: 768,
+            },
+        };
+        assert!(matches!(
+            VerifiedArrangementPlayStartSource::capture(
+                imported_source,
+                warped_project,
+                &warped_trim,
+                4
+            ),
+            Err(SessionError::Project(_))
+        ));
+
+        // Pitch-shifted VerifiedFile clip also refuses AudioTrimStart as an unavailable streaming transform.
+        let mut pitched_editor = hex_project::Editor::new(imported_project.clone(), 1).unwrap();
+        pitched_editor
+            .execute(Command::SetAudioClipPitch {
+                clip: clip_id,
+                cents: 200,
+            })
+            .unwrap();
+        assert!(matches!(
+            VerifiedArrangementPlayStartSource::capture(
+                imported_source,
+                pitched_editor.project(),
+                &warped_trim,
+                5
+            ),
+            Err(SessionError::Invalid(
+                "play start audition source is unavailable for streaming"
+            ))
+        ));
+
         // A Resident-bound audio clip (e.g., recorded/resident asset) allows placed PlayStartEdit::Audio.
         let resident_service = Service::new(48_000, 16, 4096).unwrap();
         next(&resident_service);
