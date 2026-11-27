@@ -129,6 +129,7 @@ impl WorkerLoop {
             failed_plugin_adoption: _,
             mut failed_plugin_publication_confirmed,
             private_sampler: _,
+            mut pending_unit_originals,
         } = exec.outcome;
         let mut dispatch_flow = ControlFlow::Continue(());
         let comparison_binding = match &request {
@@ -443,6 +444,7 @@ impl WorkerLoop {
                     failed_plugin_adoption: failed_plugin_adoption.is_some(),
                     failed_plugin_publication_confirmed,
                     private_sampler,
+                    pending_unit_originals,
                 },
             };
             let flow = match request {
@@ -650,6 +652,7 @@ impl WorkerLoop {
             cut_clipboard = ctx.outcome.cut_clipboard;
             cut_device_clipboard = ctx.outcome.cut_device_clipboard;
             failed_plugin_publication_confirmed = ctx.outcome.failed_plugin_publication_confirmed;
+            pending_unit_originals = ctx.outcome.pending_unit_originals;
             dispatch_flow = flow;
         }
         exec.meta.import_decode = import_decode;
@@ -712,6 +715,7 @@ impl WorkerLoop {
             failed_plugin_adoption: exec.meta.failed_plugin_adoption.is_some(),
             failed_plugin_publication_confirmed,
             private_sampler,
+            pending_unit_originals,
         };
         let worker = Self {
             events,

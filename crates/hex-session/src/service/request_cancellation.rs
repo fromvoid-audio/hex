@@ -169,6 +169,8 @@ impl Sender {
                 | Request::InsertEffectBusDevice { .. }
                 | Request::LoadTrackCatalogDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::SaveDeviceUnitPreset { .. }
+                | Request::LoadDevicePreset { .. }
                 | Request::DropNativeDevice {
                     source: NativeDeviceDropSource::Browser { .. },
                     ..

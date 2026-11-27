@@ -24,7 +24,9 @@ pub(super) use documents::{
     prepare_document_media, prepare_document_replacement, prepare_import, prepare_import_playback,
     prepare_private_export, relink_files,
 };
-pub(super) use publish::{execute_command, execute_command_timed, poll_pending};
+pub(super) use publish::{
+    execute_command, execute_command_timed, execute_command_with_originals, poll_pending,
+};
 use publish::{
     inherited_runtime, playback_with_loop, runtime_allowance, runtime_allowance_with_loop,
 };

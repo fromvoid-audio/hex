@@ -297,6 +297,178 @@ impl Session {
         self.source_overviews = source_overviews;
         Ok((created, prepared))
     }
+
+    /// Execute one canonical command while staging a bounded batch of verified
+    /// native original audio sources (`(AssetId, DecodedAudio)`) into
+    /// `self.native_assets` inside the same `Editor::execute_prepared_transition`.
+    /// Any validation, budget, preparation, cancellation or publication failure
+    /// leaves `self.editor`, `self.native_assets`, and `self.source_overviews`
+    /// completely unchanged.
+    #[allow(clippy::type_complexity)] // Mirrors import_device_asset_prepared's exact control-side staging seam.
+    pub(crate) fn execute_command_with_native_originals_prepared<T>(
+        &mut self,
+        command: Command,
+        originals: Vec<(AssetId, DecodedAudio)>,
+        cancel: &AtomicBool,
+        prepare: impl FnOnce(
+            &Project,
+            &Project,
+            &MediaBank,
+            Arc<hex_engine::SineTable>,
+            &hex_engine::audio_transform::AudioTransformPreparation,
+            &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+            &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
+            &std::collections::HashMap<hex_project::AssetId, crate::ResidentAsset>,
+        ) -> Result<T, SessionError>,
+        finalize: impl FnOnce(
+            &Project,
+            &mut T,
+            &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
+        ) -> Result<(), SessionError>,
+    ) -> Result<(Created, T), SessionError> {
+        let reservation = self.native_reservation.ok_or(SessionError::Invalid(
+            "native source import requires an explicit resident reservation",
+        ))?;
+        if cancel.load(Ordering::Relaxed) || self.shutdown.load(Ordering::Relaxed) {
+            return Err(ResourcePreparationError::Cancelled.into());
+        }
+        let mut incoming_total = 0_u64;
+        for (_, decoded) in &originals {
+            let incoming = u64::try_from(decoded.audio().pcm_capacity_frames())
+                .map_err(|_| SessionError::Invalid("resident pcm capacity exceeds frame range"))?;
+            incoming_total = incoming_total
+                .checked_add(incoming)
+                .ok_or(SessionError::Invalid("resident frame count overflow"))?;
+        }
+        self.native_assets
+            .capacity_frames()
+            .ok()
+            .and_then(|n| n.checked_add(self.resident_frames))
+            .and_then(|n| n.checked_add(incoming_total))
+            .filter(|n| *n <= self.max_resident_frames)
+            .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+        let pcm_floor = pcm_bytes(
+            self.resident_frames
+                .checked_add(incoming_total)
+                .ok_or(SessionError::Invalid("resident frame count overflow"))?,
+        )?;
+        if pcm_floor > reservation.storage.max_retained_bytes
+            || pcm_floor > reservation.storage.max_construction_peak_bytes
+        {
+            return Err(ResourcePreparationError::Storage(
+                hex_engine::AudioStorageError::ReservationExceeded,
+            )
+            .into());
+        }
+        let mut sources = Vec::new();
+        sources
+            .try_reserve_exact(originals.len())
+            .map_err(|_| SessionError::Invalid("could not reserve native original sources"))?;
+        let mut staged_ids = Vec::new();
+        staged_ids
+            .try_reserve_exact(originals.len())
+            .map_err(|_| SessionError::Invalid("could not reserve native original identities"))?;
+        for (id, decoded) in originals {
+            let native = decoded
+                .into_native_source_on_control(reservation.max_scan_frames, cancel)
+                .map_err(|refused| SessionError::from(refused.reason))?;
+            let (_, source) = native.into_parts();
+            sources.push((id, source));
+            staged_ids.push(id);
+        }
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let legacy = pcm_bytes(self.resident_frames)?;
+        let overview_budget = &self.overview_budget;
+        let old_overviews = &self.source_overviews;
+        let media_assets = &self.media;
+        let native_assets = &mut self.native_assets;
+        let shutdown = &self.shutdown;
+        let transforms = &self.audio_transforms;
+        let waveforms = &self.audio_clip_waveforms;
+        let (created, ((prepared, source_overviews), _summary)) = self
+            .editor
+            .execute_prepared_transition(command, |old, candidate| {
+                native_assets.insert_many_checked_on_control(
+                    sources.into_iter(),
+                    legacy,
+                    reservation.storage,
+                    reservation.max_scan_frames,
+                    cancel,
+                    |stage| {
+                        let mut source_overviews = old_overviews.clone();
+                        for &id in &staged_ids {
+                            let source = stage.source(id).ok_or(SessionError::Invalid(
+                                "staged original source is unavailable",
+                            ))?;
+                            let frames = source.resident_frames().ok_or(SessionError::Invalid(
+                                "staged original source is not resident",
+                            ))?;
+                            let facts = stage.original_source_facts_on_control(id)?;
+                            let overview =
+                                crate::source_overview::OriginalSourceOverview::prepare_cancellable(
+                                    overview_budget,
+                                    frames,
+                                    source.sample_rate(),
+                                    facts,
+                                    |_| {
+                                        cancel.load(Ordering::Acquire)
+                                            || shutdown.load(Ordering::Acquire)
+                                    },
+                                )?;
+                            source_overviews =
+                                source_overviews.inserted(overview_budget, id, overview)?;
+                        }
+                        let mut prepared = prepare(
+                            old,
+                            candidate,
+                            &media,
+                            table,
+                            transforms,
+                            waveforms,
+                            stage,
+                            media_assets,
+                        )?;
+                        if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                            return Err(ResourcePreparationError::Cancelled.into());
+                        }
+                        finalize(candidate, &mut prepared, stage)?;
+                        Ok::<_, SessionError>((prepared, source_overviews))
+                    },
+                )
+            })?;
+        self.source_overviews = source_overviews;
+        Ok((created, prepared))
+    }
+
+    /// Headless variant of [`Self::execute_command_with_native_originals_prepared`]
+    /// when no live resident audio sink is attached.
+    pub(crate) fn command_prepared_revision_with_native_originals(
+        &mut self,
+        command: Command,
+        originals: Vec<(AssetId, DecodedAudio)>,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.validate_prepared_command(&command)?;
+        let cancel = AtomicBool::new(false);
+        self.execute_command_with_native_originals_prepared(
+            command,
+            originals,
+            &cancel,
+            |source, candidate, media, table, transforms, waveforms, _stage, _media_assets| {
+                let prepared = prepare_transition_with_waveforms(
+                    source, candidate, previous, media, table, transforms, waveforms,
+                )
+                .and_then(|prepared| {
+                    tuning_prepared_transition(prepared, source, candidate, previous)
+                })
+                .map(Arc::new)
+                .map_err(SessionError::from)?;
+                Ok(prepared)
+            },
+            |_, _, _| Ok(()),
+        )
+    }
 }
 
 #[cfg(test)]

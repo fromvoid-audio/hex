@@ -125,6 +125,135 @@ impl Session {
             .finish_resident_effect_edit(context, result.is_ok());
         result
     }
+
+    /// Execute one canonical command while staging a verified batch of preset
+    /// or default original-rate audio files into `self.native_assets` and
+    /// publishing the resulting resident snapshot atomically.
+    pub(in crate::service) fn execute_resident_command_with_originals(
+        &mut self,
+        command: Command,
+        originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
+        resident: ResidentSinkContext<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<(Created, Snapshot), SessionError> {
+        let ResidentSinkContext {
+            context,
+            sink,
+            admission,
+        } = resident;
+        let legacy_precheck = self
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .chain(originals.iter().map(|(_, decoded)| decoded.audio()))
+            .collect::<Vec<_>>();
+        let current_view = current.map_or(DeviceResourceAdmission::default(), Snapshot::admission);
+        let views = sink.resident_admission();
+        let registered = [current_view, views[0], views[1], views[2]];
+        sampler_export::Admission {
+            native: sink.native_sampler_hold(),
+            ..admission
+        }
+        .check_native_originals_registered(
+            NativeSamplerSources::Committed(&self.native_assets),
+            &legacy_precheck,
+            self.native_reservation,
+            self.max_resident_frames,
+            None,
+            &registered,
+        )?;
+        let limits = self.native_reservation.ok_or(SessionError::Invalid(
+            "resident resource reservation unavailable",
+        ))?;
+        let max_frames = self.max_resident_frames;
+        let shutdown = Arc::clone(&self.shutdown);
+        let cancel = AtomicBool::new(false);
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .cloned()
+            .collect::<Vec<_>>();
+        let legacy_refs = legacy.iter().collect::<Vec<_>>();
+        let sink = std::cell::RefCell::new(sink);
+        let result = self.execute_command_with_native_originals_prepared(
+            command,
+            originals,
+            &cancel,
+            |source, project, media, table, transforms, waveforms, stage, _| {
+                let inputs = Inputs {
+                    native_parameter_input: None,
+                    plugin_effect: None,
+                    device_insert_control: None,
+                    restoring_plugin_state: false,
+                    preparing_edit: true,
+                    power_on: None,
+                    running_power_off: None,
+                    hosted_move: None,
+                    reload_plugin_device: None,
+                    stopped_history: true,
+                    predecessor: None,
+                    native: NativeSamplerSources::Staged(stage),
+                    limits,
+                    max_frames,
+                    shutdown: &shutdown,
+                    cancel: None,
+                    admission,
+                    current,
+                    legacy: legacy_refs.clone(),
+                };
+                let mut sink = sink.try_borrow_mut().map_err(|_| {
+                    SessionError::Invalid("resident publication is already borrowed")
+                })?;
+                let mut snapshot = inputs.prepare_transition(
+                    source,
+                    project,
+                    false,
+                    &mut **sink,
+                    CompileResources {
+                        media,
+                        table,
+                        transforms,
+                        waveforms,
+                    },
+                    context,
+                )?;
+                snapshot.source_origin = ResidentSourceOrigin::CanonicalCandidate;
+                Ok(snapshot)
+            },
+            |project, snapshot, stage| {
+                let inputs = Inputs {
+                    native_parameter_input: None,
+                    plugin_effect: None,
+                    device_insert_control: None,
+                    restoring_plugin_state: false,
+                    preparing_edit: true,
+                    power_on: None,
+                    running_power_off: None,
+                    hosted_move: None,
+                    reload_plugin_device: None,
+                    stopped_history: true,
+                    predecessor: None,
+                    native: NativeSamplerSources::Staged(stage),
+                    limits,
+                    max_frames,
+                    shutdown: &shutdown,
+                    cancel: None,
+                    admission,
+                    current,
+                    legacy: legacy_refs.clone(),
+                };
+                let mut sink = sink.try_borrow_mut().map_err(|_| {
+                    SessionError::Invalid("resident publication is already borrowed")
+                })?;
+                inputs.publish(snapshot, project, &mut **sink, context)?;
+                Ok(())
+            },
+        );
+        sink.into_inner()
+            .finish_resident_effect_edit(context, result.is_ok());
+        result
+    }
     pub(in crate::service) fn sampler_resident_edit(
         &mut self,
         edit: SamplerEdit,

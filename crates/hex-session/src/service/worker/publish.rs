@@ -92,6 +92,7 @@ impl WorkerLoop {
             failed_plugin_adoption: _,
             failed_plugin_publication_confirmed,
             private_sampler: _,
+            pending_unit_originals: _,
         } = exec.outcome;
 
         let (
