@@ -101,6 +101,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
         sidechains: Vec::new(),
+        device_output_routes: Vec::new(),
         return_feeds: Vec::new(),
         import_provenance: None,
         sample_rate: 48_000,

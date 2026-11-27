@@ -157,6 +157,59 @@ impl MultiOutputRouteTable {
         Self { routes: next }
     }
 
+    /// Project canonical `hex_project::Project::device_output_routes()` into a
+    /// validated runtime multi-output routing table reconciled against each
+    /// device's currently active output bus inventory.
+    ///
+    /// Buses absent from `active_inventory` remain inactive without shifting
+    /// sibling indices or silently downmixing.
+    pub fn from_project(
+        project: &hex_project::Project,
+        active_inventory: &[(u64, &[u16])],
+    ) -> Result<Self, MultiOutputError> {
+        let mut routes = Vec::with_capacity(project.device_output_routes().len());
+        for route in project.device_output_routes() {
+            let device_id = route.device.value();
+            let active = active_inventory
+                .iter()
+                .find(|(id, _)| *id == device_id)
+                .is_some_and(|(_, buses)| buses.contains(&route.bus_index));
+            let destination = match route.destination {
+                hex_project::DeviceOutputDestination::Track(id) => {
+                    MultiOutputDestination::Track(id.value())
+                }
+                hex_project::DeviceOutputDestination::Return(id) => {
+                    MultiOutputDestination::Return(id.value())
+                }
+                hex_project::DeviceOutputDestination::Main => MultiOutputDestination::Main,
+            };
+            routes.push(MultiOutputRoute {
+                device_id,
+                bus_index: route.bus_index,
+                destination,
+                active,
+            });
+        }
+        Self::new(routes)
+    }
+
+    /// Bitmask of active auxiliary buses (`bus_index >= 1`) that do NOT have an
+    /// authored route and therefore remain eligible for default stereo mixdown
+    /// into bus 0. Any auxiliary bus with an authored route (active or inactive)
+    /// is excluded so routed outputs are never doubled into bus 0.
+    pub fn downmix_auxiliary_mask(&self, device_id: u64, active_bus_indices: &[u16]) -> u32 {
+        let mut mask = 0_u32;
+        for &bus_index in active_bus_indices {
+            if bus_index == 0 || usize::from(bus_index) >= MAX_MULTI_OUTPUT_BUSES {
+                continue;
+            }
+            if self.route_for(device_id, bus_index).is_none() {
+                mask |= 1_u32 << bus_index;
+            }
+        }
+        mask
+    }
+
     /// Deterministic binary snapshot encoding for project save/reopen round trips.
     pub fn encode_snapshot(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(7 + self.routes.len() * 20);
@@ -327,6 +380,19 @@ impl MultiOutputRouter {
             delays,
             meters,
         })
+    }
+
+    /// Prepare an allocation-free router directly from canonical project routes
+    /// reconciled against `active_bus_indices`.
+    pub fn prepare_from_project(
+        device_id: u64,
+        project: &hex_project::Project,
+        active_bus_indices: &[u16],
+        pdc_frames: usize,
+    ) -> Result<Self, MultiOutputError> {
+        let table =
+            MultiOutputRouteTable::from_project(project, &[(device_id, active_bus_indices)])?;
+        Self::prepare(device_id, &table, pdc_frames)
     }
 
     pub const fn device_id(&self) -> u64 {
@@ -556,5 +622,126 @@ mod tests {
             reconciled.route_for(device, 2).unwrap().destination,
             MultiOutputDestination::Track(t2)
         );
+    }
+
+    #[test]
+    fn project_routes_prepare_distinct_destinations_and_prevent_routed_auxiliary_downmix() {
+        use hex_project::{
+            Command, Created, DeviceOutputDestination, Editor, Project, TrackDeviceSlot,
+        };
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Track(inst_track) = editor
+            .execute(Command::InsertTrackWithDevice {
+                name: "drums".into(),
+                before_track: None,
+                slot: TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("instrument track");
+        };
+        let Created::Track(kick_track) = editor
+            .execute(Command::AddTrack {
+                name: "kick".into(),
+            })
+            .unwrap()
+        else {
+            panic!("kick track");
+        };
+        let Created::ReturnTrack(room_return) = editor
+            .execute(Command::AddReturnTrack {
+                name: "room".into(),
+            })
+            .unwrap()
+        else {
+            panic!("room return");
+        };
+        let device = editor
+            .project()
+            .track(inst_track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        editor
+            .execute(Command::SetDeviceOutputRoute {
+                device,
+                bus_index: 0,
+                destination: Some(DeviceOutputDestination::Main),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetDeviceOutputRoute {
+                device,
+                bus_index: 1,
+                destination: Some(DeviceOutputDestination::Track(kick_track)),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetDeviceOutputRoute {
+                device,
+                bus_index: 3,
+                destination: Some(DeviceOutputDestination::Return(room_return)),
+            })
+            .unwrap();
+
+        // Active plugin buses: 0, 1, 2 (unrouted auxiliary), 3 (routed to room).
+        // Bus 2 stays eligible for legacy stereo downmix; routed buses 1 and 3 must never double into bus 0.
+        let active_buses = [0_u16, 1, 2, 3];
+        let table = MultiOutputRouteTable::from_project(
+            editor.project(),
+            &[(device.value(), &active_buses)],
+        )
+        .unwrap();
+        assert_eq!(
+            table.downmix_auxiliary_mask(device.value(), &active_buses),
+            1 << 2
+        );
+
+        // If bus 1 becomes inactive after restart, bus 3 keeps its exact route and bus 1 is NOT downmixed.
+        let restarted_buses = [0_u16, 2, 3];
+        let restarted = MultiOutputRouteTable::from_project(
+            editor.project(),
+            &[(device.value(), &restarted_buses)],
+        )
+        .unwrap();
+        assert!(!restarted.route_for(device.value(), 1).unwrap().active);
+        assert!(restarted.route_for(device.value(), 3).unwrap().active);
+        assert_eq!(
+            restarted.downmix_auxiliary_mask(device.value(), &restarted_buses),
+            1 << 2
+        );
+
+        let mut router = MultiOutputRouter::prepare_from_project(
+            device.value(),
+            editor.project(),
+            &restarted_buses,
+            0,
+        )
+        .unwrap();
+        let mut b0 = [[0.1, 0.1]; 2];
+        let mut b1 = [[0.9, 0.9]; 2]; // inactive
+        let mut b2 = [[0.2, 0.2]; 2]; // unrouted
+        let mut b3 = [[0.4, -0.4]; 2];
+        let mut delivered = BTreeMap::new();
+        router
+            .route_block(&mut [&mut b0, &mut b1, &mut b2, &mut b3], 2, |dest, pcm| {
+                delivered.insert(dest, pcm.to_vec());
+            })
+            .unwrap();
+        assert_eq!(delivered.len(), 2);
+        assert_eq!(
+            delivered.get(&MultiOutputDestination::Main).unwrap(),
+            &vec![[0.1, 0.1]; 2]
+        );
+        assert_eq!(
+            delivered
+                .get(&MultiOutputDestination::Return(room_return.value()))
+                .unwrap(),
+            &vec![[0.4, -0.4]; 2]
+        );
+        assert!(!delivered.contains_key(&MultiOutputDestination::Track(kick_track.value())));
     }
 }

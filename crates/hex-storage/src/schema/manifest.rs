@@ -11,9 +11,9 @@
 //! schema identifier `126`.
 use crate::{
     AUTOMATION_CURVES_AND_FREEZE_SCHEMA_VERSION, CAPABILITY_MANIFEST_SCHEMA_VERSION,
-    LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION, MAX_PROJECT_DOCUMENT_BYTES,
-    MIDI_EXPRESSION_SCHEMA_VERSION, MIDI_PROCESSOR_SCHEMA_VERSION, Project,
-    SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError, TRACK_IO_ROUTING_SCHEMA_VERSION,
+    DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION, LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION,
+    MAX_PROJECT_DOCUMENT_BYTES, MIDI_EXPRESSION_SCHEMA_VERSION, MIDI_PROCESSOR_SCHEMA_VERSION,
+    Project, SESSION_FOLLOW_ACTION_SCHEMA_VERSION, StorageError, TRACK_IO_ROUTING_SCHEMA_VERSION,
 };
 use hex_project::{
     MAX_ASSETS, MAX_METER_POINTS, MAX_NATIVE_SOURCES, MAX_RETURN_TRACKS, MAX_TEMPO_POINTS,
@@ -29,13 +29,13 @@ mod tests;
 
 use audio::{AliasesDe, AliasesSer, SessionDe, SessionSer};
 use devices::{
-    AssetDe, AssetSer, AudioFeedDto, DeviceDe, DeviceSer, FrozenTrackDto, LocatorDe, LocatorSer,
-    LoopRegionDto, MeterPointDto, MidiRouteDto, NativeSourceDe, NativeSourceSer, ProvenanceDe,
-    ProvenanceSer, ReturnFeedDto, ReturnTrackDe, ReturnTrackSer, SampleRateModeDto, SectionDe,
-    SectionSer, SidechainDto, TempoPointDto, TrackDe, TrackIoDto, TrackMixerAutomationDto,
-    TrackSer, TuningDto, read_audio_feeds, read_frozen_tracks, read_locators, read_main_devices,
-    read_midi_routes, read_mixer_automation, read_return_feeds, read_sections, read_sidechains,
-    read_track_io,
+    AssetDe, AssetSer, AudioFeedDto, DeviceDe, DeviceOutputRouteDto, DeviceSer, FrozenTrackDto,
+    LocatorDe, LocatorSer, LoopRegionDto, MeterPointDto, MidiRouteDto, NativeSourceDe,
+    NativeSourceSer, ProvenanceDe, ProvenanceSer, ReturnFeedDto, ReturnTrackDe, ReturnTrackSer,
+    SampleRateModeDto, SectionDe, SectionSer, SidechainDto, TempoPointDto, TrackDe, TrackIoDto,
+    TrackMixerAutomationDto, TrackSer, TuningDto, read_audio_feeds, read_device_output_routes,
+    read_frozen_tracks, read_locators, read_main_devices, read_midi_routes, read_mixer_automation,
+    read_return_feeds, read_sections, read_sidechains, read_track_io,
 };
 
 /// Single source of truth for post-schema-63 capabilities, schema versions,
@@ -171,6 +171,13 @@ pub(crate) const SCHEMA_FEATURES: &[SchemaFeature] = &[
         post_112_wrapper: false,
         legacy_refusal: "older schema cannot save device modulation",
         present: super::device_modulation::contains,
+    },
+    SchemaFeature {
+        capability: "device_output_routes",
+        schema_version: crate::DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION,
+        post_112_wrapper: false,
+        legacy_refusal: "older schema cannot save multi-output device routes",
+        present: contains_device_output_routes,
     },
     SchemaFeature {
         capability: "device_state",
@@ -525,6 +532,7 @@ pub(crate) const SUPPORTED_CAPABILITIES: &[&str] = &[
     "content_view_resampler",
     "device_automation_touch",
     "device_modulation",
+    "device_output_routes",
     "device_state",
     "event_warp_sources",
     "extended_automation_touch",
@@ -680,12 +688,19 @@ pub(crate) fn contains_midi_processor(project: &Project) -> bool {
         .any(|track| track.midi_processor().is_some())
 }
 
-/// True when `project` should be saved directly as unified schema 126..=132
+/// True when `project` carries any multi-output device bus routes, requiring
+/// schema 133 (`device_output_routes`).
+pub(crate) fn contains_device_output_routes(project: &Project) -> bool {
+    !project.device_output_routes().is_empty()
+}
+
+/// True when `project` should be saved directly as unified schema 126..=133
 /// rather than stacking historical post-112 `RawValue` wrappers.
 /// Projects with zero post-112 features retain their oldest compatible format;
 /// historical schemas `1..=125` remain readable via explicit versioned decoders.
 pub(crate) fn requires_manifest_schema(project: &Project) -> bool {
-    contains_midi_processor(project)
+    contains_device_output_routes(project)
+        || contains_midi_processor(project)
         || contains_linked_scene_placements(project)
         || contains_session_follow_action(project)
         || contains_track_io_routing(project)
@@ -815,6 +830,8 @@ struct ProjectSer<'a> {
     scene_follow_actions: Vec<SceneFollowActionDto>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     track_midi_processors: Vec<TrackMidiProcessorSer>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    device_output_routes: Vec<DeviceOutputRouteDto>,
 }
 
 #[derive(Serialize)]
@@ -929,6 +946,8 @@ struct ProjectDe<'a> {
     scene_follow_actions: Vec<SceneFollowActionDto>,
     #[serde(default, borrow, deserialize_with = "read_track_midi_processors")]
     track_midi_processors: Vec<TrackMidiProcessorDe<'a>>,
+    #[serde(default, deserialize_with = "read_device_output_routes")]
+    device_output_routes: Vec<DeviceOutputRouteDto>,
 }
 
 #[derive(Deserialize)]
@@ -1059,8 +1078,15 @@ pub(crate) fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
             entries.sort_by_key(|entry| entry.track);
             entries
         },
+        device_output_routes: project
+            .device_output_routes()
+            .iter()
+            .map(DeviceOutputRouteDto::from)
+            .collect(),
     };
-    let version = if contains_midi_processor(project) {
+    let version = if contains_device_output_routes(project) {
+        DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION
+    } else if contains_midi_processor(project) {
         MIDI_PROCESSOR_SCHEMA_VERSION
     } else if contains_linked_scene_placements(project) {
         LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
@@ -1104,6 +1130,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
                 | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
                 | LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
                 | MIDI_PROCESSOR_SCHEMA_VERSION
+                | DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION
         )
     {
         return Err(StorageError::Invalid(
@@ -1177,6 +1204,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     {
         return Err(StorageError::Invalid(
             "schemas before 132 cannot carry midi_processor",
+        ));
+    }
+    if document.version < DEVICE_OUTPUT_ROUTES_SCHEMA_VERSION
+        && (document
+            .capabilities
+            .iter()
+            .any(|cap| cap == "device_output_routes")
+            || !document.project.device_output_routes.is_empty())
+    {
+        return Err(StorageError::Invalid(
+            "schemas before 133 cannot carry device_output_routes",
         ));
     }
 
@@ -1263,6 +1301,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         audio_feeds: body.audio_feeds.into_iter().map(Into::into).collect(),
         midi_routes: body.midi_routes.into_iter().map(Into::into).collect(),
         sidechains: body.sidechains.into_iter().map(Into::into).collect(),
+        device_output_routes: body
+            .device_output_routes
+            .into_iter()
+            .map(Into::into)
+            .collect(),
         import_provenance: body
             .import_provenance
             .map(ProvenanceDe::into_model)

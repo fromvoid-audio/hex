@@ -1062,6 +1062,7 @@ fn same_shell(
         audio_feeds,
         midi_routes,
         sidechains,
+        device_output_routes,
         import_provenance,
         sample_rate,
         sample_rate_mode,
@@ -1127,6 +1128,7 @@ fn same_shell(
         || audio_feeds != &b.audio_feeds
         || midi_routes != &b.midi_routes
         || sidechains != &b.sidechains
+        || device_output_routes != &b.device_output_routes
         || import_provenance != &b.import_provenance
         || sample_rate != &b.sample_rate
         || sample_rate_mode != &b.sample_rate_mode

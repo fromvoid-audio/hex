@@ -39,6 +39,7 @@ pub struct Snapshot {
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
     pub sidechains: Vec<crate::SidechainRouteSnapshot>,
+    pub device_output_routes: Vec<crate::DeviceOutputRouteSnapshot>,
     pub import_provenance: Option<crate::ImportProvenance>,
     pub sample_rate: u32,
     pub sample_rate_mode: crate::SampleRateMode,
@@ -302,6 +303,15 @@ impl Project {
                 .map(|route| crate::SidechainRouteSnapshot {
                     device: route.device.value(),
                     source: route.source.value(),
+                })
+                .collect(),
+            device_output_routes: self
+                .device_output_routes
+                .iter()
+                .map(|route| crate::DeviceOutputRouteSnapshot {
+                    device: route.device.value(),
+                    bus_index: route.bus_index,
+                    destination: route.destination.into_routing_owner(),
                 })
                 .collect(),
             midi_routes: self
@@ -865,6 +875,7 @@ impl Project {
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
         let sidechains = std::mem::take(&mut snapshot.sidechains);
+        let device_output_routes = std::mem::take(&mut snapshot.device_output_routes);
         let automatic_track_names = std::mem::take(&mut snapshot.automatic_track_names);
         let retained_source_paths = std::mem::take(&mut snapshot.retained_source_paths);
         let mixer_automation_entries = std::mem::take(&mut snapshot.mixer_automation);
@@ -1792,6 +1803,9 @@ impl Project {
         }
         if !sidechains.is_empty() {
             project.adopt_sidechains(sidechains)?;
+        }
+        if !device_output_routes.is_empty() {
+            project.adopt_device_output_routes(device_output_routes)?;
         }
         project.validate_arrangement_occupancy()?;
         project.validate_midi_volumes()?;
