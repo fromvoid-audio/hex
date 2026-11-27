@@ -201,6 +201,16 @@ pub(super) fn render_body(
                 .child(control(6, MicroDial, Some("mix"))),
         )
         .when(uses_morph, |col| col.child(control(5, MicroDial, None)));
+    let rate = if lfo_synced {
+        control(17, CompactSelector, Some("div"))
+    } else {
+        control(8, MicroDial, Some("rate"))
+    };
+    let phase = if lfo_spin {
+        control(19, MicroDial, Some("spin"))
+    } else {
+        control(10, MicroDial, Some("phase"))
+    };
     let lfo = device_composition::rail_column()
         .child(theme::text("lfo"))
         .child(
@@ -210,27 +220,17 @@ pub(super) fn render_body(
                 .child(control(9, CompactSelector, Some("shape")))
                 .child(control(16, CompactSelector, Some("sync"))),
         )
-        .child(
-            div()
-                .flex()
-                .gap(px(DIAL_GAP))
-                .child(if lfo_synced {
-                    control(17, CompactSelector, Some("div"))
-                } else {
-                    control(8, MicroDial, Some("rate"))
-                })
-                .child(control(7, MicroDial, Some("amount"))),
-        )
+        .child(div().flex().gap(px(DIAL_GAP)).child(rate).child(control(
+            7,
+            MicroDial,
+            Some("amount"),
+        )))
         .child(
             div()
                 .flex()
                 .gap(px(DIAL_GAP))
                 .child(control(18, CompactSelector, Some("st")))
-                .child(if lfo_spin {
-                    control(19, MicroDial, Some("spin"))
-                } else {
-                    control(10, MicroDial, Some("phase"))
-                }),
+                .child(phase),
         );
     let envelope = device_composition::rail_column()
         .child(theme::text("envelope"))
