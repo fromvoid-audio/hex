@@ -680,3 +680,102 @@ fn quality_phase_advance_preserves_odd_steps_and_wrap_across_partitions() {
         std::array::from_fn(|i| { initial[i].wrapping_add(steps[i].wrapping_mul(129)) })
     );
 }
+
+#[test]
+fn operator_polyphony_budget_admits_64_occurrences_refuses_65th_and_respects_storage_ceiling() {
+    use hex_lattice::{NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair};
+
+    let state = OPERATOR_METADATA.default_state().unwrap();
+    let state = OPERATOR_METADATA
+        .patch_parameter(&state, parameter::GLOBAL_MODE, ParameterValue::Choice(1))
+        .unwrap();
+    let state = OPERATOR_METADATA
+        .patch_parameter(&state, parameter::feedback(4), ParameterValue::Float(0.25))
+        .unwrap();
+    let settings = OperatorSettings::from_state(&state).unwrap();
+    let factory = Factory::new(
+        settings,
+        settings.prepare_configuration(48_000).unwrap(),
+        crate::shared_sine_table(),
+        48_000,
+    )
+    .unwrap();
+
+    // Honest storage accounting: twin <= MAX_PROCESSOR_RUNTIME_BYTES, pair <= 2 MiB.
+    let runtime = factory.create_runtime();
+    assert_eq!(factory.declared_twin_bytes(), runtime.fixed_storage_bytes());
+    assert_eq!(factory.declared_twin_bytes(), size_of::<Runtime>());
+    assert!(factory.declared_twin_bytes() <= hex_lattice::MAX_PROCESSOR_RUNTIME_BYTES);
+    assert!(2 * factory.declared_twin_bytes() <= 2 * 1024 * 1024);
+    assert_eq!(factory.max_active_occurrences(), 64);
+
+    let mut pair = NativeInstrumentRuntimePair::new(
+        &factory,
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: factory.max_events_per_block(),
+            max_active_occurrences: 64,
+            max_tail_frames: 480_000,
+        },
+    )
+    .unwrap();
+
+    // Admit all 64 concurrent occurrences cleanly and produce finite audible stereo PCM.
+    let sixty_four: Vec<NativeInstrumentEvent> = (1..=64u64)
+        .map(|id| NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: id,
+            pitch: 36 + (id as u8 % 48),
+            velocity: 100,
+        })
+        .collect();
+    let mut pcm = vec![[0.0; 2]; 32];
+    pair.begin_block();
+    pair.process_block(&sixty_four, &mut pcm, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+        .expect("64 concurrent occurrences must admit");
+    pair.commit_block();
+    assert!(pcm.iter().all(|f| f[0].is_finite() && f[1].is_finite()));
+    assert!(pcm.iter().any(|f| f[0].abs() > 1e-6 || f[1].abs() > 1e-6));
+
+    // A 65th simultaneous occurrence is refused explicitly without silent stealing or
+    // corrupting the 64 active voices on rollback.
+    let overflow = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 65,
+        pitch: 72,
+        velocity: 100,
+    }];
+    let mut overflow_pcm = vec![[0.0; 2]; 32];
+    pair.begin_block();
+    assert!(
+        pair.process_block(
+            &overflow,
+            &mut overflow_pcm,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+        .is_err(),
+        "65th simultaneous occurrence must be rejected rather than silently stealing a voice"
+    );
+    pair.rollback_block();
+
+    // Active 64 voices continue rendering cleanly after rollback.
+    let mut after_rollback = vec![[0.0; 2]; 32];
+    pair.begin_block();
+    pair.process_block(
+        &[],
+        &mut after_rollback,
+        &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    )
+    .expect("rolled-back 64-voice state must keep rendering");
+    pair.commit_block();
+    assert!(
+        after_rollback
+            .iter()
+            .all(|f| f[0].is_finite() && f[1].is_finite())
+    );
+    assert!(
+        after_rollback
+            .iter()
+            .any(|f| f[0].abs() > 1e-6 || f[1].abs() > 1e-6)
+    );
+}
