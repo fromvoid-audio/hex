@@ -790,13 +790,15 @@ impl Render for HorizontalSlotFixture {
                 value: format!("{:.0}%", norm * 100.0).into(),
                 accent_color: palette[index % palette.len()],
                 enabled: true,
+                armed: index == 0,
+                unsupported: false,
                 preview: crate::HostSlotPreview::MacroDial(norm),
                 modulation_ring: Some(crate::HostSlotModulationRing {
                     base: norm,
                     delta: 0.25,
                     color: palette[index % palette.len()],
                 }),
-                interactive: None,
+                interactive: Some(div().size_full().into_any_element()),
             });
         }
         let mut mod_cfg =
@@ -808,6 +810,8 @@ impl Render for HorizontalSlotFixture {
                 value: "1.0 hz".into(),
                 accent_color: palette[(index + 2) % palette.len()],
                 enabled: true,
+                armed: false,
+                unsupported: false,
                 preview: crate::HostSlotPreview::Waveform(crate::HostSlotWaveform::Sine),
                 modulation_ring: Some(crate::HostSlotModulationRing {
                     base: 0.5,

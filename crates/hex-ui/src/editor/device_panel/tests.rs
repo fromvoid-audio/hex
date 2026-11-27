@@ -56,6 +56,8 @@ mod header_drop_tests;
 
 mod header_style_tests;
 
+mod host_slot_layout_ui_tests;
+
 mod keyboard_delete_tests;
 
 mod keyboard_navigation_tests;

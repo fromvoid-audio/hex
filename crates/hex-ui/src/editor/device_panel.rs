@@ -106,7 +106,7 @@ pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_k
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod modulators;
-pub(super) use modulators::AddModulatorAction;
+pub(super) use modulators::{AddModulatorAction, bind_keys as bind_modulator_keys};
 #[cfg(feature = "ui-test-support")]
 pub(super) mod operator_focus_fixture;
 mod operator_panel;

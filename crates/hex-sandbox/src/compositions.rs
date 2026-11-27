@@ -43,6 +43,8 @@ impl Gallery {
             value: "50%".into(),
             accent_color: theme::color(theme::PaletteRole::Primary),
             enabled: !self.disabled,
+            armed: false,
+            unsupported: false,
             preview: hex_widgets::HostSlotPreview::MacroDial(0.5),
             modulation_ring: Some(hex_widgets::HostSlotModulationRing {
                 base: 0.5,
@@ -63,6 +65,8 @@ impl Gallery {
             value: "1.0 hz".into(),
             accent_color: theme::color(theme::PaletteRole::Primary),
             enabled: !self.disabled,
+            armed: false,
+            unsupported: false,
             preview: hex_widgets::HostSlotPreview::Waveform(hex_widgets::HostSlotWaveform::Sine),
             modulation_ring: Some(hex_widgets::HostSlotModulationRing {
                 base: 0.5,

@@ -1038,6 +1038,7 @@ impl Render for EditorView {
                         context.contains("hex_text_editing")
                             || context.contains("hex_text_input")
                             || context.contains("hex_browser_search")
+                            || context.contains("hex_modulator_slot")
                     })
                 {
                     if !event.is_held {

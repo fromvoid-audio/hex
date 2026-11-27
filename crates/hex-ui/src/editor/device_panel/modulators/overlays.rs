@@ -38,6 +38,7 @@ pub(in crate::editor) fn target_overlay(
     {
         return None;
     }
+    let accent_color = source_accent_color(bank, source.source);
     let target = target_drag::Target {
         device,
         source,
@@ -48,9 +49,12 @@ pub(in crate::editor) fn target_overlay(
         cx,
         target,
         assigned,
-        state.revision,
-        format!("map-target-{}-{}", device.value(), parameter.value()),
-        format!("map-depth-{}-{}", device.value(), parameter.value()),
+        MappedTargetOverlaySpec {
+            revision: state.revision,
+            accent_color,
+            selector: format!("map-target-{}-{}", device.value(), parameter.value()),
+            depth_selector: format!("map-depth-{}-{}", device.value(), parameter.value()),
+        },
     ))
 }
 
@@ -85,6 +89,7 @@ pub(in crate::editor) fn vst3_target_overlay(
     if assigned.is_none() && bank.routes().len() >= hex_project::MAX_MODULATION_ROUTES_PER_DEVICE {
         return None;
     }
+    let accent_color = source_accent_color(bank, source.source);
     Some(mapped_target_overlay(
         view,
         cx,
@@ -94,10 +99,20 @@ pub(in crate::editor) fn vst3_target_overlay(
             mapping: MappingTarget::Vst3(mapping),
         },
         assigned,
-        state.revision,
-        format!("map-vst3-{control}-{}-{}", device.value(), row.id),
-        format!("map-vst3-{control}-depth-{}-{}", device.value(), row.id),
+        MappedTargetOverlaySpec {
+            revision: state.revision,
+            accent_color,
+            selector: format!("map-vst3-{control}-{}-{}", device.value(), row.id),
+            depth_selector: format!("map-vst3-{control}-depth-{}-{}", device.value(), row.id),
+        },
     ))
+}
+
+pub(in crate::editor) struct MappedTargetOverlaySpec {
+    pub(super) revision: u64,
+    pub(super) accent_color: u32,
+    pub(super) selector: String,
+    pub(super) depth_selector: String,
 }
 
 pub(in crate::editor) fn mapped_target_overlay(
@@ -105,10 +120,14 @@ pub(in crate::editor) fn mapped_target_overlay(
     cx: &mut Context<EditorView>,
     target: target_drag::Target,
     assigned: Option<&DeviceModulationRoute>,
-    revision: u64,
-    selector: String,
-    depth_selector: String,
+    spec: MappedTargetOverlaySpec,
 ) -> AnyElement {
+    let MappedTargetOverlaySpec {
+        revision,
+        accent_color,
+        selector,
+        depth_selector,
+    } = spec;
     let display = target_drag::displayed_depth(view, target, assigned);
     let control = div()
         .id(ElementId::Name(selector.clone().into()))
@@ -116,7 +135,7 @@ pub(in crate::editor) fn mapped_target_overlay(
         .absolute()
         .inset_0()
         .border_1()
-        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+        .border_color(rgb(accent_color))
         .children(display.map(|depth| {
             let label = depth_text(depth);
             let selector = format!("{depth_selector}-{label}");
@@ -127,11 +146,184 @@ pub(in crate::editor) fn mapped_target_overlay(
                 .px(px(2.0))
                 .text_size(px(9.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                .text_color(rgb(accent_color))
                 .debug_selector(move || selector.clone())
                 .child(theme::text(label))
         }));
     target_drag::attach(view, cx, control, target, assigned, revision).into_any_element()
+}
+
+pub(super) fn source_accent_color(bank: &DeviceModulation, source_id: ModulationSourceId) -> u32 {
+    bank.sources()
+        .iter()
+        .find(|slot| slot.id == source_id)
+        .map_or_else(
+            || theme::color(theme::PaletteRole::Primary),
+            |slot| theme::element_colors(slot.color).accent,
+        )
+}
+
+/// Canonical effective-value modulation summary for one device parameter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct EffectiveParameterModulation {
+    /// Net signed normalized delta contributed by enabled static sources (macros/buttons).
+    pub(super) static_delta: f32,
+    /// Total authored modulation span from enabled dynamic sources (LFO, envelope, etc.).
+    pub(super) dynamic_span: f32,
+    /// Accent color of the first enabled modulating source targeting this parameter.
+    pub(super) accent_color: u32,
+    /// Count of enabled routes from enabled sources targeting this parameter.
+    pub(super) active_routes: usize,
+}
+
+pub(super) fn static_source_output(source: &Modulator, output: ModulationOutputId) -> Option<f32> {
+    match source.state.type_id() {
+        manual::TYPE_ID if output == ModulationOutputId::MAIN => {
+            manual::Settings::decode(&source.state)
+                .ok()
+                .map(|settings| settings.value.clamp(0.0, 1.0))
+        }
+        macro_four::TYPE_ID => {
+            let index = macro_four::VALUE_PARAMETERS.iter().position(|&parameter| {
+                macro_four::output_for_parameter(parameter) == Some(output)
+            })?;
+            macro_four::Settings::decode(&source.state)
+                .ok()
+                .and_then(|settings| settings.values.get(index).copied())
+                .map(|v| v.clamp(0.0, 1.0))
+        }
+        manual_button::TYPE_ID if output == ModulationOutputId::MAIN => {
+            manual_button::decode(&source.state)
+                .ok()
+                .map(|on| if on { 1.0 } else { 0.0 })
+        }
+        buttons::TYPE_ID => {
+            let index = buttons::index_for_output(output)?;
+            buttons::Settings::decode(&source.state)
+                .ok()
+                .and_then(|settings| settings.on.get(index).copied())
+                .map(|on| if on { 1.0 } else { 0.0 })
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn route_static_contribution(
+    source: &Modulator,
+    route: &DeviceModulationRoute,
+) -> Option<f32> {
+    let sample = static_source_output(source, route.output)?;
+    let (start, end) = if manual_button::uses_identity_range(source.state.type_id()) {
+        (-1.0_f64, 1.0_f64)
+    } else {
+        (
+            f64::from(route.range.start.get()),
+            f64::from(route.range.end.get()),
+        )
+    };
+    let half_amount = f64::from(route.amount.get()) * 0.5;
+    let scale = half_amount * (end - start);
+    let offset = half_amount * (end + start);
+    Some((f64::from(sample) * scale + offset) as f32)
+}
+
+/// Evaluate canonical effective modulation feedback for a native parameter target
+/// using the exact range-contribution law shared with `hex-lattice`.
+pub(super) fn effective_parameter_modulation(
+    bank: &DeviceModulation,
+    parameter: ParameterId,
+) -> Option<EffectiveParameterModulation> {
+    let mut static_delta = 0.0_f64;
+    let mut dynamic_span = 0.0_f64;
+    let mut accent_color = None;
+    let mut active_routes = 0usize;
+
+    for route in bank.routes() {
+        if !route.enabled {
+            continue;
+        }
+        let matches_target = matches!(
+            route.destination,
+            ModulationDestination::Device {
+                target: DeviceAutomationTarget::Parameter(id),
+                ..
+            } if id == parameter
+        );
+        if !matches_target {
+            continue;
+        }
+        let Some(source) = bank.sources().iter().find(|slot| slot.id == route.source) else {
+            continue;
+        };
+        if !source.enabled {
+            continue;
+        }
+        active_routes += 1;
+        if accent_color.is_none() {
+            accent_color = Some(theme::element_colors(source.color).accent);
+        }
+        if let Some(delta) = route_static_contribution(source, route) {
+            static_delta += f64::from(delta);
+        } else {
+            dynamic_span += f64::from(route.amount.get().abs());
+        }
+    }
+
+    if active_routes == 0 {
+        return None;
+    }
+    Some(EffectiveParameterModulation {
+        static_delta: static_delta.clamp(-1.0, 1.0) as f32,
+        dynamic_span: dynamic_span.clamp(0.0, 1.0) as f32,
+        accent_color: accent_color.unwrap_or_else(|| theme::color(theme::PaletteRole::Primary)),
+        active_routes,
+    })
+}
+
+/// Non-interactive effective-value modulation indicator painted on mapped parameters.
+pub(in crate::editor) fn modulation_feedback_overlay(
+    view: &EditorView,
+    device: DeviceId,
+    parameter: &NativeDeviceParameterView,
+) -> Option<AnyElement> {
+    if !parameter.enabled
+        || !parameter
+            .semantics
+            .is_some_and(|semantics| semantics.modulation == ParameterModulation::SampleRate)
+    {
+        return None;
+    }
+    let state = view.state.as_ref()?;
+    let bank = state.project.device(device)?.modulation();
+    let effective = effective_parameter_modulation(bank, parameter.descriptor.id)?;
+    let selector = format!(
+        "param-mod-effective-{}-{}-{}",
+        device.value(),
+        parameter.descriptor.id.value(),
+        depth_text(effective.static_delta)
+    );
+    let fill = if effective.static_delta.abs() > 1e-4 {
+        effective.static_delta.abs().clamp(0.15, 1.0)
+    } else {
+        effective.dynamic_span.clamp(0.15, 1.0)
+    };
+    Some(
+        div()
+            .debug_selector(move || selector.clone())
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .h(px(2.0))
+            .bg(rgb(theme::color(theme::PaletteRole::Border)))
+            .child(
+                div()
+                    .h_full()
+                    .w(gpui::relative(fill))
+                    .bg(rgb(effective.accent_color)),
+            )
+            .into_any_element(),
+    )
 }
 
 pub(in crate::editor) fn mapping_button(

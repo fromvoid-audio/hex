@@ -5,7 +5,7 @@ use crate::editor::device_comparison;
 pub(in crate::editor) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
 /// Static Utility matrix controls share the verified source handoff.
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(in crate::editor) fn source_utility_gain_available(
     project: &hex_project::Project,
     device: &Device,
