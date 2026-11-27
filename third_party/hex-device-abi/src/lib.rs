@@ -7,7 +7,12 @@
 //! immutable `Arc`-leased module handles and zero-allocation callback processing.
 #![deny(unsafe_code)]
 
+#[cfg(unix)]
 mod raw;
+#[cfg(not(unix))]
+mod raw_unsupported;
+#[cfg(not(unix))]
+use raw_unsupported as raw;
 
 use hex_lattice_contract::package_abi::{
     AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, AbiResourceDescriptor,
