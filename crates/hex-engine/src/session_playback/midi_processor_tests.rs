@@ -1930,3 +1930,127 @@ fn canonical_note_length_device_matches_pcm_oracle_across_sync_tempo_trigger_and
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn canonical_arpeggiator_device_matches_pcm_oracle_across_partitions_tempo_and_live_style_edit() {
+    use hex_devices::midi_arpeggiator::{ArpeggiatorSettings, ArpeggiatorStyle};
+    use hex_project::Tempo;
+
+    // Hold C4, E4, G4 from beat 0 to beat 3/16 with rate=1/64 (1/16 beat) and gate=50% (1/32 beat).
+    // A tempo jump 120 -> 240 BPM occurs at beat 1/16!
+    // Up style emits:
+    //   step 0: C4 (60) [0 .. 1/32)
+    //   step 1: E4 (64) [1/16 .. 3/32)
+    //   step 2: G4 (67) [2/16 .. 5/32)
+    let chord = [
+        (BeatTime::ZERO, beat_frac(3, 16), 60, 100),
+        (BeatTime::ZERO, beat_frac(3, 16), 64, 100),
+        (BeatTime::ZERO, beat_frac(3, 16), 67, 100),
+    ];
+    let up_oracle_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 100),
+        (beat_frac(2, 16), beat_frac(1, 32), 67, 100),
+    ];
+
+    let (mut editor, track) = build_subtractive_project(&chord);
+    let (mut oracle_editor, _) = build_subtractive_project(&up_oracle_notes);
+    for ed in [&mut editor, &mut oracle_editor] {
+        ed.execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 16),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    }
+
+    let arp_up = ArpeggiatorSettings {
+        style: ArpeggiatorStyle::Up,
+        rate: 0, // 1/64 note = 1/16 beat
+        gate_percent: 50,
+        steps: 1,
+        ..Default::default()
+    };
+    let Created::Device(arp_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: arp_up.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected arpeggiator processor id");
+    };
+
+    let rev_up = prepare_revision(editor.project());
+    let total_frames = 3_600_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Irregular block partitions across the tempo step match the direct PCM oracle bit-for-bit!
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_up)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        pb.render(&mut actual[cursor..cursor + len]).unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live style edit (Up -> Down) after step 0 (frame 1000, beat < 1/16):
+    // Step 0 already played C4 (60); step_index=1 under Down [67, 64, 60] plays E4 (64);
+    // step_index=2 under Down plays C4 (60)!
+    let arp_down = ArpeggiatorSettings {
+        style: ArpeggiatorStyle::Down,
+        ..arp_up
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: arp_id,
+            state: arp_down.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_down = prepare_revision(editor.project());
+    let (mut mixed_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 100),
+        (beat_frac(2, 16), beat_frac(1, 32), 60, 100),
+    ]);
+    mixed_editor
+        .execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 16),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut mixed_oracle = SessionPlayback::new(prepare_revision(mixed_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(rev_up).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..1_000]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_down).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[1_000..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}

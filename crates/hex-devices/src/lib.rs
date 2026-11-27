@@ -37,6 +37,7 @@ pub mod fm4;
 pub mod gate;
 pub mod installed_package;
 pub mod limiter;
+pub mod midi_arpeggiator;
 pub mod midi_cc_control;
 pub mod midi_chord;
 pub mod midi_note_length;
@@ -100,7 +101,7 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 5] = [
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
 ];
-static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 7] = [
+static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 8] = [
     &midi_pitch::PITCH_DEFINITION,
     &midi_chord::CHORD_DEFINITION,
     &midi_velocity::VELOCITY_DEFINITION,
@@ -108,6 +109,7 @@ static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 7] =
     &midi_random::RANDOM_DEFINITION,
     &midi_cc_control::CC_CONTROL_DEFINITION,
     &midi_note_length::NOTE_LENGTH_DEFINITION,
+    &midi_arpeggiator::ARPEGGIATOR_DEFINITION,
 ];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
