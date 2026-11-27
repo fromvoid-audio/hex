@@ -1570,6 +1570,7 @@ fn browser_inline_tree_nested_keyboard_refresh_and_hover_retain_identity(cx: &mu
             start_fraction: 0.5,
             source: super::BrowserPlaybackSource::File(sample.clone()),
             sample_rate: 48_000,
+            trace: None,
         });
     });
     let disclosure = visual.debug_bounds("browser-disclosure-1").unwrap();

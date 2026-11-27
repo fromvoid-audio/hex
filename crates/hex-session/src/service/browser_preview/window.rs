@@ -1,4 +1,8 @@
-//! Control-worker WAV windows for incremental browser audition.
+//! Control-worker seekable audio windows for incremental browser audition.
+//!
+//! Supports seekable fixed-frame WAV, RF64/BW64, AIFF/AIFC, and FLAC sources
+//! via [`WavFrameReader`]; non-seekable encodings such as ADPCM fail `open` so
+//! the caller selects the existing resident fallback.
 //!
 //! The reader pins one descriptor and retains the resampler's global phase. Each
 //! call reads at most one bounded output window and its bounded source halo;
@@ -70,6 +74,11 @@ impl PreviewWindowSource {
     /// Total output-rate frames, including a potentially short final window.
     pub fn output_frames(&self) -> u64 {
         self.plan.output_frames()
+    }
+
+    /// Source sample rate read from the opened container header.
+    pub fn source_rate(&self) -> u32 {
+        self.reader.sample_rate()
     }
 
     /// Output sample rate used by every returned window.

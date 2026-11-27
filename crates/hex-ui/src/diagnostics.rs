@@ -303,6 +303,147 @@ impl PluginLoad {
     }
 }
 
+struct BrowserAuditionTraceInner {
+    handle: DiagnosticsHandle,
+    generation: u64,
+    output: u64,
+    output_generation: u64,
+    clicked_at: std::time::Instant,
+    last_stage: std::sync::Mutex<std::time::Instant>,
+    pcm_ready_recorded: std::sync::atomic::AtomicBool,
+    published_recorded: std::sync::atomic::AtomicBool,
+    callback_ack_recorded: std::sync::atomic::AtomicBool,
+    terminal_recorded: std::sync::atomic::AtomicBool,
+}
+
+/// Opt-in, path-free stage timing trace for one browser sample audition request.
+///
+/// Separates click queueing, background worker start, container header read,
+/// first-window/resident PCM readiness, audio-owner publication, and callback
+/// acknowledgement (`Phase::Playing`). Active only when action diagnostics are
+/// enabled; never touches the audio callback or records file paths/user text.
+#[derive(Clone)]
+pub(crate) struct BrowserAuditionTrace(Arc<BrowserAuditionTraceInner>);
+
+#[derive(Clone, Copy)]
+pub(crate) struct BrowserAuditionClick {
+    pub(crate) generation: u64,
+    pub(crate) output: u64,
+    pub(crate) output_generation: u64,
+    pub(crate) source_kind: &'static str,
+    pub(crate) output_rate: u32,
+    pub(crate) start_fraction: f64,
+    pub(crate) queued: bool,
+}
+
+impl BrowserAuditionTrace {
+    pub(crate) fn start(cx: &App, click: BrowserAuditionClick) -> Option<Self> {
+        let config = cx.try_global::<SessionDiagnostics>()?;
+        config.action_observer.as_ref()?;
+        let handle = config.handle.as_ref().ok()?.clone();
+        let now = std::time::Instant::now();
+        let trace = Self(Arc::new(BrowserAuditionTraceInner {
+            handle,
+            generation: click.generation,
+            output: click.output,
+            output_generation: click.output_generation,
+            clicked_at: now,
+            last_stage: std::sync::Mutex::new(now),
+            pcm_ready_recorded: std::sync::atomic::AtomicBool::new(false),
+            published_recorded: std::sync::atomic::AtomicBool::new(false),
+            callback_ack_recorded: std::sync::atomic::AtomicBool::new(false),
+            terminal_recorded: std::sync::atomic::AtomicBool::new(false),
+        }));
+        let start_fraction_bps = (click.start_fraction.clamp(0.0, 1.0) * 10_000.0).round() as u32;
+        trace.record(
+            "click",
+            &format!(
+                "source_kind={} output_rate={} start_fraction_bps={start_fraction_bps} queued={}",
+                click.source_kind, click.output_rate, click.queued
+            ),
+        );
+        Some(trace)
+    }
+
+    pub(crate) fn matches_output(&self, output: u64, output_generation: u64) -> bool {
+        self.0.output == output && self.0.output_generation == output_generation
+    }
+
+    pub(crate) fn record_worker_start(&self, mode: &'static str) {
+        self.record("worker_start", &format!("mode={mode}"));
+    }
+
+    pub(crate) fn record_header_read(
+        &self,
+        source_rate: u32,
+        output_rate: u32,
+        total_frames: usize,
+        start_frame: usize,
+    ) {
+        let rate_matched = source_rate == output_rate;
+        self.record(
+            "header_read",
+            &format!(
+                "mode=windowed source_rate={source_rate} output_rate={output_rate} rate_matched={rate_matched} total_frames={total_frames} start_frame={start_frame}"
+            ),
+        );
+    }
+
+    pub(crate) fn record_header_fallback(&self) {
+        self.record("header_read", "mode=windowed outcome=fallback_resident");
+    }
+
+    pub(crate) fn record_pcm_ready(&self, mode: &'static str, frames: usize) {
+        if !self.0.pcm_ready_recorded.swap(true, Relaxed) {
+            self.record("pcm_ready", &format!("mode={mode} frames={frames}"));
+        }
+    }
+
+    pub(crate) fn record_published(&self, mode: &'static str, start_frame: usize, frames: usize) {
+        if !self.0.published_recorded.swap(true, Relaxed) {
+            self.record(
+                "published",
+                &format!("mode={mode} start_frame={start_frame} frames={frames}"),
+            );
+        }
+    }
+
+    pub(crate) fn record_callback_ack(&self) {
+        if !self.0.callback_ack_recorded.swap(true, Relaxed) {
+            self.record("callback_ack", "phase=playing");
+        }
+    }
+
+    pub(crate) fn record_terminal(&self, outcome: &'static str) {
+        if !self.0.terminal_recorded.swap(true, Relaxed) {
+            self.record("terminal", &format!("outcome={outcome}"));
+        }
+    }
+
+    fn record(&self, stage: &'static str, fields: &str) {
+        let now = std::time::Instant::now();
+        let since_click_us = now.saturating_duration_since(self.0.clicked_at).as_micros();
+        let stage_us = {
+            let mut last = self
+                .0
+                .last_stage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let elapsed = now.saturating_duration_since(*last).as_micros();
+            *last = now;
+            elapsed
+        };
+        let _ = self.0.handle.record_typed(
+            Level::Debug,
+            Category::Ui,
+            &format!(
+                "browser_audition v=1 stage={stage} generation={} output={} output_generation={} since_click_us={since_click_us} stage_us={stage_us} {fields}",
+                self.0.generation, self.0.output, self.0.output_generation
+            ),
+        );
+    }
+}
+
 /// One bounded control-side record per refused loop action; labels are static
 /// and contain no project names, paths, or user-entered text.
 pub(crate) fn record_loop_refusal(
@@ -1107,5 +1248,109 @@ mod tests {
             assert!(record_state(cx, "stopped", fault.as_deref()).is_none());
         });
         std::fs::remove_dir_all(directory).expect("remove fixture");
+    }
+
+    #[gpui::test]
+    fn browser_audition_trace_is_opt_in_ordered_and_latched_once(cx: &mut gpui::TestAppContext) {
+        let directory =
+            std::env::temp_dir().join(format!("hex-ui-audition-diag-test-{}", std::process::id()));
+        let mut log = hex_diagnostics::SessionLog::start(directory.clone()).unwrap();
+        cx.update(|cx| {
+            install_session_log(cx, Ok(log.handle()));
+            install_action_diagnostics(cx, false);
+            assert!(
+                BrowserAuditionTrace::start(
+                    cx,
+                    BrowserAuditionClick {
+                        generation: 1,
+                        output: 7,
+                        output_generation: 1,
+                        source_kind: "file",
+                        output_rate: 48_000,
+                        start_fraction: 0.25,
+                        queued: false,
+                    },
+                )
+                .is_none()
+            );
+            install_action_diagnostics(cx, true);
+            let trace = BrowserAuditionTrace::start(
+                cx,
+                BrowserAuditionClick {
+                    generation: 2,
+                    output: 7,
+                    output_generation: 3,
+                    source_kind: "file",
+                    output_rate: 44_100,
+                    start_fraction: 0.25,
+                    queued: true,
+                },
+            )
+            .unwrap();
+            assert!(trace.matches_output(7, 3));
+            assert!(!trace.matches_output(7, 4));
+            trace.record_worker_start("windowed");
+            trace.record_header_read(48_000, 44_100, 12_000, 3_000);
+            trace.record_pcm_ready("windowed", 4_096);
+            trace.record_pcm_ready("windowed", 4_096);
+            trace.record_published("windowed", 3_000, 4_096);
+            trace.record_published("windowed", 7_096, 4_096);
+            trace.record_callback_ack();
+            trace.record_callback_ack();
+            trace.record_terminal("finished");
+            trace.record_terminal("cancelled");
+        });
+        log.shutdown().unwrap();
+        let contents = std::fs::read_to_string(log.path()).unwrap();
+        assert_eq!(
+            contents.matches("browser_audition v=1 stage=click").count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("browser_audition v=1 stage=worker_start")
+                .count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("browser_audition v=1 stage=header_read")
+                .count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("browser_audition v=1 stage=pcm_ready")
+                .count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("browser_audition v=1 stage=published")
+                .count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("browser_audition v=1 stage=callback_ack")
+                .count(),
+            1
+        );
+        assert_eq!(
+            contents
+                .matches("browser_audition v=1 stage=terminal")
+                .count(),
+            1
+        );
+        assert!(
+            contents
+                .contains("source_kind=file output_rate=44100 start_fraction_bps=2500 queued=true")
+        );
+        assert!(contents.contains(
+            "source_rate=48000 output_rate=44100 rate_matched=false total_frames=12000 start_frame=3000"
+        ));
+        assert!(contents.contains("outcome=finished"));
+        assert!(!contents.contains("outcome=cancelled"));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

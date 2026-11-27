@@ -89,6 +89,7 @@ struct PlaybackPreviewRequest {
     start_fraction: f64,
     source: BrowserPlaybackSource,
     sample_rate: u32,
+    trace: Option<crate::diagnostics::BrowserAuditionTrace>,
 }
 
 #[derive(Clone)]
@@ -273,10 +274,11 @@ pub(super) struct BrowserState {
     observed_query: String,
     history: history::History,
     playback_generation: u64,
-    /// Cancellation flag of the one in-flight audition preparation; set once
-    /// a newer request or a stop supersedes it.
-    playback_in_flight: Option<Arc<AtomicBool>>,
+    /// Cancellation and instant-wake signal of the one in-flight audition
+    /// preparation; triggered once a newer request or a stop supersedes it.
+    playback_in_flight: Option<playback::PlaybackCancel>,
     playback_pending: Option<PlaybackPreviewRequest>,
+    playback_trace: Option<crate::diagnostics::BrowserAuditionTrace>,
     auto_audition: bool,
     audition_gain: f32,
     audition_gain_dragging: bool,
@@ -386,6 +388,7 @@ impl BrowserState {
             waveform_bounds: Rc::new(Cell::new(None)),
             playback_in_flight: None,
             playback_pending: None,
+            playback_trace: None,
             preview_cache: HashMap::new(),
             preview_sources: PreviewSources::default(),
             preview_selected: None,

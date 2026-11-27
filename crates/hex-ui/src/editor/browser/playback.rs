@@ -1,11 +1,99 @@
 //! Resident and windowed browser sample audition playback and polling.
 use super::*;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::Mutex,
+    task::{Poll, Waker},
+};
+
+/// Cooperative cancellation flag with immediate async-timer wakeup so a
+/// superseded windowed audition exits its backpressure wait without sleeping.
+#[derive(Clone, Default)]
+pub(super) struct PlaybackCancel {
+    flag: Arc<AtomicBool>,
+    waker: Arc<Mutex<Option<Waker>>>,
+}
+
+impl PlaybackCancel {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_flag(flag: Arc<AtomicBool>) -> Self {
+        Self {
+            flag,
+            waker: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    pub(super) fn flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.flag)
+    }
+
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::Acquire)
+    }
+
+    pub(super) fn cancel(&self) {
+        self.flag.store(true, Ordering::Release);
+        if let Some(waker) = self
+            .waker
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            waker.wake();
+        }
+    }
+
+    /// Wait until `timer` completes or this handle is cancelled. Returns `true`
+    /// when woken by cancellation.
+    async fn wait_timer(&self, mut timer: gpui::Task<()>) -> bool {
+        std::future::poll_fn(|cx| {
+            if self.is_cancelled() {
+                return Poll::Ready(true);
+            }
+            {
+                let mut slot = self
+                    .waker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                *slot = Some(cx.waker().clone());
+            }
+            if self.is_cancelled() {
+                let _ = self
+                    .waker
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                return Poll::Ready(true);
+            }
+            match Pin::new(&mut timer).poll(cx) {
+                Poll::Ready(()) => {
+                    let _ = self
+                        .waker
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .take();
+                    Poll::Ready(false)
+                }
+                Poll::Pending => Poll::Pending,
+            }
+        })
+        .await
+    }
+}
 
 impl EditorView {
     pub(in crate::editor) fn cancel_browser_sample_playback(&mut self) {
         self.browser.playback_generation = self.browser.playback_generation.saturating_add(1);
         self.cancel_browser_playback_preparation();
         self.browser.playback_pending = None;
+        if let Some(trace) = self.browser.playback_trace.take() {
+            trace.record_terminal("cancelled");
+        }
         self.browser.playback_phase = Phase::Idle;
         let output = self.browser.playback_output.take();
         self.browser.playback_path = None;
@@ -28,7 +116,7 @@ impl EditorView {
     /// result is already stale because the playback generation moved on.
     pub(super) fn cancel_browser_playback_preparation(&self) {
         if let Some(cancel) = &self.browser.playback_in_flight {
-            cancel.store(true, Ordering::Relaxed);
+            cancel.cancel();
         }
     }
 
@@ -164,18 +252,41 @@ impl EditorView {
             self.error = Some("sample preview unavailable · audio output closed".into());
             return;
         };
+        let output_sample_rate = audio.sample_rate;
+        let queued = self.browser.playback_in_flight.is_some();
+        let source_kind = match &source {
+            BrowserPlaybackSource::File(_) => "file",
+            BrowserPlaybackSource::ProjectSample(_, _) => "project_sample",
+        };
+        if let Some(previous) = self.browser.playback_trace.take() {
+            previous.record_terminal("cancelled");
+        }
+        let trace = crate::diagnostics::BrowserAuditionTrace::start(
+            cx,
+            crate::diagnostics::BrowserAuditionClick {
+                generation,
+                output: output_identity,
+                output_generation,
+                source_kind,
+                output_rate: output_sample_rate,
+                start_fraction: fraction,
+                queued,
+            },
+        );
         let request = PlaybackPreviewRequest {
             generation,
             output_generation,
             output_identity,
             source,
-            sample_rate: audio.sample_rate,
+            sample_rate: output_sample_rate,
             start_fraction: fraction,
+            trace: trace.clone(),
         };
+        self.browser.playback_trace = trace;
         self.browser.playback_phase = Phase::Preparing;
         self.browser.playback_output = Some((output_identity, output_generation));
         self.status = "sample preview preparing".into();
-        if self.browser.playback_in_flight.is_some() {
+        if queued {
             self.browser.playback_pending = Some(request);
         } else {
             self.start_browser_sample_playback(request, cx);
@@ -199,8 +310,9 @@ impl EditorView {
         request: PlaybackPreviewRequest,
         cx: &mut Context<Self>,
     ) {
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.browser.playback_in_flight = Some(Arc::clone(&cancel));
+        let cancel = PlaybackCancel::new();
+        self.browser.playback_in_flight = Some(cancel.clone());
+        let cancel_flag = cancel.flag();
         let sources = self.browser.preview_sources.clone();
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
@@ -208,20 +320,35 @@ impl EditorView {
         cx.spawn(async move |_, cx| {
             let source = request.source.clone();
             let sample_rate = request.sample_rate;
+            let trace = request.trace.clone();
+            let mode = match &source {
+                BrowserPlaybackSource::File(_) => "resident",
+                BrowserPlaybackSource::ProjectSample(_, _) => "project_sample",
+            };
             let result = cx
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
                     let _test_environment = test_environment;
-                    match source {
+                    if let Some(trace) = &trace {
+                        trace.record_worker_start(mode);
+                    }
+                    let prepared = match source {
                         BrowserPlaybackSource::File(path) => {
-                            sources.prepare_playback(path, sample_rate, &cancel)
+                            sources.prepare_playback(path, sample_rate, &cancel_flag)
                         }
                         BrowserPlaybackSource::ProjectSample(_, audio) => {
-                            PreviewSources::prepare_resident_playback(&audio, sample_rate, &cancel)
+                            PreviewSources::prepare_resident_playback(
+                                &audio,
+                                sample_rate,
+                                &cancel_flag,
+                            )
                         }
+                    };
+                    if let (Ok(pcm), Some(trace)) = (&prepared, &trace) {
+                        trace.record_pcm_ready(mode, pcm.frames().len());
                     }
-                    .map_err(|failure| failure.to_string())
+                    prepared.map_err(|failure| failure.to_string())
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
@@ -243,17 +370,20 @@ impl EditorView {
                     })
                 {
                     let admitted = result.and_then(|pcm| {
-                        let frame = audition_geometry::frame_at_fraction(
-                            pcm.frames().len(),
-                            request.start_fraction,
-                        );
+                        let frames = pcm.frames().len();
+                        let frame =
+                            audition_geometry::frame_at_fraction(frames, request.start_fraction);
                         audio
                             .control
                             .preview_publish_from(request.output_generation, pcm, frame)
+                            .map(|()| (frame, frames))
                             .map_err(|error| error.to_string())
                     });
                     match admitted {
-                        Ok(()) => {
+                        Ok((frame, frames)) => {
+                            if let Some(trace) = &request.trace {
+                                trace.record_published(mode, frame, frames);
+                            }
                             if view
                                 .error
                                 .as_ref()
@@ -266,6 +396,9 @@ impl EditorView {
                         Err(error) => {
                             audio.control.preview_cancel();
                             view.browser.playback_output = None;
+                            if let Some(trace) = view.browser.playback_trace.take() {
+                                trace.record_terminal("failed");
+                            }
                             view.browser.playback_phase = Phase::Unavailable;
                             view.status = "sample preview failed".into();
                             view.error = Some(format!("sample preview failed · {error}").into())
@@ -287,19 +420,25 @@ impl EditorView {
         path: PathBuf,
         cx: &mut Context<Self>,
     ) {
-        let cancel = Arc::new(AtomicBool::new(false));
-        self.browser.playback_in_flight = Some(Arc::clone(&cancel));
+        let cancel = PlaybackCancel::new();
+        self.browser.playback_in_flight = Some(cancel.clone());
         #[cfg(test)]
         let test_environment = Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             #[cfg(test)]
             let _test_environment = test_environment;
-            let open_cancel = Arc::clone(&cancel);
+            let open_cancel = cancel.flag();
+            let open_trace = request.trace.clone();
             let rate = request.sample_rate;
             let opened = cx
                 .background_executor()
-                .spawn(async move { PreviewWindowSource::open(path, rate, &open_cancel) })
+                .spawn(async move {
+                    if let Some(trace) = &open_trace {
+                        trace.record_worker_start("windowed");
+                    }
+                    PreviewWindowSource::open(path, rate, &open_cancel)
+                })
                 .await;
             let mut source = match opened {
                 Ok(source) => source,
@@ -320,10 +459,13 @@ impl EditorView {
                     return;
                 }
                 Err(_) => {
+                    if let Some(trace) = &request.trace {
+                        trace.record_header_fallback();
+                    }
                     let _ = this.update(cx, |view, cx| {
                         view.browser.playback_in_flight = None;
                         if request.generation == view.browser.playback_generation
-                            && !cancel.load(Ordering::Relaxed)
+                            && !cancel.is_cancelled()
                         {
                             view.start_resident_browser_sample_playback(request, cx);
                         } else if let Some(pending) = view.browser.playback_pending.take() {
@@ -347,10 +489,13 @@ impl EditorView {
                 }
             };
             let mut position = audition_geometry::frame_at_fraction(total, request.start_fraction);
+            if !cancel.is_cancelled()
+                && let Some(trace) = &request.trace
+            {
+                trace.record_header_read(source.source_rate(), rate, total, position);
+            }
             let started = this.update(cx, |view, _| {
-                if cancel.load(Ordering::Relaxed)
-                    || request.generation != view.browser.playback_generation
-                {
+                if cancel.is_cancelled() || request.generation != view.browser.playback_generation {
                     return Ok(false);
                 }
                 let Some(audio) = view.audio.as_mut().filter(|audio| {
@@ -384,13 +529,17 @@ impl EditorView {
                 }
             }
             let mut failure = None;
-            while position < total && !cancel.load(Ordering::Relaxed) {
+            while position < total && !cancel.is_cancelled() {
                 let count = (total - position).min(BROWSER_PREVIEW_WINDOW_FRAMES);
-                let read_cancel = Arc::clone(&cancel);
+                let read_cancel = cancel.flag();
+                let read_trace = request.trace.clone();
                 let read = cx
                     .background_executor()
                     .spawn(async move {
                         let result = source.read_window(position as u64, count, &read_cancel);
+                        if let (Ok(frames), Some(trace)) = (&result, &read_trace) {
+                            trace.record_pcm_ready("windowed", frames.len());
+                        }
                         (source, result)
                     })
                     .await;
@@ -412,7 +561,7 @@ impl EditorView {
                 };
                 loop {
                     let delivery = this.update(cx, |view, _| {
-                        if cancel.load(Ordering::Relaxed)
+                        if cancel.is_cancelled()
                             || request.generation != view.browser.playback_generation
                         {
                             return WindowDelivery::Stale;
@@ -444,21 +593,30 @@ impl EditorView {
                     });
                     match delivery {
                         Ok(WindowDelivery::Accepted) => {
+                            if let Some(trace) = &request.trace {
+                                trace.record_published("windowed", position, count);
+                            }
                             position += count;
                             break;
                         }
                         Ok(WindowDelivery::Full(returned)) => {
                             window = returned;
-                            cx.background_executor()
-                                .timer(std::time::Duration::from_millis(5))
-                                .await;
+                            if cancel
+                                .wait_timer(
+                                    cx.background_executor()
+                                        .timer(std::time::Duration::from_millis(5)),
+                                )
+                                .await
+                            {
+                                break;
+                            }
                         }
                         Ok(WindowDelivery::Failed(error)) => {
                             failure = Some(error);
                             break;
                         }
                         Ok(WindowDelivery::Stale) | Err(_) => {
-                            cancel.store(true, Ordering::Relaxed);
+                            cancel.cancel();
                             break;
                         }
                     }
@@ -493,6 +651,9 @@ impl EditorView {
         {
             audio.control.preview_cancel();
             self.browser.playback_output = None;
+            if let Some(trace) = self.browser.playback_trace.take() {
+                trace.record_terminal("failed");
+            }
             self.browser.playback_phase = Phase::Unavailable;
             self.status = "sample preview failed".into();
             self.error = Some(format!("sample preview failed · {error}").into());
@@ -596,9 +757,28 @@ impl EditorView {
             Phase::Unavailable => "sample preview unavailable",
         }
         .into();
-        if matches!(phase, Phase::Finished | Phase::Idle) {
+        if phase == Phase::Playing
+            && let Some((output, generation)) = self.browser.playback_output
+            && let Some(trace) = self
+                .browser
+                .playback_trace
+                .as_ref()
+                .filter(|trace| trace.matches_output(output, generation))
+        {
+            trace.record_callback_ack();
+        } else if matches!(phase, Phase::Finished | Phase::Idle) {
             self.browser.playback_output = None;
+            if let Some(trace) = self.browser.playback_trace.take() {
+                trace.record_terminal(if phase == Phase::Finished {
+                    "finished"
+                } else {
+                    "cancelled"
+                });
+            }
         } else if phase == Phase::Unavailable {
+            if let Some(trace) = self.browser.playback_trace.take() {
+                trace.record_terminal("unavailable");
+            }
             self.cancel_browser_sample_playback();
             self.browser.playback_phase = Phase::Unavailable;
             self.error = Some("sample preview unavailable · audio output stopped".into());
