@@ -3,7 +3,8 @@
 //! failed/cancelled captures, before its caller-owned metadata is released.
 use super::*;
 use hex_audio::plugin_worker::{
-    NativeWorkerCapture, NativeWorkerCaptureProgress, StateCaptureRefusal,
+    ControllerRequest, NativeWorkerCapture, NativeWorkerCaptureProgress,
+    NativeWorkerControllerProgress, StateCaptureRefusal,
 };
 use hex_audio::prepared::{AppliedAudioSource, PublicationControl};
 use hex_session::service::{PluginStateCapture, PluginStateCaptureInput, RequestCancellation};
@@ -46,6 +47,7 @@ struct Entry {
     refused: u8,
     done: bool,
     idle_editor: Option<IdleEditorRead>,
+    editor_frontier: Option<u64>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -66,6 +68,14 @@ impl NativeAudioSink {
         // refusing it would break Save queued behind an accepted state edit.
         self.plugins.required_capture_sources(&input)?;
         self.plugins.capture_states(self.output.as_mut(), input)
+    }
+
+    pub(in crate::native_audio) fn finish_current_plugin_state_save(
+        &mut self,
+        context: AudioSourceContext,
+        saved: bool,
+    ) {
+        self.plugins.finish_state_save(context, saved);
     }
 }
 
@@ -97,6 +107,9 @@ impl Plugins {
         output: Option<&mut WorkerPreparedOutput>,
         input: PluginStateCaptureInput<'_>,
     ) -> Result<Vec<PluginStateCapture>, String> {
+        if input.flush_idle_editor_input() {
+            self.pending_save_frontiers = None;
+        }
         let cancellation = input.cancellation();
         let mut wanted = Vec::new();
         input.visit_plugin_devices(|owner, device, state| {
@@ -130,6 +143,7 @@ impl Plugins {
                     refused: 0,
                     done: false,
                     idle_editor: None,
+                    editor_frontier: None,
                 });
             }
             // No actual hosted instance: preserve its canonical opaque state.
@@ -169,6 +183,16 @@ impl Plugins {
         } else {
             None
         };
+        if input.flush_idle_editor_input() {
+            // Read each binding's editor admission frontier *before* state
+            // capture begins so any edit arriving during or after Save will
+            // strictly exceed the saved frontier and still trigger a warning
+            // on close.
+            for entry in &mut wanted {
+                entry.editor_frontier =
+                    self.read_editor_frontier_before_save(control, entry.binding, cancellation)?;
+            }
+        }
         let mut failure = None;
         while wanted.iter().any(|entry| !entry.done) {
             if cancellation.is_cancelled() && failure.is_none() {
@@ -242,6 +266,10 @@ impl Plugins {
         captures
             .try_reserve_exact(wanted.len())
             .map_err(|_| "vst3 captured state allocation failed")?;
+        let mut staged_frontiers = Vec::new();
+        if input.flush_idle_editor_input() {
+            let _ = staged_frontiers.try_reserve_exact(wanted.len());
+        }
         for mut entry in wanted {
             // All tokens have reached their actual terminals. A late source
             // close/replacement still refuses data before snapshot publication.
@@ -308,6 +336,11 @@ impl Plugins {
                     edits::poll_control(control);
                 }
             }
+            if input.flush_idle_editor_input()
+                && let Some(frontier) = entry.editor_frontier
+            {
+                staged_frontiers.push((entry.binding, frontier));
+            }
             captures.push(PluginStateCapture {
                 owner: entry.owner,
                 device_id: entry.device,
@@ -320,7 +353,69 @@ impl Plugins {
         {
             return Err(SAVE_TRANSPORT_CHANGED.into());
         }
+        if input.flush_idle_editor_input() && !staged_frontiers.is_empty() {
+            self.pending_save_frontiers =
+                Some((input.context().project_generation, staged_frontiers));
+        }
         Ok(captures)
+    }
+
+    fn read_editor_frontier_before_save(
+        &self,
+        control: &mut PublicationControl,
+        binding: Binding,
+        cancellation: &RequestCancellation,
+    ) -> Result<Option<u64>, String> {
+        if let Some(held) = self.held_editor_close_frontier(binding) {
+            return Ok(Some(held));
+        }
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let request = loop {
+            edits::check_cancel(Some(cancellation))?;
+            match control.begin_native_source_controller_query_on_control(
+                binding,
+                ControllerRequest::ReadEditorFrontier,
+            ) {
+                Ok(request) => break request,
+                Err(
+                    "native preparation is busy"
+                    | "native source is busy"
+                    | "native controller mailbox is busy"
+                    | "native controller query is already pending",
+                ) if Instant::now() < deadline => {
+                    edits::poll_control(control);
+                }
+                Err(_) => return Ok(None),
+            }
+        };
+        loop {
+            match control.poll_native_source_controller_query_on_control(binding, &request) {
+                Ok(NativeWorkerControllerProgress::EditorFrontier(frontier)) => {
+                    return Ok(Some(frontier));
+                }
+                Ok(NativeWorkerControllerProgress::Pending)
+                | Err("native preparation is busy" | "native source is busy") => {
+                    edits::poll_control(control);
+                }
+                _ => return Ok(None),
+            }
+        }
+    }
+
+    pub(in crate::native_audio) fn finish_state_save(
+        &mut self,
+        context: AudioSourceContext,
+        saved: bool,
+    ) {
+        let Some((generation, staged)) = self.pending_save_frontiers.take() else {
+            return;
+        };
+        if !saved || generation != context.project_generation {
+            return;
+        }
+        for (binding, frontier) in staged {
+            self.record_saved_editor_frontier(binding, frontier);
+        }
     }
 
     /// A normal idle worker can apply pending SDK editor callbacks without

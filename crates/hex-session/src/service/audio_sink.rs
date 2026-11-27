@@ -276,6 +276,12 @@ pub trait WorkerAudioSink: Send {
     ) -> Result<Vec<PluginStateCapture>, String> {
         Ok(Vec::new())
     }
+    /// Exact terminal of a project Save / Save As after `capture_plugin_states`.
+    /// When `saved` is true, the captured VST3 editor frontiers were durably
+    /// written to disk for `context`; when false, any staged capture frontier
+    /// must be discarded without advancing the saved editor frontier.
+    fn finish_plugin_state_save(&mut self, _context: hex_engine::AudioSourceContext, _saved: bool) {
+    }
     /// Current ordered worker request's read-only shutdown/document-intent
     /// cancellation. Hosts may poll it during bounded native preparation; it
     /// never authorizes an edit or changes ordinary FIFO completion order.

@@ -2441,6 +2441,9 @@ impl WorkerAudioSink for ResidentSink {
         }
         self.inner.capture_plugin_states(input)
     }
+    fn finish_plugin_state_save(&mut self, context: AudioSourceContext, saved: bool) {
+        self.inner.finish_plugin_state_save(context, saved);
+    }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.inner.begin_request(cancellation);
     }

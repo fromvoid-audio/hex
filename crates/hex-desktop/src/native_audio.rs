@@ -825,6 +825,9 @@ impl WorkerAudioSink for NativeAudioSink {
     ) -> Result<Vec<hex_session::service::PluginStateCapture>, String> {
         self.capture_current_plugin_states(input)
     }
+    fn finish_plugin_state_save(&mut self, context: AudioSourceContext, saved: bool) {
+        self.finish_current_plugin_state_save(context, saved);
+    }
     fn begin_request(&mut self, cancellation: hex_session::service::RequestCancellation) {
         self.request_cancellation = Some(cancellation);
     }
