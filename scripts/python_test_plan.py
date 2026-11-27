@@ -38,6 +38,9 @@ REVIEWED_MODULES = frozenset({
     "test_vst3_instance_worker",
     # The timing extractor reads saved logs and its fixtures use synthetic records.
     "test_vst3_insertion_timings",
+    # Standalone device-package builder and optional local nightly schedule suites.
+    "test_device_package_builder",
+    "test_nightly_schedule",
 })
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",
@@ -155,7 +158,8 @@ def select(profile: str, paths: list[str], inventory: list[dict],
 OWNER_TEST_MODULES = {"scripts/test_shards.py": "test_ci_plan",
                       "scripts/python_shards.py": "test_python_test_plan",
                       "scripts/check-cpal-patch.py": "test_dependency_patches",
-                      "scripts/check-xattr-compat.py": "test_dependency_patches"}
+                      "scripts/check-xattr-compat.py": "test_dependency_patches",
+                      "scripts/build_device_package.py": "test_device_package_builder"}
 
 
 def tooling_owner_modules(paths: list[str], modules: list[str]) -> list[str]:

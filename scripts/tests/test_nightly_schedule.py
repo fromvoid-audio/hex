@@ -7,11 +7,13 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from zoneinfo import ZoneInfo
 
-import nightly_schedule as ns
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import nightly_schedule as ns  # noqa: E402
 
 
 class NightlyScheduleTests(unittest.TestCase):

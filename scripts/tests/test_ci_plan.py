@@ -5605,6 +5605,38 @@ class ModuleScopeTests(unittest.TestCase):
                 filters = feature.argv[feature.argv.index("--") + 1:]
                 self.assertIn(prefix, filters)
                 self.assertIn(rendered, filters)
+        for module, rendered_test in (
+            ("lfo_editor", "lfo_slot_editor_exposes_waveform_extended_params_and_routes_with_undo"),
+            ("pitch_page", "pitch_page_binds_bipolar_envelope_transpose_spread_and_destinations_with_undo"),
+        ):
+            with self.subTest(module=module):
+                path = f"crates/hex-ui/src/editor/device_panel/operator_panel/{module}.rs"
+                prefix = f"editor::device_panel::operator_panel::{module}::"
+                rendered = f"editor::device_panel::tests::operator_navigation_tests::{rendered_test}"
+                boundary = plan.boundary_selection(SCRIPTS.parent, [path], inventory, [owner])
+                self.assertEqual(boundary["single_run"], {owner: "ui-test-support"})
+                steps = {step.step_id: step for step in ci.planned_steps({
+                    "scope": "rust", "affected_packages": [owner], "boundary": boundary,
+                    "cargo_inventory": inventory, "paths": [path]})}
+                default = steps["ui-default-lib-unit-tests"]
+                self.assertTrue(default.requires_tests)
+                self.assertIn(prefix + "tests::", default.argv[default.argv.index("--") + 1:])
+                feature = steps["ui-feature-tests"]
+                filters = feature.argv[feature.argv.index("--") + 1:]
+                self.assertIn(prefix, filters)
+                self.assertIn(rendered, filters)
+        pkg_path = "crates/hex-ui/src/editor/device_panel/package_panel.rs"
+        pkg_boundary = plan.boundary_selection(SCRIPTS.parent, [pkg_path], inventory, [owner])
+        self.assertEqual(pkg_boundary["single_run"], {owner: "ui-test-support"})
+        pkg_steps = {step.step_id: step for step in ci.planned_steps({
+            "scope": "rust", "affected_packages": [owner], "boundary": pkg_boundary,
+            "cargo_inventory": inventory, "paths": [pkg_path]})}
+        self.assertIn(
+            "editor::device_panel::package_panel::tests::",
+            pkg_steps["ui-default-lib-unit-tests"].argv[
+                pkg_steps["ui-default-lib-unit-tests"].argv.index("--") + 1:
+            ],
+        )
 
     def test_reporting_sources_keep_their_own_default_library_tests(self):
         owner = "hex-ui"

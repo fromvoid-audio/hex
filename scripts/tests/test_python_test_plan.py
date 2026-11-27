@@ -292,6 +292,8 @@ class SelectionTests(unittest.TestCase):
         modules = impact.available_modules(ROOT)
         self.assertIn("test_ui_style_log_viewer", modules)
         self.assertIn("test_hex_auto_stage", modules)
+        self.assertIn("test_device_package_builder", modules)
+        self.assertIn("test_nightly_schedule", modules)
         self.assertEqual(selection(["scripts/check-ui-style.py"], modules=modules)["mode"], "comprehensive")
         for path in ("crates/hex-ui/src/editor.rs", "crates/hex-engine/src/lib.rs"):
             with self.subTest(path=path):
@@ -314,6 +316,10 @@ class SelectionTests(unittest.TestCase):
             ("scripts/tests/test_vst3_macos_bootstrap.py", "test_vst3_macos_bootstrap"),
             ("scripts/vst3_insertion_timings.py", "test_vst3_insertion_timings"),
             ("scripts/tests/test_vst3_insertion_timings.py", "test_vst3_insertion_timings"),
+            ("scripts/build_device_package.py", "test_device_package_builder"),
+            ("scripts/tests/test_device_package_builder.py", "test_device_package_builder"),
+            ("scripts/nightly_schedule.py", "test_nightly_schedule"),
+            ("scripts/tests/test_nightly_schedule.py", "test_nightly_schedule"),
         ):
             with self.subTest(path=path):
                 chosen = selection([path], modules=modules)
