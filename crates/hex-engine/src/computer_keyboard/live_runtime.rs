@@ -314,6 +314,20 @@ impl ComputerKeyboardRuntime {
                     self.scratch_hardware_sustain &= !(1_u16 << channel);
                     self.release_sustained_hardware(channel, events, len);
                 }
+                if (self.mutable.is_some() || self.source_input.is_some())
+                    && cc <= 127
+                    && value <= 127
+                {
+                    let slot = events
+                        .get_mut(*len)
+                        .ok_or(Invalid("live note event capacity is unavailable"))?;
+                    *slot = NativeInstrumentEvent::ControlChange {
+                        frame_offset: 0,
+                        cc,
+                        value,
+                    };
+                    *len += 1;
+                }
                 return Ok(());
             }
             LiveNoteEvent::NoteOn {

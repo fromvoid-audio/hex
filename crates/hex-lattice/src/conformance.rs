@@ -474,5 +474,7 @@ pub mod transition_fixture;
 
 /// Small original aux-key runtime for host contract and allocation probes.
 pub mod auxiliary;
+/// Original deterministic CC-remapping MIDI processor fixture, never a browser device.
+pub mod midi_cc_remap;
 /// Original deterministic transpose MIDI processor fixture, never a browser device.
 pub mod midi_transpose;

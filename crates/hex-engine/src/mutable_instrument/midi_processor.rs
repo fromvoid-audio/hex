@@ -233,9 +233,66 @@ impl MidiProcessorStage {
                         out_len += written;
                     }
                 }
-                NativeInstrumentEvent::Expression { .. }
-                | NativeInstrumentEvent::ControlChange { .. }
-                | NativeInstrumentEvent::PitchBend { .. } => {
+                NativeInstrumentEvent::Expression { expression, .. } => {
+                    if !expression.is_valid() {
+                        return Err(MutableInstrumentRuntimeError::MidiProcessor(
+                            NativeMidiProcessorError::InvalidEventPayload,
+                        ));
+                    }
+                    if self.bypassed {
+                        if out_len >= capacity {
+                            return Err(MutableInstrumentRuntimeError::MidiProcessor(
+                                NativeMidiProcessorError::OutputEventCapacityExceeded,
+                            ));
+                        }
+                        self.output_events[out_len] = event;
+                        out_len += 1;
+                    } else {
+                        let written = self
+                            .pair
+                            .process_block(
+                                &[event],
+                                frame_count,
+                                &mut self.output_events[out_len..capacity],
+                                clock,
+                            )
+                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
+                        out_len += written;
+                    }
+                }
+                NativeInstrumentEvent::ControlChange { cc, value, .. } => {
+                    if cc > 127 || value > 127 {
+                        return Err(MutableInstrumentRuntimeError::MidiProcessor(
+                            NativeMidiProcessorError::InvalidEventPayload,
+                        ));
+                    }
+                    if self.bypassed {
+                        if out_len >= capacity {
+                            return Err(MutableInstrumentRuntimeError::MidiProcessor(
+                                NativeMidiProcessorError::OutputEventCapacityExceeded,
+                            ));
+                        }
+                        self.output_events[out_len] = event;
+                        out_len += 1;
+                    } else {
+                        let written = self
+                            .pair
+                            .process_block(
+                                &[event],
+                                frame_count,
+                                &mut self.output_events[out_len..capacity],
+                                clock,
+                            )
+                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
+                        out_len += written;
+                    }
+                }
+                NativeInstrumentEvent::PitchBend { value, .. } => {
+                    if !(-8_192..=8_191).contains(&value) {
+                        return Err(MutableInstrumentRuntimeError::MidiProcessor(
+                            NativeMidiProcessorError::InvalidEventPayload,
+                        ));
+                    }
                     if self.bypassed {
                         if out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
