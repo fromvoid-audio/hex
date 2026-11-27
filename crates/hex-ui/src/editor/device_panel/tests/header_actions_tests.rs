@@ -420,7 +420,8 @@ fn shared_header_track_effect_and_instrument_actions_preserve_history_without_dr
                 .unwrap()
                 .ordered_device_chain()
                 .all(|node| match node {
-                    hex_project::TrackDeviceRef::Instrument(item)
+                    hex_project::TrackDeviceRef::MidiProcessor(item)
+                    | hex_project::TrackDeviceRef::Instrument(item)
                     | hex_project::TrackDeviceRef::Effect(item) => item.id() != device,
                 })
         });

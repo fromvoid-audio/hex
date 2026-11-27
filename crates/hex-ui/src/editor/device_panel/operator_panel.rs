@@ -16,7 +16,9 @@ pub(super) mod envelope;
 pub(super) mod filter_response;
 mod global;
 pub(super) mod harmonics;
+mod lfo_editor;
 pub(super) mod oscillator_options;
+mod pitch_page;
 pub(super) mod preview;
 pub(super) mod routing_picker;
 pub(super) mod waveform_editor;
@@ -27,7 +29,10 @@ const SHELL_WIDTH: f32 = crate::device_composition::VECTOR_SHELL_WIDTH;
 const FIELD_WIDTH: f32 = 46.0;
 
 pub(super) fn detail_width(page: OperatorPage) -> f32 {
-    if matches!(page, OperatorPage::Routing | OperatorPage::Lfo) {
+    if matches!(
+        page,
+        OperatorPage::Routing | OperatorPage::Lfo | OperatorPage::Pitch
+    ) {
         crate::device_composition::VECTOR_ADVANCED_DETAIL_WIDTH
     } else {
         crate::device_composition::VECTOR_DETAIL_WIDTH
@@ -98,6 +103,7 @@ pub(super) enum OperatorPage {
     Oscillator,
     #[default]
     Envelope,
+    Pitch,
     Routing,
     Lfo,
     Filter,
@@ -144,6 +150,9 @@ pub(super) fn render_body(
     let state = *view.device_panel.operator_pages.entry(device).or_default();
     if state.page != OperatorPage::Filter {
         filter_response::hide(view, device);
+    }
+    if state.page != OperatorPage::Pitch {
+        pitch_page::hide(view, device);
     }
     let owner = context::Owner::capture(view, device);
     let parameters = &device_view.parameters;
@@ -211,8 +220,9 @@ pub(super) fn render_body(
             state.selected_operator,
             state.page,
         ),
+        OperatorPage::Pitch => pitch_page::render(view, cx, device, identity, parameters),
         OperatorPage::Routing => routing_detail(view, cx, device, identity, parameters),
-        OperatorPage::Lfo => lfo_detail(view, cx, device, identity, parameters),
+        OperatorPage::Lfo => lfo_editor::render(view, cx, device, identity, parameters),
         OperatorPage::Filter => filter_detail(view, cx, device, identity, parameters),
     };
     let (detail_focus, _) = context::section_focus(view, cx, device, Section::Detail);
@@ -329,6 +339,12 @@ fn page_tabs(
         device,
         NavigationTarget::Page(OperatorPage::Envelope),
     );
+    let pitch_focus = navigation_focus(
+        view,
+        cx,
+        device,
+        NavigationTarget::Page(OperatorPage::Pitch),
+    );
     let oscillator_focus = navigation_focus(
         view,
         cx,
@@ -352,6 +368,18 @@ fn page_tabs(
                 envelope_focus,
             )
             .flex_1(),
+        )
+        .child(
+            page_tab(
+                cx,
+                device,
+                owner,
+                OperatorPage::Pitch,
+                "pitch",
+                state.page,
+                pitch_focus,
+            )
+            .w(px(40.0)),
         )
         .child(
             page_tab(
@@ -1059,96 +1087,6 @@ pub(super) fn display_style() -> hex_widgets::ControlStyle {
 
 fn section_title(label: impl AsRef<str>) -> Div {
     hex_widgets::device_inline_caption(theme::text(label), super::control_style())
-}
-
-fn lfo_detail(
-    view: &mut EditorView,
-    cx: &mut Context<EditorView>,
-    device: DeviceId,
-    identity: DeviceControlIdentity,
-    parameters: &[NativeDeviceParameterView],
-) -> Stateful<Div> {
-    let mut content = div().w_full().h_full().flex().flex_col().gap(px(1.0));
-    let sync = matches!(
-        value(view, device, parameters, id(84)),
-        Some(ParameterValue::Bool(true))
-    );
-    // Shared widget entities must have exactly one rendered focus parent.
-    // On/wave/active-rate/amount live in the summary; detail owns the remainder.
-    for ids in [
-        &[84, if sync { 85 } else { 86 }, 88][..],
-        &[89, 90, 91, 92][..],
-    ] {
-        if ids[0] == 89 {
-            let selected = ["a", "b", "c", "d"]
-                .into_iter()
-                .enumerate()
-                .filter_map(|(index, label)| {
-                    (value(view, device, parameters, id(89 + index as u32))
-                        == Some(ParameterValue::Bool(true)))
-                    .then_some(label)
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            content = content.child(
-                div()
-                    .w_full()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.0))
-                    .child(section_title("pitch destinations").debug_selector(move || {
-                        format!("operator-lfo-destinations-{}", device.value())
-                    }))
-                    .child(
-                        section_title(if selected.is_empty() {
-                            "selected: none".to_owned()
-                        } else {
-                            format!("selected: {selected}")
-                        })
-                        .debug_selector(move || {
-                            format!("operator-lfo-selected-{}-{selected}", device.value())
-                        }),
-                    ),
-            );
-        }
-        let mut row = div().w_full().flex().items_center().gap(px(3.0));
-        for parameter in ids {
-            row = row.child(compact_control(
-                view,
-                cx,
-                device,
-                identity,
-                parameters,
-                id(*parameter),
-                match *parameter {
-                    82 | 84 | 88..=92 => ControlPresentation::CompactButton,
-                    83 | 86 => ControlPresentation::CompactSelector,
-                    _ => ControlPresentation::MicroDial,
-                },
-                Some(match *parameter {
-                    82 => "on",
-                    83 => "wave",
-                    84 => "sync",
-                    85 => "hz",
-                    86 => "beats",
-                    87 => "amount",
-                    88 => "retrig",
-                    89 => "a",
-                    90 => "b",
-                    91 => "c",
-                    _ => "d",
-                }),
-            ));
-        }
-        content = content.child(row);
-    }
-    content = content.child(
-        section_title("100% = +/-12 st; pitch only")
-            .debug_selector(move || format!("operator-lfo-depth-{}", device.value())),
-    );
-    content.id(ElementId::Name(
-        format!("operator-lfo-detail-{}", device.value()).into(),
-    ))
 }
 
 pub(super) fn lfo_summary(

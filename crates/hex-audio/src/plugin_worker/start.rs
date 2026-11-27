@@ -317,11 +317,22 @@ impl NativeWorker {
         let cancellation = instance.cancellation_on_control();
         let offline = instance.is_offline_on_control();
         let control_client = instance.take_control_client_on_control();
-        match spawn_processor_with(
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        let signal = {
+            let clock = if offline {
+                crate::callback_clock::CallbackClock::unavailable()
+            } else {
+                crate::callback_clock::CallbackClock::prewarm_monotonic()
+            };
+            Arc::new(Signal::new_with_clock(offline, clock, None))
+        };
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let signal = Arc::new(Signal::new(offline));
+        match spawn_processor_with_signal(
             control,
             worker,
             Processor::Native(Box::new(instance)),
-            offline,
+            signal,
             spawn,
         ) {
             Ok(reaper) => Ok((

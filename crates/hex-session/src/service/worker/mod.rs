@@ -29,7 +29,7 @@ pub(crate) use document_ops::{
 pub(crate) use export_worker::run_export_worker;
 pub(crate) use export_worker::{
     export_destination_is_original_media, latest_timeline_content_end,
-    run_export_worker_with_signal, same_existing_file,
+    run_export_worker_with_recovery, same_existing_file,
 };
 pub(crate) use live_input::{
     TuningInputPublication, compile, native_playback, prepare_tuning_input_publication,
@@ -165,6 +165,7 @@ pub(super) struct RequestOutcome {
     pub(super) failed_plugin_adoption: bool,
     pub(super) failed_plugin_publication_confirmed: bool,
     pub(super) private_sampler: bool,
+    pub(super) pending_unit_originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
 }
 
 pub(super) struct WorkerDispatch<'a> {

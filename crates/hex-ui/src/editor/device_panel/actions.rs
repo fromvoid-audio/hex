@@ -309,7 +309,34 @@ pub(in crate::editor) fn parameter_control_with_presentation(
     presentation: ControlPresentation,
     display: ControlText,
 ) -> Div {
-    let compact_toggle_width = match display.label {
+    parameter_control_with_label(
+        view,
+        cx,
+        device,
+        identity,
+        parameter,
+        presentation,
+        display,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::editor) fn parameter_control_with_label(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    device: DeviceId,
+    identity: DeviceControlIdentity,
+    parameter: &NativeDeviceParameterView,
+    presentation: ControlPresentation,
+    display: ControlText,
+    label_override: Option<gpui::SharedString>,
+) -> Div {
+    let label_for_width = label_override
+        .as_ref()
+        .map(|s| s.as_ref())
+        .or(display.label);
+    let compact_toggle_width = match label_for_width {
         Some("bass mono" | "mono" | "maximize" | "auto" | "mid/side") => 64.0,
         Some("bass mono audition" | "r" | "q") => 14.0,
         Some("1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "on" | "fix" | "") => 18.0,
@@ -325,6 +352,7 @@ pub(in crate::editor) fn parameter_control_with_presentation(
         bindings::BindingPresentation {
             kind: presentation,
             text: display,
+            label_override,
             policy: binding_policy,
             compact_toggle_width,
         },

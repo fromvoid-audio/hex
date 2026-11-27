@@ -19,6 +19,7 @@ fn saved(
     .unwrap();
     let preset = hex_storage::preset::Preset {
         class: match class {
+            NativeDeviceClass::MidiProcessor => hex_storage::preset::DeviceClass::MidiProcessor,
             NativeDeviceClass::Instrument => hex_storage::preset::DeviceClass::Instrument,
             NativeDeviceClass::Effect => hex_storage::preset::DeviceClass::Effect,
         },
@@ -722,4 +723,135 @@ fn cross_type_replacement_uses_saved_unit_default_and_prunes_compressor_sidechai
         compressor_type
     );
     assert_eq!(undone.state.project.sidechains().len(), 1);
+}
+
+#[test]
+fn midi_processor_catalog_insert_parameter_patch_bypass_replace_and_undo_redo() {
+    let pitch_type = DeviceTypeId::from_static("hex.midi.pitch");
+    let service = Service::new(48_000, 16, 1_000_000).unwrap();
+    let _initial = next_event(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "midi-pitch".into(),
+        }))
+        .unwrap();
+    let added = next_event(&service);
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let track = added.state.project.tracks()[0].id();
+
+    // Insert via TrackCatalogPlacement::Insert (same path as UI device picker).
+    service
+        .submit(Request::LoadTrackCatalogDevice {
+            project_generation: 0,
+            revision: added.state.revision,
+            track,
+            class: NativeDeviceClass::MidiProcessor,
+            type_id: pitch_type,
+            placement: crate::service::TrackCatalogPlacement::Insert { before: None },
+            control: std::sync::Arc::default(),
+        })
+        .unwrap();
+    let inserted = next_event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let proc_device = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap();
+    let proc_id = proc_device.id();
+    assert_eq!(proc_device.state().type_id(), pitch_type);
+
+    // Patch parameter via engine class API + canonical ReplaceDeviceState.
+    let shifted = hex_engine::patch_native_device_parameter_for_class(
+        NativeDeviceClass::MidiProcessor,
+        proc_device.state(),
+        ParameterId::from_static(1),
+        ParameterValue::Float(7.0),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device: proc_id,
+            state: shifted.clone(),
+        }))
+        .unwrap();
+    let patched = next_event(&service);
+    assert!(patched.error.is_none(), "{:?}", patched.error);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            NativeDeviceClass::MidiProcessor,
+            patched.state.project.device(proc_id).unwrap().state(),
+            ParameterId::from_static(1),
+        )
+        .unwrap(),
+        ParameterValue::Float(7.0)
+    );
+
+    // Bypass toggle + Undo/Redo.
+    service
+        .submit(Request::Edit(Command::ToggleDeviceBypass {
+            device: proc_id,
+        }))
+        .unwrap();
+    let bypassed = next_event(&service);
+    assert!(bypassed.error.is_none(), "{:?}", bypassed.error);
+    assert!(bypassed.state.project.device(proc_id).unwrap().bypassed());
+
+    service.submit(Request::Undo).unwrap();
+    let unbypassed = next_event(&service);
+    assert!(!unbypassed.state.project.device(proc_id).unwrap().bypassed());
+
+    // Replace via TrackCatalogPlacement::ReplaceMidiProcessor.
+    service
+        .submit(Request::LoadTrackCatalogDevice {
+            project_generation: 0,
+            revision: unbypassed.state.revision,
+            track,
+            class: NativeDeviceClass::MidiProcessor,
+            type_id: pitch_type,
+            placement: crate::service::TrackCatalogPlacement::ReplaceMidiProcessor(proc_id),
+            control: std::sync::Arc::default(),
+        })
+        .unwrap();
+    let replaced = next_event(&service);
+    assert!(replaced.error.is_none(), "{:?}", replaced.error);
+    let new_id = replaced
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .id();
+    assert!(new_id > proc_id);
+
+    // RemoveDevice + Undo restores cleanly.
+    service
+        .submit(Request::Edit(Command::RemoveDevice(new_id)))
+        .unwrap();
+    let removed = next_event(&service);
+    assert!(removed.error.is_none(), "{:?}", removed.error);
+    assert!(
+        removed
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .midi_processor()
+            .is_none()
+    );
+    service.submit(Request::Undo).unwrap();
+    let restored = next_event(&service);
+    assert_eq!(
+        restored
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .midi_processor()
+            .map(hex_project::Device::id),
+        Some(new_id)
+    );
 }

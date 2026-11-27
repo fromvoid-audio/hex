@@ -531,6 +531,105 @@ class ReleaseTests(unittest.TestCase):
         self.assertTrue(alias.is_symlink())
         self.assertFalse((self.root / "absent").exists())
 
+    def test_existing_distribution_release_reserves_before_cut_and_supports_recovery(self):
+        dev = self.root / "dev-target"
+        target = self.root / "existing-release-target"
+        dev.mkdir()
+        target.mkdir()
+        (target / "prior-build.dat").write_bytes(b"retained-release-bytes")
+        lock_state = self.root / "locks"
+        lock_state.mkdir()
+        state_paths = release.ci.target_state_paths
+        _, dev_owner = state_paths(target, lock_state)
+        release_owner = dev_owner.with_name(
+            release.ci.FreshTargetReservation._release_marker_name(dev_owner.name)
+        )
+        target_stat = target.stat()
+        owner_record = {
+            "schema_version": 1,
+            "profile": "release",
+            "state": "pending",
+            "target_directory": str(target),
+            "target_identity": {"device": target_stat.st_dev, "inode": target_stat.st_ino},
+            "workspace_owner": {"workspace_root": str(self.root), "git_common_dir": str(self.root / ".git")},
+            "source": {"commit": "a" * 40, "dirty": False, "dirty_files": [], "content_sha256": "b" * 64},
+            "packages": [{"name": "hex-desktop", "version": "0.1.0", "spec": "path+file:///hex#hex-desktop@0.1.0"}],
+            "recorded_at": "2026-11-26T00:00:00Z",
+        }
+        release_owner.write_text(json.dumps(owner_record, indent=2, sort_keys=True) + "\n")
+        cut_release = release.cut
+        candidate = None
+        calls = []
+
+        def require_lock():
+            with self.assertRaisesRegex(release.ci.TargetCacheError, "already in use"):
+                release.reserve_existing_release_target(str(target), os.environ)
+
+        def cut(args, store):
+            nonlocal candidate
+            require_lock()
+            calls.append("cut")
+            candidate = cut_release(args, store)
+            return candidate
+
+        def runner(root, env):
+            report = self.root / "fixture-existing-ci-summary.json"
+            report.write_text("{}")
+
+            def run():
+                require_lock()
+                calls.append("full-ci")
+                return 0
+
+            return SimpleNamespace(env=env, summary_path=report,
+                                   output_dir=self.root / f"existing-optimized-run-{len(calls)}",
+                                   run=run,
+                                   validate_release_inputs=lambda owner: calls.append(owner["state"]))
+
+        def verify(report, consumer, source, *, reservation=None):
+            require_lock()
+            self.assertIsInstance(reservation, release.ci.ExistingReleaseTargetReservation)
+            reservation.revalidate(str(target))
+            calls.append("existing-verification")
+
+        def artifact(consumer, *, adopt, reservation, on_admission, verification_check):
+            self.assertTrue(adopt)
+            require_lock()
+            self.assertIsInstance(reservation, release.ci.ExistingReleaseTargetReservation)
+            reservation.revalidate(consumer.env["CARGO_TARGET_DIR"])
+            verification_check()
+            on_admission({"state": "pending"})
+            verification_check()
+            raise release.Refusal("fixture stops before packaging")
+
+        with patch.dict(os.environ, {"CARGO_TARGET_DIR": str(dev)}), \
+                patch.object(release.ci, "target_state_paths",
+                             side_effect=lambda path, state=None: state_paths(path, state or lock_state)), \
+                patch.object(release, "store_path", return_value=self.store), \
+                patch.object(release, "cut", side_effect=cut), \
+                patch.object(release, "preflight"), \
+                patch.object(release.ci, "LocalCiRunner", side_effect=runner), \
+                patch.object(release.delivery, "validate_ci", side_effect=verify), \
+                patch.object(release.delivery, "optimized_artifact", side_effect=artifact):
+            self.assertEqual(
+                release.main(["beta", "--existing-release-target", str(target), "--adopt-release-target"]), 1
+            )
+            self.assertIsNotNone(candidate)
+            self.assertEqual(
+                release.main(["resume", str(candidate), "--existing-release-target", str(target), "--adopt-release-target"]),
+                1,
+            )
+            # Refuses fresh + adopt before cutting or reserving.
+            self.assertEqual(
+                release.main(["beta", "--fresh-release-target", str(target), "--adopt-release-target"]), 1
+            )
+        self.assertEqual(
+            calls,
+            ["cut", "full-ci", "existing-verification", "existing-verification", "existing-verification", "pending",
+             "existing-verification", "existing-verification", "existing-verification", "pending"],
+        )
+        self.assertEqual((target / "prior-build.dat").read_bytes(), b"retained-release-bytes")
+
     def test_partial_generated_stage_is_recoverable_but_redirected_stage_refuses(self):
         candidate = self.cut()
         stage = candidate / "bundle.pending.app"

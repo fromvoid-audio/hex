@@ -549,6 +549,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.worker.revision,
                 owner,
                 preset::CompleteDestination::Preset(&path),
+                ctx.worker.defaults_root,
             ) {
                 Ok(()) => ctx.outcome.status = Some("device preset saved".into()),
                 Err(reason) => ctx.outcome.error = Some(reason),
@@ -567,6 +568,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.worker.revision,
                 owner,
                 preset::CompleteDestination::Default(&root),
+                ctx.worker.defaults_root,
             ) {
                 Ok(()) => ctx.outcome.status = Some("device default saved".into()),
                 Err(reason) => ctx.outcome.error = Some(reason),
@@ -585,13 +587,15 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 ctx.worker.revision,
                 owner,
                 &path,
+                ctx.worker.defaults_root,
             );
             match candidate {
-                Ok(command) => {
+                Ok(prepared_cmd) => {
                     let before = ctx.worker.session.project().clone();
-                    match resident_audio::execute_command(
+                    match resident_audio::execute_command_with_originals(
                         &mut ctx.worker.session,
-                        command,
+                        prepared_cmd.command,
+                        prepared_cmd.originals,
                         ctx.worker
                             .compiled
                             .as_ref()

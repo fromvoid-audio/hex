@@ -409,7 +409,8 @@ impl EditorView {
                     self.test_probes.last_enqueued_native_device_add =
                         Some((*track, *class, *type_id));
                 }
-                hex_session::service::TrackCatalogPlacement::ReplaceInstrument(device) => {
+                hex_session::service::TrackCatalogPlacement::ReplaceInstrument(device)
+                | hex_session::service::TrackCatalogPlacement::ReplaceMidiProcessor(device) => {
                     self.test_probes.last_enqueued_native_device_replace =
                         Some((*device, *class, *type_id));
                 }

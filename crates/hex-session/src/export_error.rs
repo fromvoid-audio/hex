@@ -52,6 +52,12 @@ impl ExportFailure {
                 hex_storage::text::verbatim(recovery.display())
             ));
         }
+        if let Some(stage) = &report.retained_stage {
+            displayed.push_str(&format!(
+                "; inspect the staging path at {} before removing anything",
+                hex_storage::text::verbatim(stage.display())
+            ));
+        }
         displayed.push_str("; ");
         displayed.push_str(message);
         Self {
@@ -121,6 +127,7 @@ pub fn export_error_text(error: &hex_export::ExportError) -> String {
         hex_export::ExportError::PublishedButNotDurable {
             path,
             recovery_path,
+            retained_stage,
             operation,
             source,
         } => {
@@ -132,6 +139,12 @@ pub fn export_error_text(error: &hex_export::ExportError) -> String {
                 message.push_str(&format!(
                     "; previous file is at {}",
                     hex_storage::text::verbatim(recovery_path.display())
+                ));
+            }
+            if let Some(retained_stage) = retained_stage {
+                message.push_str(&format!(
+                    "; inspect the staging path at {} before removing anything",
+                    hex_storage::text::verbatim(retained_stage.display())
                 ));
             }
             message
@@ -176,6 +189,7 @@ mod tests {
                     path: PathBuf::from("/Mixed\u{2069}Case/Output.WAV"),
                     recovery_path: has_recovery
                         .then(|| PathBuf::from("/Mixed\u{2063}Case/Previous.WAV")),
+                    retained_stage: None,
                     operation: "synchronize the destination directory",
                     source: io::Error::other("sync failed"),
                 }),

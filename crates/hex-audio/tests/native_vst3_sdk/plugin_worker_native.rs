@@ -276,7 +276,10 @@ fn slow_exchange_sample_survives_worker_retirement() {
         (binding, 1, 166_666)
     );
     assert!(sample.empty_poll_to_pickup_ns.is_some());
-    assert!(sample.sdk_process_ns >= 4_000_000 && sample.exchange_ns >= sample.sdk_process_ns);
+    let sdk_process_ns = sample
+        .sdk_process_ns
+        .expect("signed macOS helper reports SDK processing duration");
+    assert!(sdk_process_ns >= 4_000_000 && sample.exchange_ns >= sdk_process_ns);
     let cpu = sample
         .sdk_thread_cpu_ns
         .expect("signed macOS processing thread CPU time");
@@ -284,7 +287,7 @@ fn slow_exchange_sample_survives_worker_retirement() {
         assert!(cpu >= 4_000_000, "known on-thread work: {sample:?}");
     } else {
         assert!(
-            sample.sdk_process_ns.saturating_sub(cpu) >= 3_000_000,
+            sdk_process_ns.saturating_sub(cpu) >= 3_000_000,
             "known wait: {sample:?}"
         );
     }

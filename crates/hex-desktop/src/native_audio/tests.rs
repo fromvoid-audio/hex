@@ -9,6 +9,8 @@ mod granular_source_projection;
 mod limiter;
 mod limiter_bypass;
 mod manual_host_gain;
+#[cfg(feature = "allocation-probe")]
+mod midi_output_probe;
 mod recovery;
 mod release_custody;
 mod resident_authoring;
@@ -1327,11 +1329,36 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
     }
     // Do NOT drain publication events: the capacity-one queue and latest-only
     // pending observation cannot guarantee Submitted(A) ever reaches the UI.
-    let refused = h.run(Request::Edit(hex_project::Command::InsertTrackWithDevice {
-        name: "unsupported".into(),
-        before_track: None,
-        slot: hex_project::TrackDeviceSlot::Instrument,
-        state: hex_project::default_instrument_state().expect("fixture instrument state"),
+    // Default native instruments now hand off to ordinary worker publication
+    // on VerifiedStreaming documents, so splice a track gain-touch span (which
+    // remains genuinely refused by the verified candidate constructor while
+    // keeping verified ownership) to prove refusal behind the full queue.
+    let imported_track = imported.state.project.tracks()[0].id();
+    let refused = h.run(Request::Edit(hex_project::Command::SpliceGainTouch {
+        track: imported_track,
+        expected_epoch: 0,
+        span: hex_project::GainTouchSpan {
+            source_start: hex_project::BeatTime::ZERO,
+            start: hex_project::BeatTime::ZERO,
+            end: hex_project::BeatTime::ONE,
+            context: hex_project::GainTouchContext {
+                recording_epoch: 1,
+                project_generation: a.project_generation,
+                canonical_revision: a.editor_revision,
+                audio_revision: actual_a.audio_revision,
+                transport_epoch: 1,
+                gesture_epoch: 1,
+                gesture_serial: 1,
+                sample_rate: 48_000,
+                loop_pass: 0,
+            },
+            steps: vec![hex_project::GainTouchStep {
+                beat: hex_project::BeatTime::ZERO,
+                gain: 0.75,
+                origin_beat: hex_project::BeatTime::ZERO,
+                source_sequence: 1,
+            }],
+        },
     }));
     let b = h.context.unwrap();
     assert_ne!(a, b);

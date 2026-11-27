@@ -141,6 +141,7 @@ impl Project {
                 muted,
                 soloed,
                 devices,
+                midi_processor,
                 instrument,
                 retained_source_path,
                 instrument_position,
@@ -167,6 +168,7 @@ impl Project {
                 || muted != &next.muted
                 || soloed != &next.soloed
                 || devices != &next.devices
+                || midi_processor != &next.midi_processor
                 || retained_source_path != &next.retained_source_path
                 || instrument_position != &next.instrument_position
                 || content != &next.content

@@ -40,6 +40,7 @@ mod editor_backend;
 #[cfg(any(test, feature = "ui-test-support"))]
 #[allow(dead_code)] // Used by ui-unit-tier and ui-test-support tests.
 mod test_wait;
+pub use editor::parse_package_ui_json;
 pub use editor_backend::{
     EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState,
     PluginEditorRetirementIssue,

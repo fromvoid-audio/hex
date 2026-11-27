@@ -1457,6 +1457,7 @@ pub enum TrackCatalogPlacement {
         before: Option<hex_project::DeviceId>,
     },
     ReplaceInstrument(hex_project::DeviceId),
+    ReplaceMidiProcessor(hex_project::DeviceId),
 }
 
 impl TrackCatalogPlacement {
@@ -1467,17 +1468,29 @@ impl TrackCatalogPlacement {
         class: hex_engine::NativeDeviceClass,
         track: &hex_project::Track,
     ) -> bool {
-        use hex_engine::NativeDeviceClass::{Effect, Instrument};
+        use hex_engine::NativeDeviceClass::{Effect, Instrument, MidiProcessor};
         match (self, class) {
             (Self::Insert { before }, Effect) => before.is_none_or(|anchor| {
                 track
-                    .instrument()
+                    .midi_processor()
                     .is_some_and(|device| device.id() == anchor)
+                    || track
+                        .instrument()
+                        .is_some_and(|device| device.id() == anchor)
                     || track.devices().iter().any(|device| device.id() == anchor)
             }),
             (Self::Insert { before: None }, Instrument) => track.instrument().is_none(),
             (Self::ReplaceInstrument(id), Instrument) => {
                 track.instrument().is_some_and(|device| device.id() == id)
+            }
+            (Self::Insert { before: None }, MidiProcessor) => {
+                !track.is_group() && track.midi_processor().is_none()
+            }
+            (Self::ReplaceMidiProcessor(id), MidiProcessor) => {
+                !track.is_group()
+                    && track
+                        .midi_processor()
+                        .is_some_and(|device| device.id() == id)
             }
             _ => false,
         }

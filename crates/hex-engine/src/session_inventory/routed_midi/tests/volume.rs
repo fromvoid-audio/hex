@@ -19,6 +19,7 @@ fn config(project: &Project, old: &PreparedSessionMidiClip) -> PreparedTrackInst
         state: Some(device.state().clone().without_host_gains()),
         bypassed: false,
         note_bank: Some(Arc::clone(old.instrument.note_bank())),
+        midi_processor: None,
         mutable_runtime: None,
         resource_factory_inline_bound: None,
         history_retarget_target: None,

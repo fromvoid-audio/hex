@@ -28,6 +28,12 @@ fn requires_shared_source_admission(
     receiver.is_some_and(|receiver| contributors.into_iter().any(|track| track != receiver))
 }
 
+struct PreparedTrackMidiProcessor {
+    identity: std::num::NonZeroU64,
+    bypassed: bool,
+    factory: Box<dyn hex_lattice::PreparedNativeMidiProcessor>,
+}
+
 struct PreparedTrackInstrumentConfig {
     automation: Option<instrument_automation::Program>,
     track: TrackId,
@@ -40,6 +46,7 @@ struct PreparedTrackInstrumentConfig {
     bypassed: bool,
     note_bank: Option<Arc<crate::midi_note_bank::PreparedMidiNoteBank>>,
     mutable_runtime: Option<Box<dyn PreparedMutableInstrumentRuntime>>,
+    midi_processor: Option<PreparedTrackMidiProcessor>,
     resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
@@ -61,6 +68,7 @@ struct PreparedMutableTrackInstrument {
     automation: Option<instrument_automation::Program>,
     track: TrackId,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
+    midi_processor: Option<PreparedTrackMidiProcessor>,
     resource_factory_inline_bound: Option<usize>,
     history_retarget_target: Option<Box<dyn PreparedInstrumentHistoryRetarget>>,
     history_retarget_requires_quiescence: bool,
@@ -611,10 +619,28 @@ impl PreparedSessionInventory {
             &shared_contexts,
             samplers,
         )?;
+        let midi_processor_registry = hex_devices::native_midi_processor_registry()
+            .map_err(|_| crate::Invalid("invalid built-in native midi processor registry"))?;
         let mut instrument_track_indices = BTreeMap::new();
         let mut instrument_automation_storage_bytes = 0;
         let mut armed_instrument_index = None;
         for (index, track) in project.tracks().iter().enumerate() {
+            let prepared_midi_processor = if let Some(midi_device) = track.midi_processor() {
+                let identity = std::num::NonZeroU64::new(midi_device.id().value())
+                    .ok_or(crate::Invalid("midi processor identity must be nonzero"))?;
+                let factory = midi_processor_registry
+                    .prepare_midi_processor(midi_device.state(), project.sample_rate())
+                    .map_err(|_| {
+                        crate::Invalid("track midi processor state is unsupported or malformed")
+                    })?;
+                Some(PreparedTrackMidiProcessor {
+                    identity,
+                    bypassed: midi_device.bypassed(),
+                    factory,
+                })
+            } else {
+                None
+            };
             let slot = track.instrument();
             let source_config = slot.and_then(|device| source_instruments.get_mut(&device.id()));
             let has_receiver = track
@@ -710,6 +736,11 @@ impl PreparedSessionInventory {
                 state: slot.map(|device| device.state().clone().without_host_gains()),
                 bypassed: slot.is_some_and(hex_project::Device::bypassed),
                 note_bank: None,
+                midi_processor: if mutable_runtime.is_some() {
+                    prepared_midi_processor
+                } else {
+                    None
+                },
                 mutable_runtime,
                 resource_factory_inline_bound,
                 history_retarget_target,
@@ -1328,6 +1359,7 @@ impl PreparedSessionInventory {
                     automation: config.automation.take(),
                     track: config.track,
                     factory,
+                    midi_processor: config.midi_processor.take(),
                     resource_factory_inline_bound: config.resource_factory_inline_bound,
                     history_retarget_target: proof,
                     history_retarget_requires_quiescence: config
@@ -1849,6 +1881,21 @@ impl PreparedSessionInventory {
             .iter()
             .find(|instrument| instrument.track == track)
             .map(|instrument| instrument.factory.as_ref())
+    }
+
+    pub(crate) fn mutable_midi_processor(
+        &self,
+        track: TrackId,
+    ) -> Option<(
+        std::num::NonZeroU64,
+        bool,
+        &dyn hex_lattice::PreparedNativeMidiProcessor,
+    )> {
+        self.mutable_instruments
+            .iter()
+            .find(|instrument| instrument.track == track)
+            .and_then(|instrument| instrument.midi_processor.as_ref())
+            .map(|proc| (proc.identity, proc.bypassed, proc.factory.as_ref()))
     }
 
     pub(crate) fn mutable_history_retarget(

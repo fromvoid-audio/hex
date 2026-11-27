@@ -13,6 +13,14 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
+/// Published preset original path plus any unremoved staging pathname left by
+/// non-renaming create-new WAV publication (`#8120`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetainedOriginal {
+    pub path: PathBuf,
+    pub retained_stage: Option<PathBuf>,
+}
+
 #[derive(Debug)]
 pub enum Error {
     Invalid(&'static str),
@@ -124,13 +132,30 @@ impl OriginalStore {
         frames: &[Frame],
         cancel: &AtomicBool,
     ) -> Result<PathBuf, Error> {
+        self.retain_with_custody(expected, sample_rate, frames, cancel)
+            .map(|outcome| outcome.path)
+    }
+
+    /// Same as [`Self::retain`], returning any unremoved staging pathname left
+    /// by non-renaming create-new WAV publication so callers can surface it
+    /// without deleting unverified pathnames (`#8120`).
+    pub fn retain_with_custody(
+        &self,
+        expected: PortableDeviceAsset,
+        sample_rate: u32,
+        frames: &[Frame],
+        cancel: &AtomicBool,
+    ) -> Result<RetainedOriginal, Error> {
         self.limits(expected)?;
         self.verify(expected, sample_rate, frames, cancel)?;
         let path = self.path(expected);
         match fs::symlink_metadata(&path) {
             Ok(_) => {
                 self.load(expected, cancel)?;
-                return Ok(path);
+                return Ok(RetainedOriginal {
+                    path,
+                    retained_stage: None,
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(Error::File(error)),
@@ -152,12 +177,18 @@ impl OriginalStore {
             },
         );
         match write {
-            Ok(_) => Ok(path),
+            Ok(report) => Ok(RetainedOriginal {
+                path,
+                retained_stage: report.retained_stage,
+            }),
             Err(ExportError::Io { source, .. })
                 if source.kind() == io::ErrorKind::AlreadyExists =>
             {
                 self.load(expected, cancel)?;
-                Ok(path)
+                Ok(RetainedOriginal {
+                    path,
+                    retained_stage: None,
+                })
             }
             Err(ExportError::Cancelled) => Err(Error::Cancelled),
             Err(error) => Err(Error::Write(error)),

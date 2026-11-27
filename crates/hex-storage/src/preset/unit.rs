@@ -227,6 +227,7 @@ pub fn decode_contents(bytes: &[u8]) -> Result<PresetContents, Error> {
     }
     let envelope: Envelope = serde_json::from_slice(bytes)?;
     let class = match envelope.class {
+        DeviceClass::MidiProcessor => DeviceUnitClass::MidiProcessor,
         DeviceClass::Instrument => DeviceUnitClass::Instrument,
         DeviceClass::Effect => DeviceUnitClass::Effect,
     };

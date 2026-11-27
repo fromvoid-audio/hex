@@ -1,0 +1,21 @@
+[package]
+name = "hex-device-abi-qual"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+hex-lattice-contract = { path = "../../crates/hex-lattice-contract" }
+libc = "=0.2.190"
+
+[dev-dependencies]
+allocation-counter = "=0.8.1"
+hex-storage = { path = "../../crates/hex-storage" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = "warn"

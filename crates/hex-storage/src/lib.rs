@@ -14,6 +14,8 @@
 //! Interrupted-save temporaries remain for deliberate inspection: their names and ages do not
 //! establish ownership or authorize deletion.
 pub mod automation_draft;
+pub mod device_packages;
+pub mod factory_library;
 mod files;
 mod journal;
 pub mod preset;
@@ -30,8 +32,7 @@ mod audio_edit;
 mod extended_attributes;
 mod replacement;
 mod schema;
-#[cfg(test)]
-mod temporaries;
+pub mod temporaries;
 pub use extended_attributes::MetadataWarning;
 pub use files::{
     FileToken, SaveNewOutcome, load, load_with_token, same_existing_file, save_new,
@@ -43,6 +44,10 @@ pub use replacement::{
     prepare_replacement_within, recovery_path, replace_confirmed, replace_existing,
 };
 use std::{fmt, io, path::PathBuf};
+pub use temporaries::{
+    AbandonedStage, AbandonedStageKind, discard_verified_stage, inspect_abandoned_stages,
+    recover_abandoned_stage_as,
+};
 
 /// Current saved-project schema for projects without sinc v2 media; independent
 /// of the application version. Such projects keep the layout older readers open.
@@ -83,7 +88,11 @@ pub const RETAINED_RECEIVER_SCHEMA_VERSION: u32 = 68;
 /// Schema69 stores the Compressor's authored stereo sidechain source.
 pub const SIDECHAIN_SCHEMA_VERSION: u32 = 69;
 /// Newest schema this build opens; anything above it is refused as newer.
-pub const NEWEST_SCHEMA_VERSION: u32 = LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION;
+pub const NEWEST_SCHEMA_VERSION: u32 = MIDI_PROCESSOR_SCHEMA_VERSION;
+/// Schema132 adds optional per-track pre-instrument native MIDI processors
+/// (`midi_processor` capability) on top of the unified capability manifest
+/// layout. Older schema131 readers refuse schema132 cleanly.
+pub const MIDI_PROCESSOR_SCHEMA_VERSION: u32 = 132;
 /// Schema131 adds optional `linked_scene_id` references on Arrangement sections
 /// (`linked_scene_placements` capability) on top of the unified capability
 /// manifest layout. Older schema130 readers refuse schema131 cleanly.
@@ -888,6 +897,7 @@ fn decode_impl_within(
             | TRACK_IO_ROUTING_SCHEMA_VERSION
             | SESSION_FOLLOW_ACTION_SCHEMA_VERSION
             | LINKED_SCENE_PLACEMENTS_SCHEMA_VERSION
+            | MIDI_PROCESSOR_SCHEMA_VERSION
     ) && !inside_envelope
     {
         return schema::manifest::decode(bytes);

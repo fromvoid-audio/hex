@@ -126,7 +126,21 @@ impl PreparedDeviceResources {
         metadata_bytes: usize,
         cancel: &AtomicBool,
     ) -> Result<Self, ResourcePreparationError> {
-        Self::prepare_with_sources(project, metadata_bytes, cancel, |asset| {
+        let registry = hex_devices::native_instrument_registry()
+            .map_err(|_| ResourcePreparationError::InvalidScope)?;
+        Self::prepare_on_control_with_registry(store, project, &registry, metadata_bytes, cancel)
+    }
+    /// Prepare one immutable original-source configuration set against a
+    /// host-supplied instrument registry (including admitted installed packages,
+    /// `#3002`). Retains the exact same storage, cancellation, and custody law.
+    pub fn prepare_on_control_with_registry(
+        store: &ResidentDeviceAssets,
+        project: &Project,
+        registry: &NativeInstrumentRegistry<'_>,
+        metadata_bytes: usize,
+        cancel: &AtomicBool,
+    ) -> Result<Self, ResourcePreparationError> {
+        Self::prepare_with_sources(project, registry, metadata_bytes, cancel, |asset| {
             store
                 .assets
                 .iter()
@@ -140,17 +154,20 @@ impl PreparedDeviceResources {
         metadata_bytes: usize,
         cancel: &AtomicBool,
     ) -> Result<Self, ResourcePreparationError> {
-        Self::prepare_with_sources(project, metadata_bytes, cancel, |asset| stage.loan(asset))
+        let registry = hex_devices::native_instrument_registry()
+            .map_err(|_| ResourcePreparationError::InvalidScope)?;
+        Self::prepare_with_sources(project, &registry, metadata_bytes, cancel, |asset| {
+            stage.loan(asset)
+        })
     }
     fn prepare_with_sources<'a>(
         project: &Project,
+        registry: &NativeInstrumentRegistry<'_>,
         metadata_bytes: usize,
         cancel: &AtomicBool,
         source_for: impl Fn(AssetId) -> Option<&'a NativeBankLoan>,
     ) -> Result<Self, ResourcePreparationError> {
         cancellation(cancel)?;
-        let registry = hex_devices::native_instrument_registry()
-            .map_err(|_| ResourcePreparationError::InvalidScope)?;
         let devices = || {
             project
                 .tracks()

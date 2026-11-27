@@ -737,6 +737,9 @@ impl Command {
             | Self::RemoveNativeSource(_)
             | Self::PlaceMidiClipWithOverwrite { .. }
             | Self::PlaceMidiClipWithNotes { .. }
+            | Self::InsertMidiProcessor { .. }
+            | Self::RemoveMidiProcessor { .. }
+            | Self::ReplaceTrackMidiProcessor { .. }
             | Self::PlaceMidiClipWithExpressiveNotes { .. } => ClipCommandScope::Unrelated,
         }
     }

@@ -1120,6 +1120,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let class_label = match class {
+            hex_engine::NativeDeviceClass::MidiProcessor => "midi",
             hex_engine::NativeDeviceClass::Instrument => "instrument",
             hex_engine::NativeDeviceClass::Effect => "effect",
         };

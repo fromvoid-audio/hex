@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import errno
@@ -1346,6 +1347,7 @@ class FreshTargetReservation:
 
     MAX_COMPONENTS = 128
     MAX_PATH_BYTES = 4096
+    _RESERVATION_KIND = "fresh"
 
     def __init__(self, root: Path, target: str, lock: CargoTargetLock, handles: list[int], absent: bool, state_fd: int) -> None:
         self._root = root
@@ -1475,7 +1477,8 @@ class FreshTargetReservation:
 
     def _verify(self, selected_target: str, *, pending: os.stat_result | None = None,
                 dev_owner: os.stat_result | None = None,
-                release_owner: os.stat_result | None = None, require_empty=True) -> None:
+                release_owner: os.stat_result | None = None, require_empty=True,
+                check_dev_owner: bool = True) -> None:
         """Refuse if the source, target, lock, ancestry, emptiness or state changed."""
         if (error := delivery_source_error(self._root)) is not None:
             raise TargetCacheError("fresh target source mismatch: " + error)
@@ -1502,7 +1505,8 @@ class FreshTargetReservation:
                 for descriptor in reversed(current):
                     os.close(descriptor)
             _, owner_path = target_state_paths(Path(self._target), self._lock.path.parent)
-            self._require_state_entry(self._state_fd, owner_path.name, dev_owner)
+            if check_dev_owner:
+                self._require_state_entry(self._state_fd, owner_path.name, dev_owner)
             self._require_state_entry(self._state_fd, self._release_marker_name(owner_path.name), release_owner)
             self._require_state_entry(
                 self._state_fd, target_admission_pending_path(self._lock.path).name, pending)
@@ -1518,6 +1522,37 @@ class FreshTargetReservation:
             if (not self._same_regular_file(os.fstat(stream.fileno()), owner)
                     or stream.read(len(payload) + 1) != payload):
                 raise TargetCacheError("published owner marker identity or bytes changed")
+
+    @staticmethod
+    def _exchange_entries(directory: int, first: str, second: str) -> None:
+        """Atomically exchange two directory entries without overwriting either inode.
+
+        Uses macOS ``renameatx_np(..., RENAME_SWAP)`` or Linux ``renameat2(..., RENAME_EXCHANGE)``.
+        Raises OSError(ENOTSUP) on platforms or filesystems without atomic exchange; callers
+        must fail closed rather than falling back to destructive rename(2).
+        """
+        libc = ctypes.CDLL(None, use_errno=True)
+        first_bytes = os.fsencode(first)
+        second_bytes = os.fsencode(second)
+        if sys.platform == "darwin" and hasattr(libc, "renameatx_np"):
+            renameatx = libc.renameatx_np
+            renameatx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            renameatx.restype = ctypes.c_int
+            rename_swap = 0x00000002
+            if renameatx(directory, first_bytes, directory, second_bytes, rename_swap) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, os.strerror(code), first, None, second)
+            return
+        if sys.platform.startswith("linux") and hasattr(libc, "renameat2"):
+            renameat2 = libc.renameat2
+            renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+            renameat2.restype = ctypes.c_int
+            rename_exchange = 2
+            if renameat2(directory, first_bytes, directory, second_bytes, rename_exchange) != 0:
+                code = ctypes.get_errno()
+                raise OSError(code, os.strerror(code), first, None, second)
+            return
+        raise OSError(errno.ENOTSUP, "atomic entry exchange is unsupported on this platform")
 
     def _publish_owner(self, owner_name: str, payload: bytes, *, release=False) -> os.stat_result:
         """Publish a verified owner while retaining the same cooperative lock."""
@@ -1609,6 +1644,210 @@ class FreshTargetReservation:
         failure = self.close()
         if failure and kind is None:
             raise TargetCacheError(failure)
+
+
+class ExistingReleaseTargetReservation(FreshTargetReservation):
+    """Hold custody of an explicit existing release target and its owner before Cargo metadata.
+
+    Supported scope:
+    - An explicit canonical absolute path to an existing directory whose release
+      ownership marker already exists in the cooperative lock-state directory and
+      authenticates that exact directory identity (`device`, `inode`).
+    - Acquires the cooperative target lock before probing the target or reading
+      the release owner, pins every ancestor directory descriptor, the target
+      directory descriptor, the state directory descriptor, the lock inode, and
+      the release owner inode and exact bytes.
+    - Retains custody across Cargo metadata, pending owner publication, optional
+      recovery (`adopt=True`), artifact identification/consumption, and final
+      ready owner publication via atomic non-destructive directory entry exchange.
+
+    Out of scope (explicitly refused or deferred to separate contracts):
+    - Absent target creation (requires an identity-bound creation primitive).
+    - Certifying previously built dependency cache lineage beyond the guarded
+      release owner's existing input/origin checks.
+    - Non-cooperating processes that bypass the cooperative target lock.
+    """
+
+    MAX_OWNER_BYTES = 128 * 1024
+    _RESERVATION_KIND = "existing_release"
+
+    def __init__(
+        self,
+        root: Path,
+        target: str,
+        lock: CargoTargetLock,
+        handles: list[int],
+        state_fd: int,
+        owner_name: str,
+        owner_stat: os.stat_result,
+        owner_bytes: bytes,
+    ) -> None:
+        super().__init__(root, target, lock, handles, False, state_fd)
+        self._owner_name = owner_name
+        self._owner_stat = owner_stat
+        self._owner_bytes = owner_bytes
+
+    @property
+    def owner_bytes(self) -> bytes:
+        return self._owner_bytes
+
+    @property
+    def owner_sha256(self) -> str:
+        return hashlib.sha256(self._owner_bytes).hexdigest()
+
+    @property
+    def target_identity(self) -> dict[str, int]:
+        if not self._active or not self._handles:
+            raise TargetCacheError("existing release target reservation is no longer live")
+        pinned = os.fstat(self._handles[-1])
+        return {"device": pinned.st_dev, "inode": pinned.st_ino}
+
+    @staticmethod
+    def _validate_release_owner_record(record: object, target: str) -> dict[str, object]:
+        if (not isinstance(record, dict) or record.get("schema_version") != 1
+                or not {"target_identity", "source", "workspace_owner", "packages"}.issubset(record)
+                or record.get("profile") != "release" or record.get("target_directory") != target
+                or record.get("state") not in {"pending", "ready"}
+                or not isinstance(record.get("workspace_owner"), dict)
+                or set(record["workspace_owner"]) != {"workspace_root", "git_common_dir"}
+                or not all(isinstance(v, str) and v for v in record["workspace_owner"].values())
+                or not isinstance(record.get("source"), dict)
+                or set(record["source"]) != {"commit", "dirty", "dirty_files", "content_sha256"}
+                or record["source"].get("dirty") is not False
+                or record["source"].get("dirty_files") != []
+                or not isinstance(record["source"].get("commit"), str)
+                or not isinstance(record["source"].get("content_sha256"), str)
+                or len(record["source"]["content_sha256"]) != 64
+                or any(c not in "0123456789abcdef" for c in record["source"]["content_sha256"])
+                or not isinstance(record.get("target_identity"), (dict, type(None)))
+                or (record["target_identity"] is not None and
+                    (set(record["target_identity"]) != {"device", "inode"} or
+                     not all(type(v) is int and v >= 0 for v in record["target_identity"].values())))
+                or not isinstance(record.get("packages"), list)
+                or not record["packages"]
+                or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec"}
+                       or not all(isinstance(v, str) and v for v in p.values()) for p in record["packages"])):
+            raise ValueError("invalid release owner fields")
+        if record["state"] == "ready":
+            artifact = record.get("artifact")
+            if (not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}
+                    or not all(isinstance(v, str) for v in artifact.values())
+                    or len(artifact["sha256"]) != 64
+                    or any(c not in "0123456789abcdef" for c in artifact["sha256"])
+                    or not isinstance(record.get("build_argv"), list)):
+                raise ValueError("invalid release artifact fields")
+        return record
+
+    @classmethod
+    def acquire(
+        cls,
+        root: Path,
+        target: str,
+        holder: dict[str, object],
+        *,
+        state_dir: Path | None = None,
+        expected_owner_sha256: str | None = None,
+    ) -> "ExistingReleaseTargetReservation":
+        root = root.resolve()
+        if (error := delivery_source_error(root)) is not None:
+            raise TargetCacheError("existing release target source mismatch: " + error)
+        if expected_owner_sha256 is not None and (
+                not isinstance(expected_owner_sha256, str)
+                or len(expected_owner_sha256) != 64
+                or any(c not in "0123456789abcdef" for c in expected_owner_sha256)):
+            raise TargetCacheError("expected release owner SHA256 must be 64 lowercase hex characters")
+        selected = cls._target_path(target)
+        lock_path, owner_path = target_state_paths(Path(selected), state_dir)
+        owner_name = cls._release_marker_name(owner_path.name)
+        lock = CargoTargetLock(lock_path, holder)
+        lock.acquire()  # Before target probing, owner inspection, or any Cargo command.
+        state_fd = None
+        handles: list[int] = []
+        try:
+            state_fd = os.open(lock_path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            cls._require_state_entry(state_fd, target_admission_pending_path(lock_path).name, None)
+            handles, absent = cls._open_chain(selected, require_empty=False)
+            if absent:
+                raise TargetCacheError(
+                    "existing release target is absent; choose an existing owned target or --fresh-release-target"
+                )
+            pinned_target = os.fstat(handles[-1])
+            pinned_identity = {"device": pinned_target.st_dev, "inode": pinned_target.st_ino}
+            try:
+                owner_fd = os.open(owner_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=state_fd)
+            except FileNotFoundError:
+                raise TargetCacheError(
+                    "existing release target has no release owner; refusing before metadata to preserve unknown data"
+                ) from None
+            with os.fdopen(owner_fd, "rb") as stream:
+                owner_stat = os.fstat(stream.fileno())
+                if not stat.S_ISREG(owner_stat.st_mode):
+                    raise TargetCacheError("existing release owner is not a regular file")
+                owner_bytes = stream.read(cls.MAX_OWNER_BYTES + 1)
+            if len(owner_bytes) > cls.MAX_OWNER_BYTES:
+                raise TargetCacheError("existing release owner exceeds bounded metadata size")
+            if expected_owner_sha256 is not None and hashlib.sha256(owner_bytes).hexdigest() != expected_owner_sha256:
+                raise TargetCacheError("existing release owner bytes differ from expected SHA256; preserved unchanged")
+            try:
+                parsed = json.loads(owner_bytes.decode("utf-8"))
+                record = cls._validate_release_owner_record(parsed, selected)
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError) as error:
+                raise TargetCacheError(
+                    f"existing release owner is malformed; refusing before metadata to preserve unknown data: {error}"
+                ) from error
+            if record.get("target_identity") != pinned_identity:
+                raise TargetCacheError(
+                    "existing release target identity differs from its release owner; refusing before metadata"
+                )
+            result = cls(root, selected, lock, handles, state_fd, owner_name, owner_stat, owner_bytes)
+            handles = []
+            state_fd = None
+            try:
+                result.revalidate(selected)
+            except BaseException:
+                result.close()
+                raise
+            return result
+        except OSError as error:
+            for descriptor in reversed(handles):
+                os.close(descriptor)
+            if state_fd is not None:
+                os.close(state_fd)
+            lock.release()
+            raise TargetCacheError(f"cannot reserve existing release target: {error}") from error
+        except BaseException:
+            for descriptor in reversed(handles):
+                os.close(descriptor)
+            if state_fd is not None:
+                os.close(state_fd)
+            lock.release()
+            raise
+
+    def _adopt_published_owner(self, owner_stat: os.stat_result, owner_bytes: bytes) -> None:
+        self._owner_stat = owner_stat
+        self._owner_bytes = owner_bytes
+
+    def _verify(self, selected_target: str, *, pending: os.stat_result | None = None,
+                dev_owner: os.stat_result | None = None,
+                release_owner: os.stat_result | None = None, require_empty=False,
+                check_dev_owner: bool = False) -> None:
+        expected_stat = self._owner_stat if release_owner is None else release_owner
+        super()._verify(
+            selected_target,
+            pending=pending,
+            dev_owner=dev_owner,
+            release_owner=expected_stat,
+            require_empty=False,
+            check_dev_owner=False,
+        )
+        if release_owner is None:
+            try:
+                self._require_owner_payload(self._owner_name, self._owner_stat, self._owner_bytes)
+                self._verify_lock_identity()
+            except OSError as error:
+                raise TargetCacheError(
+                    f"cannot revalidate existing release owner payload: {error}"
+                ) from error
 
 
 class LocalCiRunner:
@@ -2407,6 +2646,9 @@ class LocalCiRunner:
 
     def _prepare_target_cache(self) -> bool:
         if self._cargo_reservation is not None:
+            if getattr(self._cargo_reservation, "_RESERVATION_KIND", None) == "existing_release":
+                self.summary["target_cache_error"] = "existing release target reservation cannot be used for dev CI"
+                return False
             return self._prepare_fresh_target_cache(self._cargo_reservation)
         if self.cargo_identity is None or self.git_identity is None:
             self.summary["target_cache_error"] = "Cargo or Git identity is unavailable"
@@ -2769,30 +3011,143 @@ class LocalCiRunner:
 
     def validate_release_inputs(self, report: dict) -> None:
         """Refuse drift before handing an executable to a staging consumer."""
+        if (getattr(self._cargo_reservation, "_RESERVATION_KIND", None) == "existing_release"
+                and self.cargo_identity is not None):
+            self._cargo_reservation.revalidate(str(self.cargo_identity["target_directory"]))
         if report.get("build_cache_key") is not None and self._release_build_inputs(report["build_argv"]) != report["build_cache_key"]:
             raise TargetCacheError("release toolchain/config/dependency inputs changed during build")
 
     @staticmethod
-    def _write_release_owner(path: Path, payload: dict[str, object], *, before_replace=None) -> None:
+    def _write_release_owner(
+        path: Path,
+        payload: dict[str, object],
+        *,
+        before_replace=None,
+        reserved_exchange: tuple[FreshTargetReservation, os.stat_result, bytes, str] | None = None,
+    ) -> os.stat_result | None:
         if path.is_symlink():
             raise TargetCacheError("release ownership marker is a symlink")
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
-        with temporary.open("x", encoding="utf-8") as stream:
-            json.dump(payload, stream, indent=2, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-            if before_replace is not None:
-                before_replace()
-                if not FreshTargetReservation._same_regular_file(
-                        temporary.lstat(), os.fstat(stream.fileno())):
-                    raise TargetCacheError("ready release staging marker identity changed")
-        temporary.replace(path)
-        descriptor = os.open(path.parent, os.O_RDONLY)
+        if reserved_exchange is None:
+            temporary = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+            with temporary.open("x", encoding="utf-8") as stream:
+                json.dump(payload, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+                if before_replace is not None:
+                    before_replace()
+                    if not FreshTargetReservation._same_regular_file(
+                            temporary.lstat(), os.fstat(stream.fileno())):
+                        raise TargetCacheError("ready release staging marker identity changed")
+            temporary.replace(path)
+            descriptor = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            return
+
+        reservation, expected_owner, expected_pending_bytes, selected_target = reserved_exchange
+        directory = reservation._state_fd
+        owner_name = path.name
+        temporary_name = f"{owner_name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+        ready_bytes = (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+        ready_stat: os.stat_result | None = None
+        exchanged = False
+
+        def open_new(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+
+        def open_readonly(name, flags):
+            return os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+
+        def unlink_if_matches(name: str, expected_stat: os.stat_result) -> None:
+            try:
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                return
+            if FreshTargetReservation._same_regular_file(current, expected_stat):
+                try:
+                    os.unlink(name, dir_fd=directory)
+                except FileNotFoundError:
+                    pass
+
         try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+            with open(temporary_name, "xb", opener=open_new) as stream:
+                ready_stat = os.fstat(stream.fileno())
+                stream.write(ready_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+                if before_replace is not None:
+                    before_replace()
+                current_stage = os.stat(temporary_name, dir_fd=directory, follow_symlinks=False)
+                if not FreshTargetReservation._same_regular_file(current_stage, ready_stat):
+                    raise TargetCacheError("ready release staging marker identity changed")
+
+            # Atomically exchange temporary_name <-> owner_name without overwriting
+            # either inode. If a noncooperating same-user process substituted
+            # owner_name after before_replace(), its competing inode is moved intact
+            # into temporary_name and restored below without losing any bytes.
+            try:
+                FreshTargetReservation._exchange_entries(directory, temporary_name, owner_name)
+                exchanged = True
+            except OSError as error:
+                raise TargetCacheError(
+                    f"atomic release owner exchange failed (pending owner preserved): {error}"
+                ) from error
+
+            # Authenticate the swapped-out entry at temporary_name against our exact
+            # expected pending inode and bytes.
+            swapped_out_matches = False
+            try:
+                with open(temporary_name, "rb", opener=open_readonly) as swapped:
+                    swapped_stat = os.fstat(swapped.fileno())
+                    swapped_bytes = swapped.read(len(expected_pending_bytes) + 1)
+                    swapped_out_matches = (
+                        FreshTargetReservation._same_regular_file(swapped_stat, expected_owner)
+                        and swapped_bytes == expected_pending_bytes
+                    )
+            except OSError:
+                swapped_out_matches = False
+
+            custody_error: BaseException | None = None
+            if swapped_out_matches:
+                try:
+                    reservation._verify(selected_target, release_owner=ready_stat, require_empty=False)
+                    reservation._require_owner_payload(owner_name, ready_stat, ready_bytes)
+                    reservation._verify(selected_target, release_owner=ready_stat, require_empty=False)
+                except BaseException as error:
+                    custody_error = error
+
+            if not swapped_out_matches or custody_error is not None:
+                # Roll back the atomic exchange if owner_name is still our ready inode,
+                # restoring the competing (or pending) inode intact at owner_name.
+                try:
+                    current_owner = os.stat(owner_name, dir_fd=directory, follow_symlinks=False)
+                    if FreshTargetReservation._same_regular_file(current_owner, ready_stat):
+                        FreshTargetReservation._exchange_entries(directory, temporary_name, owner_name)
+                        os.fsync(directory)
+                        unlink_if_matches(temporary_name, ready_stat)
+                        os.fsync(directory)
+                except OSError:
+                    # Preserve both entries on disk if rollback cannot complete safely.
+                    pass
+                if not swapped_out_matches:
+                    raise TargetCacheError(
+                        "competing release owner replaced pending marker during final publication; "
+                        "preserved competing owner bytes"
+                    )
+                assert custody_error is not None
+                raise custody_error
+
+            os.fsync(directory)
+            unlink_if_matches(temporary_name, expected_owner)
+            os.fsync(directory)
+            return ready_stat
+        except BaseException:
+            if not exchanged and ready_stat is not None:
+                unlink_if_matches(temporary_name, ready_stat)
+            raise
 
     def inspect_recreated_release_target(self) -> dict[str, object]:
         """Read-only explicit recovery authority, while the target lock is held.
@@ -2915,8 +3270,13 @@ class LocalCiRunner:
                         verification_check=None, reservation: FreshTargetReservation | None = None):
         """Explicit release handoff; caller must identify its artifact before exit.
 
-        An opt-in reservation holds the original lock and target inode through
-        build completion. Its first pending owner is published create-only.
+        An opt-in FreshTargetReservation holds the original lock and empty target
+        inode through build completion and publishes its first pending owner
+        create-only. An opt-in ExistingReleaseTargetReservation acquires an
+        explicit existing owned target and its release owner before Cargo
+        metadata, retains their pinned identities and bytes through pending
+        publication, optional recovery (`adopt=True`) and artifact consumption,
+        and exchanges owner markers atomically without losing competing owners.
         A release build with locked arguments may reuse only a target verified
         empty at first admission under the same exact source and input witness.
         Ordinary callers acquire the same target-wide lock as before. Exceptions
@@ -2925,14 +3285,28 @@ class LocalCiRunner:
         lock = None
         cache_key_name = "CARGO_CACHE_RUSTC_INFO"
         prior_cache_setting = self.env.get(cache_key_name)
+        existing_reservation = (
+            reservation
+            if getattr(reservation, "_RESERVATION_KIND", None) == "existing_release"
+            else None
+        )
+        fresh_reservation = (
+            reservation if reservation is not None and existing_reservation is None else None
+        )
         try:
             if self.target_lock is not None:
                 raise TargetCacheError("release preparation requires an unheld runner")
-            if reservation is not None:
+            if fresh_reservation is not None:
                 if adopt or expected_owner_sha256 is not None or expected_recreated_target_identity is not None:
                     raise TargetCacheError("fresh release reservation cannot adopt or recover an owner")
                 # Full metadata must leave the reserved target empty. Verify
                 # that property again before admitting the release owner.
+                self.env[cache_key_name] = "0"
+            elif existing_reservation is not None:
+                if expected_recreated_target_identity is not None:
+                    raise TargetCacheError(
+                        "existing release reservation cannot use recreated-target recovery"
+                    )
                 self.env[cache_key_name] = "0"
             target, owner_path, lock = self._prepare_release_target(reservation)
             self.target_lock = lock
@@ -2962,17 +3336,23 @@ class LocalCiRunner:
                 if (not adopt or len(expected_owner_sha256) != 64
                         or any(c not in "0123456789abcdef" for c in expected_owner_sha256)):
                     raise TargetCacheError("expected release owner requires explicit adoption and its SHA256")
-                try:
-                    descriptor = os.open(owner_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-                    with os.fdopen(descriptor, "rb") as stream:
-                        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                            raise TargetCacheError("expected release owner is not a regular file")
-                        expected_owner_bytes = stream.read(128 * 1024 + 1)
-                    if (len(expected_owner_bytes) > 128 * 1024
-                            or hashlib.sha256(expected_owner_bytes).hexdigest() != expected_owner_sha256):
+                if existing_reservation is not None:
+                    existing_reservation.revalidate(str(target))
+                    expected_owner_bytes = existing_reservation.owner_bytes
+                    if hashlib.sha256(expected_owner_bytes).hexdigest() != expected_owner_sha256:
                         raise TargetCacheError("release owner changed since restart inspection; preserved unchanged")
-                except OSError as error:
-                    raise TargetCacheError("expected release owner is unavailable; preserved unchanged") from error
+                else:
+                    try:
+                        descriptor = os.open(owner_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                        with os.fdopen(descriptor, "rb") as stream:
+                            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                                raise TargetCacheError("expected release owner is not a regular file")
+                            expected_owner_bytes = stream.read(128 * 1024 + 1)
+                        if (len(expected_owner_bytes) > 128 * 1024
+                                or hashlib.sha256(expected_owner_bytes).hexdigest() != expected_owner_sha256):
+                            raise TargetCacheError("release owner changed since restart inspection; preserved unchanged")
+                    except OSError as error:
+                        raise TargetCacheError("expected release owner is unavailable; preserved unchanged") from error
             # Recheck source after acquiring ownership; a changed checkout refuses.
             if not self._capture_repository_state("release_locked_tree") or self.summary["release_locked_tree"] != self.summary["start_tree"]:
                 raise TargetCacheError("release source changed before lock acquisition")
@@ -2980,8 +3360,12 @@ class LocalCiRunner:
             if reservation is not None and (self._release_metadata.get("target_directory") != str(target)
                     or self._release_metadata.get("workspace_root") != str(self.root)):
                 raise TargetCacheError("release metadata changed the reserved Cargo target or workspace")
+            if existing_reservation is not None:
+                existing_reservation.revalidate(str(target))
             if verification_check is not None:
                 verification_check()
+            if existing_reservation is not None:
+                existing_reservation.revalidate(str(target))
             cache_key = None
             if requested_build_argv is not None:
                 try:
@@ -2995,7 +3379,7 @@ class LocalCiRunner:
             if reservation is not None:
                 if (not self._capture_repository_state("release_admission_tree")
                         or self.summary["release_admission_tree"] != source):
-                    raise TargetCacheError("release source changed before fresh publication")
+                    raise TargetCacheError("release source changed before reserved publication")
                 reservation.revalidate(str(target))
                 pinned = os.fstat(reservation._handles[-1])
                 identity = {"device": pinned.st_dev, "inode": pinned.st_ino}
@@ -3003,43 +3387,21 @@ class LocalCiRunner:
                 identity = self._directory_identity(target)
             record = None
             malformed = False
-            if owner_path.exists() or owner_path.is_symlink():
+            if existing_reservation is not None:
+                try:
+                    record = ExistingReleaseTargetReservation._validate_release_owner_record(
+                        json.loads(existing_reservation.owner_bytes.decode("utf-8")), str(target)
+                    )
+                except (UnicodeDecodeError, ValueError, TypeError) as error:
+                    raise TargetCacheError(f"malformed release ownership: {error}") from error
+            elif owner_path.exists() or owner_path.is_symlink():
                 try:
                     if owner_path.is_symlink():
                         raise ValueError("symlink marker")
-                    record = json.loads(expected_owner_bytes if expected_owner_bytes is not None else owner_path.read_text())
-                    if (not isinstance(record, dict) or record.get("schema_version") != 1
-                            or not {"target_identity", "source", "workspace_owner", "packages"}.issubset(record)
-                            or record.get("profile") != "release" or record.get("target_directory") != str(target)
-                            or record.get("state") not in {"pending", "ready"}
-                            or not isinstance(record.get("workspace_owner"), dict)
-                            or set(record["workspace_owner"]) != {"workspace_root", "git_common_dir"}
-                            or not all(isinstance(v, str) and v for v in record["workspace_owner"].values())
-                            or not isinstance(record.get("source"), dict)
-                            or set(record["source"]) != {"commit", "dirty", "dirty_files", "content_sha256"}
-                            or record["source"].get("dirty") is not False
-                            or record["source"].get("dirty_files") != []
-                            or not isinstance(record["source"].get("commit"), str)
-                            or not isinstance(record["source"].get("content_sha256"), str)
-                            or len(record["source"]["content_sha256"]) != 64
-                            or any(c not in "0123456789abcdef" for c in record["source"]["content_sha256"])
-                            or not isinstance(record.get("target_identity"), (dict, type(None)))
-                            or (record["target_identity"] is not None and
-                                (set(record["target_identity"]) != {"device", "inode"} or
-                                 not all(type(v) is int and v >= 0 for v in record["target_identity"].values())))
-                            or not isinstance(record.get("packages"), list)
-                            or not record["packages"]
-                            or any(not isinstance(p, dict) or set(p) != {"name", "version", "spec"}
-                                   or not all(isinstance(v, str) and v for v in p.values()) for p in record["packages"])):
-                        raise ValueError("invalid release owner fields")
-                    if record["state"] == "ready":
-                        artifact = record.get("artifact")
-                        if (not isinstance(artifact, dict) or set(artifact) != {"path", "sha256"}
-                                or not all(isinstance(v, str) for v in artifact.values())
-                                or len(artifact["sha256"]) != 64
-                                or any(c not in "0123456789abcdef" for c in artifact["sha256"])
-                                or not isinstance(record.get("build_argv"), list)):
-                            raise ValueError("invalid release artifact fields")
+                    record = ExistingReleaseTargetReservation._validate_release_owner_record(
+                        json.loads(expected_owner_bytes if expected_owner_bytes is not None else owner_path.read_text()),
+                        str(target),
+                    )
                 except (ValueError, TypeError, OSError) as error:
                     if not adopt or expected_owner_sha256 is not None:
                         raise TargetCacheError(f"malformed release ownership: {error}") from error
@@ -3118,11 +3480,30 @@ class LocalCiRunner:
             self.summary["release_target_cache"] = report
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed before release publication: " + error)
-            if reservation is not None:
+            if fresh_reservation is not None:
                 pending_bytes = (json.dumps(pending, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
                 if len(pending_bytes) > 128 * 1024:
                     raise TargetCacheError("fresh release owner marker exceeds the bounded publication size")
-                fresh_owner = reservation._publish_owner(owner_path.name, pending_bytes, release=True)
+                fresh_owner = fresh_reservation._publish_owner(owner_path.name, pending_bytes, release=True)
+            elif existing_reservation is not None:
+                pending_bytes = (json.dumps(pending, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+                if len(pending_bytes) > ExistingReleaseTargetReservation.MAX_OWNER_BYTES:
+                    raise TargetCacheError("existing release owner marker exceeds the bounded publication size")
+                initial_owner_stat = existing_reservation._owner_stat
+                initial_owner_bytes = existing_reservation._owner_bytes
+
+                def verify_initial_owner():
+                    existing_reservation._verify(str(target))
+
+                published_pending = self._write_release_owner(
+                    owner_path,
+                    pending,
+                    before_replace=verify_initial_owner,
+                    reserved_exchange=(existing_reservation, initial_owner_stat, initial_owner_bytes, str(target)),
+                )
+                assert published_pending is not None
+                existing_reservation._adopt_published_owner(published_pending, pending_bytes)
+                fresh_owner = published_pending
             else:
                 self._write_release_owner(owner_path, pending)
             if (not reuse or invalidated or self._invalidate_dependency_profile) and populated:
@@ -3136,6 +3517,8 @@ class LocalCiRunner:
                 report["cleanup_status"] = "pending"
                 if (error := self._execution_policy_error()) is not None:
                     raise TargetCacheError("runner policy source changed before release cleanup: " + error)
+                if existing_reservation is not None:
+                    existing_reservation.revalidate(str(target))
                 # Keep release and dev cleanup evidence independent.
                 log_path = self.output_dir / "release-handoff-clean.log"
                 with log_path.open("w") as log:
@@ -3148,6 +3531,8 @@ class LocalCiRunner:
                 report["cleanup_status"] = "passed"
             if (error := self._execution_policy_error()) is not None:
                 raise TargetCacheError("runner policy source changed during release preparation: " + error)
+            if existing_reservation is not None:
+                existing_reservation.revalidate(str(target))
             yield report
             if requested_build_argv is not None and report.get("build_argv") != requested_build_argv:
                 raise TargetCacheError("release build arguments differ from locked cache identity")
@@ -3173,7 +3558,17 @@ class LocalCiRunner:
                     reservation._require_owner_payload(owner_path.name, fresh_owner, pending_bytes)
                     reservation._verify(str(target), release_owner=fresh_owner, require_empty=False)
 
-                self._write_release_owner(owner_path, pending, before_replace=verify_pending_owner)
+                published_ready = self._write_release_owner(
+                    owner_path,
+                    pending,
+                    before_replace=verify_pending_owner,
+                    reserved_exchange=(reservation, fresh_owner, pending_bytes, str(target)),
+                )
+                if existing_reservation is not None and published_ready is not None:
+                    ready_bytes = (
+                        json.dumps(pending, indent=2, sort_keys=True, allow_nan=False) + "\n"
+                    ).encode()
+                    existing_reservation._adopt_published_owner(published_ready, ready_bytes)
             else:
                 self._write_release_owner(owner_path, pending)
             report["state"] = "ready"
@@ -3207,6 +3602,8 @@ class LocalCiRunner:
         if argv[:2] != ["cargo", "build"] or "--release" not in argv or "--target-dir" in argv:
             raise TargetCacheError("unsupported release build arguments")
         target = Path(str(self.cargo_identity["target_directory"]))
+        if getattr(self._cargo_reservation, "_RESERVATION_KIND", None) == "existing_release":
+            self._cargo_reservation.revalidate(str(target))
         lexical = path.absolute()
         resolved = lexical.resolve()
         # Cargo's owned target is canonical. System aliases above it (macOS
@@ -3231,6 +3628,8 @@ class LocalCiRunner:
         with path.open("rb") as stream:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
+        if getattr(self._cargo_reservation, "_RESERVATION_KIND", None) == "existing_release":
+            self._cargo_reservation.revalidate(str(target))
         return {"path": str(resolved), "sha256": digest.hexdigest()}
 
     def _run_target_cleanup(self, argv: list[str]) -> bool:

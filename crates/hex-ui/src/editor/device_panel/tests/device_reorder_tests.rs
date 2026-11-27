@@ -159,7 +159,8 @@ fn device_titles_move_between_left_and_right_without_editing_on_hover(cx: &mut T
                 .expect("track")
                 .ordered_device_chain()
                 .map(|node| match node {
-                    hex_project::TrackDeviceRef::Instrument(device)
+                    hex_project::TrackDeviceRef::MidiProcessor(device)
+                    | hex_project::TrackDeviceRef::Instrument(device)
                     | hex_project::TrackDeviceRef::Effect(device) => device.id(),
                 })
                 .collect::<Vec<_>>()
