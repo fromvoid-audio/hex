@@ -48,16 +48,16 @@ public:
         mach_timebase_info_data_t clock{};
         if(mach_timebase_info(&clock)!=KERN_SUCCESS || !clock.numer || !clock.denom) return;
         const double ticks_per_ns=static_cast<double>(clock.denom)/clock.numer;
-        const double constraint_ns=std::min(period_ns*0.75,4'500'000.0);
-        const double computation_ns=std::min(period_ns*0.35,constraint_ns*0.5);
+        const double constraint_ns=std::min(period_ns*0.85,10'000'000.0);
+        const double computation_ns=std::min(period_ns*0.65,constraint_ns*0.85);
         if(period_ns*ticks_per_ns>std::numeric_limits<uint32_t>::max() ||
             computation_ns*ticks_per_ns<1) return;
         const auto ticks=[&](double ns) { return static_cast<uint32_t>(ns*ticks_per_ns); };
         policy_={ticks(period_ns),ticks(computation_ns),ticks(constraint_ns),true};
         // Retain deadline priority across transient multi-quantum gaps (up to
-        // the six-quantum concealment bound and 40 ms quiet window) so a brief
+        // the twelve-quantum concealment bound and 80 ms quiet window) so a brief
         // hiccup never demotes the helper to standard priority mid-stream.
-        idle_=std::chrono::milliseconds(std::max(40,static_cast<int>(std::ceil(8*period_ns/1e6))));
+        idle_=std::chrono::milliseconds(std::max(80,static_cast<int>(std::ceil(14*period_ns/1e6))));
     }
     WorkerDeadline(const WorkerDeadline&)=delete;
     WorkerDeadline& operator=(const WorkerDeadline&)=delete;

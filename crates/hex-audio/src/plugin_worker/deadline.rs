@@ -27,9 +27,9 @@ impl Deadline {
             .min(Duration::from_millis(1))
             .min(constraint / 2);
         // Retain deadline priority across transient multi-quantum gaps (up to
-        // the six-quantum concealment bound and QUIET_TRANSPORT window) so a
+        // the twelve-quantum concealment bound and 80 ms quiet window) so a
         // brief hiccup does not demote the transport worker mid-stream.
-        let interval = (period * 8).max(super::QUIET_TRANSPORT);
+        let interval = (period * 14).max(super::QUIET_TRANSPORT);
         (computation, constraint, interval)
     }
 
@@ -169,7 +169,7 @@ mod tests {
                 assert!(computation <= constraint / 2);
                 assert!(constraint <= period);
                 assert!(interval >= super::super::QUIET_TRANSPORT);
-                assert!(interval >= period * 8);
+                assert!(interval >= period * 14);
                 let mut deadline = Deadline {
                     policy: CoreAudioWorkerTimeConstraint::for_current_thread(
                         period,
@@ -191,7 +191,7 @@ mod tests {
                 deadline.replied();
                 let expires = deadline.live_until.unwrap();
                 // Transient multi-quantum gap keeps deadline priority instead of demoting mid-stream.
-                deadline.after_empty_poll(expires - period * 5);
+                deadline.after_empty_poll(expires - period * 10);
                 assert!(deadline.active);
                 deadline.after_empty_poll(expires);
                 assert!(!deadline.active);

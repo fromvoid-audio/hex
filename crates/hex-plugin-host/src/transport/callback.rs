@@ -780,8 +780,8 @@ pub(super) fn stage_reply(
     if state.next_output_reply > expected {
         return Err(Fault::Protocol);
     }
-    // At most six stale replies and the current reply can be consumed in one
-    // callback. Validate every sequence before discarding its PCM and facts.
+    // At most MAX_CONCEALED_OUTPUT_GAPS stale replies and the current reply can
+    // be consumed in one callback. Validate every sequence before discarding its PCM and facts.
     for _ in 0..=MAX_CONCEALED_OUTPUT_GAPS {
         match replies.pop() {
             Ok(reply) => {

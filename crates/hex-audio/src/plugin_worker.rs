@@ -124,7 +124,7 @@ struct OfflineProgress {
 // restoration and safety liveness checks responsive with ~20 wakeups/sec max.
 const OFFLINE_IDLE: Duration = Duration::from_millis(10);
 const LIVE_POLL: Duration = Duration::from_micros(50);
-const QUIET_TRANSPORT: Duration = Duration::from_millis(40);
+const QUIET_TRANSPORT: Duration = Duration::from_millis(80);
 const LIVE_EVENT_IDLE_PARK: Duration = Duration::from_millis(50);
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const FAILURE_DIAGNOSTIC_CAPACITY: usize = 4;

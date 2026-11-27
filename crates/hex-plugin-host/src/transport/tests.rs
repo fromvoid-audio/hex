@@ -639,16 +639,17 @@ fn native_instrument_recovers_after_several_late_replies_without_replaying_them(
         native_pcm_channel_from_completed_prefix(BINDING, 8, 37).unwrap();
     let mut output = [[0.0; 2]; 8];
     let counts = allocation_counter::measure(|| {
-        // The worker remains occupied for six deadlines. Every input stays
-        // ordered; only missing output is concealed.
-        for value in 1..=8 {
+        // The worker remains occupied across all twelve concealed deadlines
+        // (2 pipeline quanta + 12 concealed quanta = 14 queued blocks). Every
+        // input stays ordered; only missing output is concealed.
+        for value in 1..=14 {
             callback
                 .stage(&[[value as f32; 2]; 8], &[], &mut output)
                 .unwrap();
             callback.finish(true).unwrap();
             assert_eq!(output, [[0.0; 2]; 8]);
         }
-        for sequence in 37..45 {
+        for sequence in 37..51 {
             let reply = worker.receive().unwrap().unwrap();
             assert_eq!(reply.sequence, sequence);
             assert_eq!(reply.pcm[0], [(sequence - 36) as f32; 2]);
@@ -666,7 +667,7 @@ fn native_instrument_recovers_after_several_late_replies_without_replaying_them(
         }
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
         callback.finish(true).unwrap();
-        assert_eq!(output, [[7.0; 2]; 8]);
+        assert_eq!(output, [[13.0; 2]; 8]);
         assert_eq!(callback.take_accepted_manual_parameter(), None);
         assert!(!control.is_revoked());
     });
@@ -779,7 +780,7 @@ fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
     let (control, mut callback, mut worker) =
         native_pcm_channel_from_completed_prefix(BINDING, 8, 0).unwrap();
     let mut output = [[0.0; 2]; 8];
-    for _ in 0..8 {
+    for _ in 0..14 {
         callback.stage(&[[0.0; 2]; 8], &[], &mut output).unwrap();
         callback.finish(true).unwrap();
     }
@@ -794,7 +795,7 @@ fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
     );
     assert!(control.is_revoked());
     let terminal = control.deadline_miss().unwrap();
-    assert_eq!(terminal.miss.reply_sequence, 6);
+    assert_eq!(terminal.miss.reply_sequence, 12);
     assert_eq!(
         terminal.miss.worker_phase,
         DeadlineWorkerPhase::AwaitingPickup
@@ -803,6 +804,59 @@ fn native_instrument_revokes_after_bounded_consecutive_missed_replies() {
     assert_eq!(terminal.last_processed_sequence, Some(0));
     assert_eq!(worker.complete(held), Err(Fault::Revoked));
     assert_eq!(control.deadline_miss(), Some(terminal));
+}
+
+#[test]
+fn transient_eight_quantum_burst_recovers_without_missing_output_on_256_frame_bridge() {
+    // Regression for #13190: a 41-43 ms transient SDK burst at 44.1 kHz / 256
+    // frames spans ~7-8 quanta. Concealing and catching up cleanly prevents
+    // spurious terminal MissingOutput while zero-allocating on the callback.
+    let (control, mut callback, mut worker) =
+        native_pcm_channel_from_completed_prefix(BINDING, 256, 82_180).unwrap();
+    let mut output = [[0.0; 2]; 256];
+    let counts = allocation_counter::measure(|| {
+        // Steady-state warmup of 2 pipeline quanta (82180, 82181).
+        for step in 0..2_u64 {
+            callback
+                .stage(&[[(step + 1) as f32; 2]; 256], &[], &mut output)
+                .unwrap();
+            callback.finish(true).unwrap();
+        }
+        // Complete block 82180 cleanly; block 82181 stalls for 8 consecutive quanta.
+        let first = worker.receive().unwrap().unwrap();
+        assert_eq!(first.sequence, 82_180);
+        worker.complete(first).unwrap();
+        let slow = worker.receive().unwrap().unwrap();
+        assert_eq!(slow.sequence, 82_181);
+        for step in 0..8_u64 {
+            callback
+                .stage(&[[(step + 3) as f32; 2]; 256], &[], &mut output)
+                .unwrap();
+            callback.finish(true).unwrap();
+        }
+        assert!(!control.is_revoked());
+        // Worker completes the slow block and catches up the queued backlog.
+        worker.complete(slow).unwrap();
+        for seq in 82_182..82_190 {
+            let req = worker.receive().unwrap().unwrap();
+            assert_eq!(req.sequence, seq);
+            worker.complete(req).unwrap();
+        }
+        // Next callback consumes the current aligned reply (82188) cleanly.
+        callback.stage(&[[11.0; 2]; 256], &[], &mut output).unwrap();
+        callback.finish(true).unwrap();
+        assert_eq!(output[0], [9.0; 2]);
+        assert!(!control.is_revoked());
+    });
+    assert_eq!(
+        (
+            counts.count_total,
+            counts.bytes_total,
+            counts.count_current,
+            counts.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
 }
 
 #[test]
