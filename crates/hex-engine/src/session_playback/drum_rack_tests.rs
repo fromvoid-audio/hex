@@ -2,10 +2,7 @@ use super::*;
 use crate::native_device_resources::{
     PreparedDeviceResources, ResidentDeviceAssets, ResourcePreparationError,
 };
-use hex_lattice::{
-    DrumRackDefinition, DrumRackPadSpec, DrumRackSpec, NativeInstrumentDefinition,
-    NativeInstrumentRegistry,
-};
+use hex_lattice::{DrumRackDefinition, DrumRackPadSpec, DrumRackSpec};
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceMetadata, NativeDeviceState,
     ParameterValue,
@@ -115,11 +112,7 @@ fn prepare_with_drum_rack(
 ) -> Result<(Arc<PreparedRevision>, PreparedDeviceResources), crate::Invalid> {
     let cancel = AtomicBool::new(false);
     let effects = hex_devices::native_registry().unwrap();
-    let builtin = hex_devices::native_instrument_registry().unwrap();
-    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
-    let drum_def = DrumRackDefinition::new(&builtin).unwrap();
-    defs.push(&drum_def);
-    let instruments = NativeInstrumentRegistry::new(&defs).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
     let resources = PreparedDeviceResources::prepare_on_control_with_registry(
         store,
         project,
@@ -671,11 +664,9 @@ fn two_pad_multi_output_drum_rack_sampler_main_and_subtractive_aux_oracle_choke_
             .unwrap()
         });
 
-    let builtin = hex_devices::native_instrument_registry().unwrap();
-    let drum_def = DrumRackDefinition::new(&builtin).unwrap();
-    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
-    defs.push(&drum_def);
-    let instruments = NativeInstrumentRegistry::new(&defs).unwrap();
+    let leaf = hex_devices::native_leaf_instrument_registry().unwrap();
+    let drum_def = DrumRackDefinition::new(leaf).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
     let cancel = AtomicBool::new(false);
     let resources = PreparedDeviceResources::prepare_on_control_with_registry(
         &store,
@@ -721,7 +712,7 @@ fn two_pad_multi_output_drum_rack_sampler_main_and_subtractive_aux_oracle_choke_
 
     // Isolated Sampler oracle (pitch 60, vel 110) and isolated Subtractive oracle (pitch 64, vel 95).
     let sampler_state = sampler_pad_state(asset);
-    let mut sampler_rt = builtin
+    let mut sampler_rt = leaf
         .prepare_instrument(&sampler_state, &ctx)
         .unwrap()
         .prepare_mutable_runtime()
@@ -734,7 +725,7 @@ fn two_pad_multi_output_drum_rack_sampler_main_and_subtractive_aux_oracle_choke_
         tuning: &tuning,
         resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
     };
-    let mut sub_rt = builtin
+    let mut sub_rt = leaf
         .prepare_instrument(&sub_state, &sub_ctx)
         .unwrap()
         .prepare_mutable_runtime()

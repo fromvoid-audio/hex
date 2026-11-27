@@ -92,6 +92,7 @@ impl Session {
             | Command::BindTrackSource { .. }
             | Command::ImportDeviceAssetIntoNewInstrument { .. }
             | Command::ImportDeviceAssetReplacingInstrument { .. }
+            | Command::ImportDeviceAssetForDeviceState { .. }
             | Command::PlaceMidiClip { .. }
             | Command::PlaceMidiClipWithOverwrite { .. }
             | Command::PlaceMidiClipWithNotes { .. }

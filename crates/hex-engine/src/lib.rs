@@ -59,6 +59,7 @@ pub fn monitoring_plays_clips(mode: hex_project::InputMonitoring) -> bool {
 }
 pub use hex_warp::{Error as TransientDetectionError, detect_transients};
 pub mod compensation;
+pub mod drum_rack_drop;
 pub mod foreign_automation;
 
 pub mod midi_capture;

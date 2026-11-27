@@ -998,6 +998,17 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_device_asset_replacing_instrument"; ["owner" => owner, "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
+        Command::ImportDeviceAssetForDeviceState {
+            device,
+            expected_state,
+            path,
+            sample_rate,
+            frames,
+            expected_asset,
+            next_state,
+        } => {
+            describe!("import_device_asset_for_device_state"; ["device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "expected_asset" => expected_asset.value(), "next_state_type" => next_state.type_id().as_str(), "next_state_state_version" => next_state.state_version(), "next_state_payload_bytes" => next_state.payload().len()]; omitted="")
+        }
         Command::RelinkAssets(relinks) => {
             describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
         }

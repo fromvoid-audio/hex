@@ -291,6 +291,7 @@ impl Project {
             | Command::ImportDeviceAsset { .. }
             | Command::ImportDeviceAssetIntoNewInstrument { .. }
             | Command::ImportDeviceAssetReplacingInstrument { .. }
+            | Command::ImportDeviceAssetForDeviceState { .. }
             | Command::RemoveDevices { .. }
             | Command::PasteDevices { .. }) => self.apply_device_command(device_command),
         }

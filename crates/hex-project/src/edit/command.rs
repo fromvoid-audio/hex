@@ -958,6 +958,20 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
+    /// Atomically import an original device source and replace one existing
+    /// device's state (e.g. a Drum Rack pad sample drop) in a single canonical
+    /// history step. Captured device state and next asset identity must match
+    /// exactly so stale targets or concurrent edits fail cleanly without
+    /// mutating prior pads or media.
+    ImportDeviceAssetForDeviceState {
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+        expected_asset: AssetId,
+        next_state: hex_lattice_contract::NativeDeviceState,
+    },
     RemoveAsset(AssetId),
     /// Point offline assets at found files as one history step, bringing them
     /// back online. Undo returns them to offline at their old paths. Paths must

@@ -38,6 +38,12 @@ pub(crate) enum NativeAssetDestination {
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
+    DeviceStateUpdate {
+        device: hex_project::DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        expected_asset: hex_project::AssetId,
+        next_state: hex_lattice_contract::NativeDeviceState,
+    },
 }
 pub(crate) struct ReconstructedOriginalSources<'a> {
     pub assets: hex_engine::native_device_resources::ResidentDeviceAssets,
@@ -238,6 +244,20 @@ impl Session {
                 frames,
                 state,
                 source_slot,
+            },
+            NativeAssetDestination::DeviceStateUpdate {
+                device,
+                expected_state,
+                expected_asset,
+                next_state,
+            } => Command::ImportDeviceAssetForDeviceState {
+                device,
+                expected_state,
+                path,
+                sample_rate: source_rate,
+                frames,
+                expected_asset,
+                next_state,
             },
         };
         let (created, ((prepared, source_overviews), _summary)) = self

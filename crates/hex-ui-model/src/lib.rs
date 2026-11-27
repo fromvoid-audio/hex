@@ -27,6 +27,7 @@ pub mod console_track_page;
 pub mod cpu_meter;
 pub mod disk_overload;
 pub mod drag_geometry;
+pub mod drum_rack_drop;
 pub mod elapsed_time;
 pub mod eq_panel;
 pub mod fade_calculation;
