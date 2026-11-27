@@ -426,6 +426,7 @@ impl WorkerLoop {
                     failed_plugin_adoption: false,
                     failed_plugin_publication_confirmed: false,
                     private_sampler: false,
+                    pending_unit_originals: Vec::new(),
                 },
             },
         )))

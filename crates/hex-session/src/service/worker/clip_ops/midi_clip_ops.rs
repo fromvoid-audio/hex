@@ -21,9 +21,11 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             // Catalog additions and picker replacements are resolved through
             // their existing default/owner validation and gesture barrier.
             // Keep their Created result after the exact install.
-            let result = resident_audio::device_insert::submit_browser_edit(
+            let originals = std::mem::take(&mut ctx.outcome.pending_unit_originals);
+            let result = resident_audio::device_insert::submit_browser_edit_with_originals(
                 &mut ctx.worker.session,
                 command,
+                originals,
                 &ctx.worker.state,
                 ctx.worker.project_generation,
                 ctx.worker
@@ -472,6 +474,51 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 }
                 Ok(None) => ctx.outcome.status = Some("no change".into()),
                 Err(reason) => ctx.outcome.error = Some(reason.to_string()),
+            }
+        }
+
+        Request::Edit(command) if !ctx.outcome.pending_unit_originals.is_empty() => {
+            let originals = std::mem::take(&mut ctx.outcome.pending_unit_originals);
+            let before = ctx.worker.session.project().clone();
+            match resident_audio::execute_command_with_originals(
+                &mut ctx.worker.session,
+                command,
+                originals,
+                ctx.worker
+                    .compiled
+                    .as_ref()
+                    .map(|(_, artifact)| artifact.as_ref()),
+                hex_engine::AudioSourceContext {
+                    project_generation: ctx.worker.project_generation,
+                    editor_revision: ctx.worker.revision.saturating_add(1),
+                },
+                &mut ctx.worker.events,
+                &mut ctx.worker.resident_snapshot,
+                ctx.worker.export_lane.admission_with_resident_owners(
+                    ctx.worker.compiled.as_ref().map(|(_, prepared)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: ctx.worker.current_sources.as_ref(),
+                            prepared: Some(prepared),
+                        }
+                    }),
+                    ctx.worker.resident_seek.as_ref(),
+                    ctx.worker.resident_preview.as_ref(),
+                ),
+            ) {
+                Ok((result, prepared)) if ctx.worker.session.project() != &before => {
+                    ctx.worker.unsaved = true;
+                    ctx.outcome.replacement_revision = Some(prepared);
+                    if !ctx.outcome.replacing_catalog_instrument {
+                        ctx.outcome.created = Some(result);
+                    }
+                    ctx.outcome.status = Some("edit committed".into());
+                }
+                Ok(_) => ctx.outcome.status = Some("no change".into()),
+                Err(reason) => {
+                    ctx.outcome.error = Some(hex_storage::text::lowercase_outside_verbatim(
+                        &reason.to_string(),
+                    ))
+                }
             }
         }
 

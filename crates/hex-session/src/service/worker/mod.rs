@@ -165,6 +165,7 @@ pub(super) struct RequestOutcome {
     pub(super) failed_plugin_adoption: bool,
     pub(super) failed_plugin_publication_confirmed: bool,
     pub(super) private_sampler: bool,
+    pub(super) pending_unit_originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
 }
 
 pub(super) struct WorkerDispatch<'a> {

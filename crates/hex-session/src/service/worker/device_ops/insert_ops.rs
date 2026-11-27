@@ -295,13 +295,19 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     new_track_gain,
                 )
                 .and_then(|command| {
-                    device_defaults::initialize(command, class, ctx.worker.defaults_root)
+                    device_defaults::initialize(
+                        &ctx.worker.session,
+                        command,
+                        class,
+                        ctx.worker.defaults_root,
+                    )
                 })
             };
-            match command.and_then(|command| {
-                resident_audio::device_insert::submit_browser_edit(
+            match command.and_then(|prepared| {
+                resident_audio::device_insert::submit_browser_edit_with_originals(
                     &mut ctx.worker.session,
-                    command,
+                    prepared.command,
+                    prepared.originals,
                     &ctx.worker.state,
                     ctx.worker.project_generation,
                     ctx.worker
@@ -436,7 +442,12 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                             }),
                     }
                     .and_then(|command| {
-                        device_defaults::initialize(command, class, ctx.worker.defaults_root)
+                        device_defaults::initialize(
+                            &ctx.worker.session,
+                            command,
+                            class,
+                            ctx.worker.defaults_root,
+                        )
                     }),
                     NativeDeviceDropSource::Existing {
                         device,
@@ -463,20 +474,21 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                             if actual_type != type_id {
                                 return Err("device drag type changed".to_owned());
                             }
-                            Ok(Command::MoveTrackDevice {
+                            Ok(preset::PreparedCommand::plain(Command::MoveTrackDevice {
                                 device,
                                 track,
                                 before,
-                            })
+                            }))
                         }),
                 }
             };
             match command {
-                Ok(command) => {
+                Ok(prepared) => {
                     let before_project = ctx.worker.session.project().clone();
-                    match resident_audio::device_insert::submit_browser_edit(
+                    match resident_audio::device_insert::submit_browser_edit_with_originals(
                         &mut ctx.worker.session,
-                        command,
+                        prepared.command,
+                        prepared.originals,
                         &ctx.worker.state,
                         ctx.worker.project_generation,
                         ctx.worker
@@ -611,14 +623,20 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             let command = command
                 .map_err(|error| error.to_string())
                 .and_then(|command| {
-                    device_defaults::initialize(command, class, ctx.worker.defaults_root)
+                    device_defaults::initialize(
+                        &ctx.worker.session,
+                        command,
+                        class,
+                        ctx.worker.defaults_root,
+                    )
                 });
             match command {
-                Ok(command) => {
+                Ok(prepared) => {
                     let before_project = ctx.worker.session.project().clone();
-                    match resident_audio::device_insert::submit_browser_edit(
+                    match resident_audio::device_insert::submit_browser_edit_with_originals(
                         &mut ctx.worker.session,
-                        command,
+                        prepared.command,
+                        prepared.originals,
                         &ctx.worker.state,
                         ctx.worker.project_generation,
                         ctx.worker
@@ -694,13 +712,14 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 })
                 .and_then(|state| {
                     device_defaults::initialize(
+                        &ctx.worker.session,
                         Command::ReplaceDeviceState { device, state },
                         class,
                         ctx.worker.defaults_root,
                     )
                 });
             match replacement {
-                Ok(command) => {
+                Ok(prepared) => {
                     let before_project = ctx.worker.session.project().clone();
                     let confirmed_output = ctx.worker.events.resident_audio().is_some_and(|sink| {
                         match ctx.worker.session.audio_mode() {
@@ -716,9 +735,10 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                     });
                     let proposal =
                         confirmed_output.then(|| Arc::new(PluginEffectControl::default()));
-                    match resident_audio::device_insert::submit_browser_edit(
+                    match resident_audio::device_insert::submit_browser_edit_with_originals(
                         &mut ctx.worker.session,
-                        command,
+                        prepared.command,
+                        prepared.originals,
                         &ctx.worker.state,
                         ctx.worker.project_generation,
                         ctx.worker

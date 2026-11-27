@@ -544,6 +544,45 @@ pub(in crate::service) fn execute_command(
         None,
     )
 }
+
+/// Same as [`execute_command`], staging any verified preset/default original
+/// audio files inside the same canonical/resident transaction.
+#[allow(clippy::too_many_arguments)] // Mirrors execute_command plus the staged original batch.
+pub(in crate::service) fn execute_command_with_originals(
+    session: &mut Session,
+    command: Command,
+    originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
+    previous: Option<&PreparedRevision>,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    if originals.is_empty() {
+        return execute_command(
+            session, command, previous, context, events, resident, admission,
+        );
+    }
+    if (session.uses_ordinary_worker_publication_for_command(&command) || resident.is_some())
+        && let Some(sink) = events.resident_audio()
+    {
+        let (created, snapshot) = session.execute_resident_command_with_originals(
+            command,
+            originals,
+            ResidentSinkContext {
+                context,
+                sink,
+                admission,
+            },
+            resident.as_ref(),
+        )?;
+        let prepared = Arc::clone(&snapshot.prepared);
+        *resident = Some(snapshot);
+        Ok((created, prepared))
+    } else {
+        session.command_prepared_revision_with_native_originals(command, originals, previous)
+    }
+}
 /// `execute_command` that reports resident transition phases when measured.
 pub(in crate::service) fn execute_command_timed(
     session: &mut Session,
