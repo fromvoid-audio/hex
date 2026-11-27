@@ -431,3 +431,173 @@ fn custom_legacy_routing_keeps_sound_state_and_all_global_controls(cx: &mut Test
                 .is_some_and(|state| state.project.device(device).unwrap().state() == &with_pan)
     });
 }
+
+#[gpui::test]
+fn oscillator_fm_handles_toggle_custom_dag_refuse_cycles_adjust_depth_and_undo_cleanly(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (service, state, track, device) = operator_navigation_tests::operator_fixture();
+    let initial_state = state.project.device(device).unwrap().state().clone();
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(1600.0), px(700.0)));
+    visual.run_until_parked();
+
+    let sel = |name: String| -> &'static str { Box::leak(name.into_boxed_str()) };
+    let fm_summary = |view: &EditorView| {
+        hex_engine::native_operator_fm_summary(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+        )
+        .unwrap()
+    };
+
+    // Default Algorithm 1 (3->2->1->0): op 0 is "out", ops 1..=3 are "fm".
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-role-{}-0-out", device.value())))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-role-{}-1-fm", device.value())))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-role-{}-2-fm", device.value())))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-role-{}-3-fm", device.value())))
+            .is_some()
+    );
+
+    // Arm osc 0 (a): self (0->0) and cycle-closing targets (0->1, 0->2, 0->3) must NOT be outlined.
+    let handle_0 = visual
+        .debug_bounds(sel(format!("operator-fm-handle-{}-0", device.value())))
+        .expect("osc a fm handle");
+    visual.simulate_click(handle_0.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-armed-{}-0", device.value())))
+            .is_some()
+    );
+    for dst in 0..4 {
+        assert!(
+            visual
+                .debug_bounds(sel(format!(
+                    "operator-fm-target-{}-0-{dst}",
+                    device.value()
+                )))
+                .is_none(),
+            "cycle/self target 0->{dst} must not be outlined in serial algo 1"
+        );
+    }
+
+    // Arm osc 2 (c): existing edge 2->1 IS outlined with +25% depth; clicking toggles it off -> Algorithm 8 (3->2, 1->0).
+    let handle_2 = visual
+        .debug_bounds(sel(format!("operator-fm-handle-{}-2", device.value())))
+        .expect("osc c fm handle");
+    visual.simulate_click(handle_2.center(), Modifiers::default());
+    visual.run_until_parked();
+    let target_2_1 = visual
+        .debug_bounds(sel(format!("operator-fm-target-{}-2-1", device.value())))
+        .expect("mapped 2->1 target");
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-depth-{}-2-1", device.value())))
+            .is_some()
+    );
+    visual.simulate_click(target_2_1.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        fm_summary(view).algorithm_choice == Some(8)
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-role-{}-2-out", device.value())))
+            .is_some()
+    );
+
+    // Arm osc 0 (a): now 0->2 is acyclic and outlined! Clicking creates custom DAG (3->2, 1->0->2) in one edit.
+    let handle_0 = visual
+        .debug_bounds(sel(format!("operator-fm-handle-{}-0", device.value())))
+        .unwrap();
+    visual.simulate_click(handle_0.center(), Modifiers::default());
+    visual.run_until_parked();
+    let target_0_2 = visual
+        .debug_bounds(sel(format!("operator-fm-target-{}-0-2", device.value())))
+        .expect("acyclic 0->2 target");
+    visual.simulate_click(target_0_2.center(), Modifiers::default());
+    pump_until(&editor, cx, |view| {
+        fm_summary(view).algorithm_choice.is_none()
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-role-{}-0-fm", device.value())))
+            .is_some()
+    );
+    assert!(
+        visual
+            .debug_bounds(sel(format!(
+                "operator-routing-current-{}-custom",
+                device.value()
+            )))
+            .is_some(),
+        "non-catalog DAG must display custom routing label"
+    );
+
+    // Shift-clicking mapped target 0->2 raises depth (+25% -> +50% = 0.50 turns) in one undoable edit.
+    let target_0_2 = visual
+        .debug_bounds(sel(format!("operator-fm-target-{}-0-2", device.value())))
+        .unwrap();
+    visual.simulate_click(target_0_2.center(), Modifiers::shift());
+    pump_until(&editor, cx, |view| {
+        (fm_summary(view).matrix[0][2] - 0.5).abs() < 1e-5
+    });
+    visual.run_until_parked();
+
+    // Arm osc 2 (c): 2->1 would now form cycle (1->0->2->1) and must NOT be outlined.
+    let handle_2 = visual
+        .debug_bounds(sel(format!("operator-fm-handle-{}-2", device.value())))
+        .unwrap();
+    visual.simulate_click(handle_2.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(sel(format!("operator-fm-target-{}-2-1", device.value())))
+            .is_none(),
+        "cycle-closing target 2->1 must not be outlined"
+    );
+
+    // Three Undos cleanly revert depth edit -> custom 0->2 edge -> algo 8 back to initial algo 1.
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        (fm_summary(view).matrix[0][2] - 0.25).abs() < 1e-5
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        fm_summary(view).algorithm_choice == Some(8)
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .device(device)
+            .unwrap()
+            .state()
+            == &initial_state
+    });
+}

@@ -26,6 +26,18 @@ pub use hex_devices::delay;
 pub use hex_devices::eq;
 pub use hex_devices::filter::response as native_filter_response;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
+pub use hex_devices::operator_state::{
+    DEFAULT_FM_DEPTH_TURNS as NATIVE_OPERATOR_DEFAULT_FM_DEPTH_TURNS,
+    MAX_MOD_MODE_FM_DEPTH_TURNS as NATIVE_OPERATOR_MAX_FM_DEPTH_TURNS, OperatorFmSummary,
+    SUPPORTED_NON_PITCH_AUDIO_RATE_TARGETS as NATIVE_OPERATOR_NON_PITCH_AUDIO_RATE_TARGETS,
+    VectorModError as NativeOperatorModError,
+    fm_depth_turns_from_mod_depth as native_operator_fm_depth_turns,
+    mod_depth_from_fm_depth_turns as native_operator_mod_depth_from_turns,
+    operator_can_map_fm_edge as native_operator_can_map_fm_edge,
+    operator_fm_summary as native_operator_fm_summary,
+    operator_set_fm_edge_depth as native_operator_set_fm_edge_depth,
+    operator_toggle_fm_edge as native_operator_toggle_fm_edge,
+};
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::overdrive::{
     OverdriveFilterResponse, filter_response as native_overdrive_filter_response,
