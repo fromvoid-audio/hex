@@ -792,21 +792,62 @@ fn recursion_duplicate_ids_unknown_latency_budget_and_failed_prep_refuse_atomica
     };
     let mut history = AudioRackHistory::new(valid.clone(), limits).unwrap();
 
-    // 1. Recursion prohibition (nested Audio Rack type inside a branch).
-    let nested_state = NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 1, vec![]).unwrap();
+    // 1. Malformed nested Audio Rack state and depth-3 recursion prohibition.
+    let malformed_nested = NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 2, vec![]).unwrap();
     assert_eq!(
         history.apply(AudioRackEdit::ReplaceBranchDevices {
             branch: 1,
             devices: vec![AudioRackDeviceSpec {
                 device_id: id(11),
-                state: nested_state,
+                state: malformed_nested,
+                bypassed: false,
+            }],
+        }),
+        Err(AudioRackError::InvalidNestedState)
+    );
+    assert_eq!(history.current(), &valid);
+    assert!(!history.can_undo());
+
+    // Explicit depth-1 limit refuses valid depth-2 nested rack.
+    let inner_valid = AudioRackSpec {
+        rack_id: id(31),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(311),
+                gain: 1.0,
+                muted: false,
+                devices: Vec::new(),
+            },
+            AudioRackBranchSpec {
+                branch_id: id(312),
+                gain: 1.0,
+                muted: false,
+                devices: Vec::new(),
+            },
+        ],
+    };
+    let mut flat_history = AudioRackHistory::new(
+        valid.clone(),
+        AudioRackLimits {
+            max_depth: 1,
+            ..limits
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        flat_history.apply(AudioRackEdit::ReplaceBranchDevices {
+            branch: 1,
+            devices: vec![AudioRackDeviceSpec {
+                device_id: id(11),
+                state: inner_valid.encode_state().unwrap(),
                 bypassed: false,
             }],
         }),
         Err(AudioRackError::RecursionProhibited)
     );
-    assert_eq!(history.current(), &valid);
-    assert!(!history.can_undo());
+    assert_eq!(flat_history.current(), &valid);
 
     // 2. Duplicate child device ID across branches refuses atomically.
     assert_eq!(
@@ -914,4 +955,386 @@ fn recursion_duplicate_ids_unknown_latency_budget_and_failed_prep_refuse_atomica
         Err(AudioRackError::BlockTooLarge)
     );
     rack.rollback_block();
+}
+
+#[test]
+fn nested_serial_parallel_impulse_pcm_and_pdc_oracles_align_exactly_across_partitions() {
+    let registry = test_registry();
+    let limits = AudioRackLimits::default();
+
+    // Inner depth-2 Audio Rack:
+    //   Inner Branch 0: Latency(10) -> Gain(0.5)   (branch latency = 10)
+    //   Inner Branch 1: Latency(2)  -> Gain(0.25)  (branch latency = 2, comp = 8)
+    //   Inner Rack Latency = 10; sum amplitude = 0.5 + 0.25 = 0.75 at +10 frames.
+    let inner_spec = AudioRackSpec {
+        rack_id: id(200),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(201),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(21),
+                        state: latency_state(LATENCY_TYPE, 10),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(22),
+                        state: float_state(GAIN_TYPE, 0.5),
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(202),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(23),
+                        state: latency_state(LATENCY_TYPE, 2),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(24),
+                        state: float_state(GAIN_TYPE, 0.25),
+                        bypassed: false,
+                    },
+                ],
+            },
+        ],
+    };
+
+    // Outer depth-1 Audio Rack:
+    //   Outer Branch 0: Latency(4) -> NestedRack(lat 10, amp 0.75) -> Gain(0.5) => lat 14, amp 0.375
+    //   Outer Branch 1: Latency(6) -> Gain(0.25)                                => lat 6, comp 8, amp 0.25
+    //   Total Outer Rack Latency = 14; combined impulse amplitude at frame 14 = 0.375 + 0.25 = 0.625!
+    let outer_spec = AudioRackSpec {
+        rack_id: id(100),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(101),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(11),
+                        state: latency_state(LATENCY_TYPE, 4),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(12),
+                        state: inner_spec.encode_state().unwrap(),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(13),
+                        state: float_state(GAIN_TYPE, 0.5),
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(102),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(14),
+                        state: latency_state(LATENCY_TYPE, 6),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(15),
+                        state: float_state(GAIN_TYPE, 0.25),
+                        bypassed: false,
+                    },
+                ],
+            },
+        ],
+    };
+
+    let mut whole = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        &outer_spec,
+        &registry,
+        limits,
+    )
+    .unwrap();
+    assert_eq!(whole.nested_rack_count(), 1);
+    assert_eq!(whole.nested_rack_latency_frames(id(200)), Some(10));
+    assert_eq!(whole.rack_latency_frames(), 14);
+    assert_eq!(whole.branch_latency_frames(0), Some(14));
+    assert_eq!(whole.branch_latency_frames(1), Some(6));
+    assert_eq!(whole.branch_compensation_delay_frames(0), Some(0));
+    assert_eq!(whole.branch_compensation_delay_frames(1), Some(8));
+
+    let mut impulse = vec![[0.0_f32; 2]; 32];
+    impulse[0] = [1.0, -1.0];
+    let expected = render_all(&mut whole, &impulse, &[32]);
+    for (idx, &frame) in expected.iter().enumerate() {
+        if idx == 14 {
+            assert!((frame[0] - 0.625).abs() < 1e-6);
+            assert!((frame[1] + 0.625).abs() < 1e-6);
+        } else {
+            assert_eq!(frame, [0.0, 0.0], "unexpected energy at frame {idx}");
+        }
+    }
+    assert!(whole.committed_is_quiescent());
+
+    // Irregular partitions reproduce the nested oracle bit-for-bit.
+    let mut chunked = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        &outer_spec,
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let actual_chunked = render_all(&mut chunked, &impulse, &[1, 3, 5, 11, 12]);
+    assert_eq!(actual_chunked, expected);
+
+    // Bypassing the nested rack preserves exact 14-frame PDC alignment:
+    // Outer Branch 0 dry path = 1.0 * 0.5 = 0.5, Outer Branch 1 = 0.25 -> total 0.75 at frame 14!
+    let mut nested_bypassed = outer_spec.clone();
+    nested_bypassed.branches[0].devices[1].bypassed = true;
+    let mut byp_rt = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        &nested_bypassed,
+        &registry,
+        limits,
+    )
+    .unwrap();
+    assert_eq!(byp_rt.rack_latency_frames(), 14);
+    let byp_out = render_all(&mut byp_rt, &impulse, &[7, 9, 16]);
+    for (idx, &frame) in byp_out.iter().enumerate() {
+        if idx == 14 {
+            assert!((frame[0] - 0.75).abs() < 1e-6);
+            assert!((frame[1] + 0.75).abs() < 1e-6);
+        } else {
+            assert_eq!(frame, [0.0, 0.0]);
+        }
+    }
+}
+
+#[test]
+fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
+    let registry = test_registry();
+    let limits = AudioRackLimits::default();
+
+    // Start flat: Branch 0 = [Gain(2.0), Clip(0.5)], Branch 1 = [Latency(6)].
+    let flat = AudioRackSpec {
+        rack_id: id(50),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(501),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(51),
+                        state: float_state(GAIN_TYPE, 2.0),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(52),
+                        state: float_state(CLIP_TYPE, 0.5),
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(502),
+                gain: 0.5,
+                muted: false,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(53),
+                    state: latency_state(LATENCY_TYPE, 6),
+                    bypassed: false,
+                }],
+            },
+        ],
+    };
+
+    // Strict v1 flat -> v2 migration round-trips identically; unsupported v0/v3 refuse!
+    let v1_state = flat.encode_v1_flat_state().unwrap();
+    assert_eq!(v1_state.state_version(), AUDIO_RACK_STATE_VERSION_V1_FLAT);
+    assert_eq!(
+        AudioRackSpec::decode_and_migrate_state(&v1_state).unwrap(),
+        flat
+    );
+    assert_eq!(
+        AudioRackSpec::decode_state(&v1_state),
+        Err(AudioRackError::InvalidNestedState)
+    );
+    let bad_v3 =
+        NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 3, v1_state.payload().to_vec()).unwrap();
+    assert_eq!(
+        AudioRackSpec::decode_and_migrate_state(&bad_v3),
+        Err(AudioRackError::InvalidNestedState)
+    );
+
+    let mut history = AudioRackHistory::new(flat.clone(), limits).unwrap();
+
+    // 1. Atomic GroupDevices wraps Branch 0 [Gain(2.0), Clip(0.5)] into nested rack 60!
+    history
+        .apply(AudioRackEdit::GroupDevices {
+            branch: 0,
+            start: 0,
+            end: 2,
+            rack_id: id(60),
+            host_device_id: id(59),
+            branch_ids: [id(601), id(602)],
+        })
+        .unwrap();
+    assert_eq!(history.current().branches[0].devices.len(), 1);
+    assert_eq!(
+        history.current().branches[0].devices[0].state.type_id(),
+        AUDIO_RACK_TYPE_ID
+    );
+
+    // 2. Strict v2 roundtrip preserves exact depth-2 tree!
+    let v2_encoded = history.current().encode_state().unwrap();
+    assert_eq!(v2_encoded.state_version(), AUDIO_RACK_STATE_VERSION);
+    assert_eq!(
+        AudioRackSpec::decode_state(&v2_encoded).unwrap(),
+        *history.current()
+    );
+    // v1 flat encoder explicitly refuses nested rack specs.
+    assert_eq!(
+        history.current().encode_v1_flat_state(),
+        Err(AudioRackError::RecursionProhibited)
+    );
+
+    // 3. Edit nested rack by stable rack_id (60): reorder Gain(2.0) & Clip(0.5)!
+    history
+        .apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(60),
+            edit: Box::new(AudioRackEdit::ReorderDevice {
+                branch: 0,
+                from: 0,
+                to: 1,
+            }),
+        })
+        .unwrap();
+    // Stale/missing nested rack ID refuses atomically without mutating state or undo!
+    let before_stale = history.current().clone();
+    assert_eq!(
+        history.apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(999),
+            edit: Box::new(AudioRackEdit::SetRackBypassed { bypassed: true }),
+        }),
+        Err(AudioRackError::UnknownTargetId)
+    );
+    assert_eq!(history.current(), &before_stale);
+
+    // 4. Depth-3 nesting refusal (cannot group or nest another rack inside depth-2 rack 60).
+    let depth3_candidate = AudioRackSpec {
+        rack_id: id(70),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(701),
+                gain: 1.0,
+                muted: false,
+                devices: Vec::new(),
+            },
+            AudioRackBranchSpec {
+                branch_id: id(702),
+                gain: 1.0,
+                muted: false,
+                devices: Vec::new(),
+            },
+        ],
+    };
+    assert_eq!(
+        history.apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(60),
+            edit: Box::new(AudioRackEdit::ReplaceBranchDevices {
+                branch: 1,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(71),
+                    state: depth3_candidate.encode_state().unwrap(),
+                    bypassed: false,
+                }],
+            }),
+        }),
+        Err(AudioRackError::RecursionProhibited)
+    );
+    assert_eq!(history.current(), &before_stale);
+
+    // 5. Cycle / duplicate rack_id refusal across levels!
+    let mut cycle_spec = flat.clone();
+    let self_ref_inner = AudioRackSpec {
+        rack_id: id(50), // collides with outer rack_id 50!
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(801),
+                gain: 1.0,
+                muted: false,
+                devices: Vec::new(),
+            },
+            AudioRackBranchSpec {
+                branch_id: id(802),
+                gain: 1.0,
+                muted: false,
+                devices: Vec::new(),
+            },
+        ],
+    };
+    cycle_spec.branches[1].devices.push(AudioRackDeviceSpec {
+        device_id: id(80),
+        state: self_ref_inner.encode_state().unwrap(),
+        bypassed: false,
+    });
+    assert_eq!(
+        cycle_spec.validate(&limits),
+        Err(AudioRackError::DuplicateRackId)
+    );
+
+    // 6. Verify reordered nested PCM (Clip(0.5) -> Gain(2.0) on 0.4 => 0.8 + 0.5*0.4 = 1.0 at frame 6).
+    let mut rt = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let mut inp = vec![[0.0_f32; 2]; 16];
+    inp[0] = [0.4, -0.4];
+    let out = render_all(&mut rt, &inp, &[16]);
+    assert!((out[6][0] - 1.0).abs() < 1e-6);
+
+    // 7. Atomic Ungroup restores flat Branch 0 with reordered stable IDs [52, 51];
+    //    3 Undos return to exact initial flat spec!
+    history
+        .apply(AudioRackEdit::UngroupNestedRack {
+            branch: 0,
+            index: 0,
+            keep_branch: 0,
+        })
+        .unwrap();
+    assert_eq!(history.current().branches[0].devices.len(), 2);
+    assert_eq!(history.current().branches[0].devices[0].device_id, id(52));
+    assert_eq!(history.current().branches[0].devices[1].device_id, id(51));
+
+    history.undo().unwrap();
+    history.undo().unwrap();
+    history.undo().unwrap();
+    assert_eq!(history.current(), &flat);
+    assert!(!history.can_undo());
+    history.redo().unwrap();
+    assert_eq!(
+        history.current().branches[0].devices[0].state.type_id(),
+        AUDIO_RACK_TYPE_ID
+    );
 }
