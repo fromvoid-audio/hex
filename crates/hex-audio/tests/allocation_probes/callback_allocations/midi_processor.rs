@@ -568,3 +568,94 @@ fn canonical_scale_midi_processor_mapping_live_edit_and_bypass_allocate_nothing_
     drop(rev_a);
     drop(table);
 }
+
+#[test]
+fn canonical_random_midi_processor_seeded_live_edit_and_bypass_allocate_nothing_on_callback() {
+    let (mut editor, track, _session_clip) = build_project();
+    let seed_a = hex_devices::midi_random::RandomSettings {
+        chance_bps: hex_devices::midi_random::MAX_CHANCE_BPS,
+        choices: 6,
+        scale: 2,
+        sign: hex_devices::midi_random::RandomSign::Bi,
+        seed: 77,
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    let Created::Device(random_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: seed_a,
+        })
+        .unwrap()
+    else {
+        panic!("expected random processor id");
+    };
+
+    let table = Arc::new(SineTable::new());
+    let rev_a = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let seed_b = hex_devices::midi_random::RandomSettings {
+        chance_bps: hex_devices::midi_random::MAX_CHANCE_BPS,
+        choices: 6,
+        scale: 2,
+        sign: hex_devices::midi_random::RandomSign::Bi,
+        seed: 99,
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: random_id,
+            state: seed_b,
+        })
+        .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: random_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    let mut reseeded = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    let mut bypassed = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        reseeded.try_inherit_state_from(&mut active).unwrap();
+        reseeded.render(&mut buf).unwrap();
+        bypassed.try_inherit_state_from(&mut reseeded).unwrap();
+        bypassed.render(&mut buf).unwrap();
+        bypassed.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(bypassed);
+    drop(reseeded);
+    drop(active);
+    drop(rev_bypassed);
+    drop(rev_b);
+    drop(rev_a);
+    drop(table);
+}
