@@ -37,6 +37,7 @@ pub mod fm4;
 pub mod gate;
 pub mod installed_package;
 pub mod limiter;
+pub mod midi_chord;
 pub mod midi_pitch;
 pub mod modulation;
 pub mod multisample;
@@ -94,8 +95,8 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 5] = [
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
 ];
-static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 1] =
-    [&midi_pitch::PITCH_DEFINITION];
+static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 2] =
+    [&midi_pitch::PITCH_DEFINITION, &midi_chord::CHORD_DEFINITION];
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
 
