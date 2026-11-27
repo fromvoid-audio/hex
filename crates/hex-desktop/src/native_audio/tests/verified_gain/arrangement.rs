@@ -589,7 +589,6 @@ fn new_verified_project() -> Request {
 fn open_verified() -> Harness {
     let mut h = actual_native_harness();
     h.next();
-    h.wait = Duration::from_secs(2);
     h.open();
     h.run(new_verified_project());
     h.open();

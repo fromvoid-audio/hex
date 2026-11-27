@@ -23,7 +23,6 @@ fn verified_builtin_proposal_cancels(use_picker: bool) {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(2);
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -116,7 +115,6 @@ fn verified_native_replacement_installs_in_the_existing_slot() {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(2);
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -191,7 +189,6 @@ fn verified_editor_insert_commits_only_the_confirmed_graph_and_one_undo() {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(2);
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -293,7 +290,6 @@ fn verified_main_reorder_saves_and_installs_only_the_approved_graph() {
     let _native = native_fixture();
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(2);
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -419,7 +415,6 @@ fn check_auto_pan(running: bool) {
     let files = Files::new();
     let mut h = actual_native_harness();
     h.next();
-    h.wait = Duration::from_secs(1);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,
@@ -631,7 +626,6 @@ fn verified_limiter_tempo_case(
 ) {
     let files = Files::new();
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(3);
     h.next();
     h.open();
     h.run(Request::NewWithAudioMode {
@@ -863,7 +857,6 @@ fn check_main_saturator(running: bool) {
     let files = Files::new();
     let mut h = actual_native_harness();
     h.next();
-    h.wait = Duration::from_secs(1);
     h.open();
     h.run(Request::NewWithAudioMode {
         mode: DocumentAudioMode::VerifiedStreaming,
