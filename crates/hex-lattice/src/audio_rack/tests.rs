@@ -509,6 +509,7 @@ fn asymmetric_latency_two_branch_and_empty_branch_impulse_oracles_align_exactly(
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     let mut whole = AudioRackRuntime::prepare_on_control(
@@ -574,6 +575,7 @@ fn asymmetric_latency_two_branch_and_empty_branch_impulse_oracles_align_exactly(
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
     let mut wet_dry = AudioRackRuntime::prepare_on_control(
         ProcessorChainOwner::Track(1),
@@ -636,6 +638,7 @@ fn child_reorder_remove_bypass_history_retained_tails_and_stop_preserve_contract
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     let mut history = AudioRackHistory::new(initial.clone(), limits).unwrap();
@@ -793,6 +796,7 @@ fn recursion_duplicate_ids_unknown_latency_budget_and_failed_prep_refuse_atomica
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
     let mut history = AudioRackHistory::new(valid.clone(), limits).unwrap();
 
@@ -832,6 +836,7 @@ fn recursion_duplicate_ids_unknown_latency_budget_and_failed_prep_refuse_atomica
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
     let mut flat_history = AudioRackHistory::new(
         valid.clone(),
@@ -1012,6 +1017,7 @@ fn nested_serial_parallel_impulse_pcm_and_pdc_oracles_align_exactly_across_parti
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     // Outer depth-1 Audio Rack:
@@ -1064,6 +1070,7 @@ fn nested_serial_parallel_impulse_pcm_and_pdc_oracles_align_exactly_across_parti
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     let mut whole = AudioRackRuntime::prepare_on_control(
@@ -1168,6 +1175,7 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     // Strict v1 flat -> v2 migration round-trips identically; unsupported v0/v3 refuse!
@@ -1181,10 +1189,10 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
         AudioRackSpec::decode_state(&v1_state),
         Err(AudioRackError::InvalidNestedState)
     );
-    let bad_v4 =
-        NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 4, v1_state.payload().to_vec()).unwrap();
+    let bad_v5 =
+        NativeDeviceState::new(AUDIO_RACK_TYPE_ID, 5, v1_state.payload().to_vec()).unwrap();
     assert_eq!(
-        AudioRackSpec::decode_and_migrate_state(&bad_v4),
+        AudioRackSpec::decode_and_migrate_state(&bad_v5),
         Err(AudioRackError::InvalidNestedState)
     );
 
@@ -1262,6 +1270,7 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
     assert_eq!(
         history.apply(AudioRackEdit::EditNestedRackById {
@@ -1300,6 +1309,7 @@ fn nested_group_ungroup_stable_id_edits_cycle_depth_refusal_and_v1_migration() {
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
     cycle_spec.branches[1].devices.push(AudioRackDeviceSpec {
         device_id: id(80),
@@ -1518,6 +1528,7 @@ fn macro_multi_target_ranges_polarity_precedence_reorder_stale_structural_refusa
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
     let base_outer = AudioRackSpec {
         rack_id: id(100),
@@ -1542,6 +1553,7 @@ fn macro_multi_target_ranges_polarity_precedence_reorder_stale_structural_refusa
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     // Prior v2 nested state (no macros) migrates cleanly to v3!
@@ -1759,4 +1771,262 @@ fn macro_multi_target_ranges_polarity_precedence_reorder_stale_structural_refusa
     assert_eq!(history.current(), &before_del);
     history.redo().unwrap();
     assert_eq!(history.current().macros[0].mappings.len(), 1);
+}
+
+#[test]
+fn macro_variation_atomic_save_recall_pcm_undo_redo_migration_and_refusals() {
+    static RESTRICTED_DEF: RestrictedDef = RestrictedDef;
+    static EXT_DEFS: [&dyn NativeDeviceDefinition; 5] = [
+        &LATENCY_DEF,
+        &UNKNOWN_LATENCY_DEF,
+        &GAIN_DEF,
+        &CLIP_DEF,
+        &RESTRICTED_DEF,
+    ];
+    let registry = NativeDeviceRegistry::new(&EXT_DEFS).unwrap();
+    let limits = AudioRackLimits::default();
+
+    // Depth-2 nested rack with two real mapped targets controlled by one macro:
+    //   Gain (dev 21, -4..4) on [0.5, 1.0] Normal
+    //   Clip (dev 22, 0.05..2.0) on [0.0, 0.5] Inverted
+    let inner = AudioRackSpec {
+        rack_id: id(200),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(201),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(21),
+                        state: float_state(GAIN_TYPE, 1.0),
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(22),
+                        state: float_state(CLIP_TYPE, 1.0),
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(202),
+                gain: 0.0,
+                muted: true,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(23),
+                    state: RESTRICTED_DEF.default_state().unwrap(),
+                    bypassed: false,
+                }],
+            },
+        ],
+        macros: Vec::new(),
+        variations: Vec::new(),
+    };
+    let outer = AudioRackSpec {
+        rack_id: id(100),
+        sample_rate: 48_000,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(101),
+                gain: 1.0,
+                muted: false,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(11),
+                    state: inner.encode_state().unwrap(),
+                    bypassed: false,
+                }],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(102),
+                gain: 0.0,
+                muted: true,
+                devices: Vec::new(),
+            },
+        ],
+        macros: vec![AudioRackMacroSpec {
+            macro_id: id(900),
+            value: 0.25,
+            bypassed: false,
+            mappings: vec![
+                AudioRackMacroMapping {
+                    target: AudioRackMacroTarget {
+                        rack_id: id(200),
+                        device_id: id(21),
+                        parameter_id: PARAM_VALUE,
+                    },
+                    min_normalized: 0.5,
+                    max_normalized: 1.0,
+                    polarity: AudioRackMacroPolarity::Normal,
+                    precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                    bypassed: false,
+                },
+                AudioRackMacroMapping {
+                    target: AudioRackMacroTarget {
+                        rack_id: id(200),
+                        device_id: id(22),
+                        parameter_id: PARAM_VALUE,
+                    },
+                    min_normalized: 0.0,
+                    max_normalized: 0.5,
+                    polarity: AudioRackMacroPolarity::Inverted,
+                    precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                    bypassed: false,
+                },
+            ],
+        }],
+        variations: Vec::new(),
+    };
+
+    // Prior v3 macro state migrates cleanly to v4!
+    let v3_state = outer.encode_v3_macros_state().unwrap();
+    assert_eq!(v3_state.state_version(), AUDIO_RACK_STATE_VERSION_V3_MACROS);
+    assert_eq!(
+        AudioRackSpec::decode_and_migrate_state(&v3_state).unwrap(),
+        outer
+    );
+
+    let mut history = AudioRackHistory::new(outer, limits).unwrap();
+    // Save variation 1 ("soft") at macro=0.25 -> Gain=1.0, Clip=0.78125 (0.4*1.0 = 0.4)
+    history
+        .apply(AudioRackEdit::SaveMacroVariation {
+            variation_id: id(1001),
+            name: "soft".into(),
+        })
+        .unwrap();
+    // Sweep macro to 0.75 and save variation 2 ("hot") -> Gain=3.0, Clip=0.29375 (0.4*3.0=1.2 -> clipped 0.29375)
+    history
+        .apply(AudioRackEdit::SetMacroValue {
+            macro_id: id(900),
+            value: 0.75,
+        })
+        .unwrap();
+    history
+        .apply(AudioRackEdit::SaveMacroVariation {
+            variation_id: id(1002),
+            name: "hot".into(),
+        })
+        .unwrap();
+
+    // Strict v4 roundtrip preserves both named variations!
+    let v4_state = history.current().encode_state().unwrap();
+    assert_eq!(v4_state.state_version(), AUDIO_RACK_STATE_VERSION);
+    assert_eq!(
+        AudioRackSpec::decode_state(&v4_state).unwrap(),
+        *history.current()
+    );
+
+    // PCM at "hot" (macro=0.75): Gain = 3.0, Clip = 0.05 + 0.125 * 1.95 = 0.29375.
+    let mut rt_hot = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let out_hot = render_all(&mut rt_hot, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out_hot[0][0] - 0.29375).abs() < 1e-5);
+
+    // One atomic recall of "soft" (id 1001) updates BOTH mapped targets via canonical preparation!
+    let ledger = history
+        .recall_variation_on_control(id(1001), &registry)
+        .unwrap();
+    assert_eq!(ledger.len(), 2);
+    assert_eq!(history.current().macros[0].value, 0.25);
+    let mut rt_soft = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let out_soft = render_all(&mut rt_soft, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out_soft[0][0] - 0.4).abs() < 1e-5);
+
+    // One Undo restores "hot" (0.75), one Redo restores "soft" (0.25)!
+    history.undo().unwrap();
+    assert_eq!(history.current().macros[0].value, 0.75);
+    history.redo().unwrap();
+    assert_eq!(history.current().macros[0].value, 0.25);
+
+    // Reordering nested mapped devices keeps variation recall working via stable IDs!
+    history
+        .apply(AudioRackEdit::EditNestedRackById {
+            nested_rack_id: id(200),
+            edit: Box::new(AudioRackEdit::ReorderDevice {
+                branch: 0,
+                from: 0,
+                to: 1,
+            }),
+        })
+        .unwrap();
+    history
+        .recall_variation_on_control(id(1002), &registry)
+        .unwrap();
+    // Clip(0.29375) -> Gain(3.0) on input 0.4 => 0.29375 * 3.0 = 0.88125!
+    let mut rt_reordered_hot = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    let out_reordered_hot = render_all(&mut rt_reordered_hot, &[[0.4, -0.4]; 4], &[4]);
+    assert!((out_reordered_hot[0][0] - 0.88125).abs() < 1e-5);
+
+    // Refusals leave prior values & history untouched:
+    //   1. Stale/unknown variation ID
+    //   2. Blank variation name
+    //   3. Duplicate variation ID
+    //   4. Structural target during recall_variation_on_control
+    let snapshot = history.current().clone();
+    assert_eq!(
+        history.recall_variation_on_control(id(9999), &registry),
+        Err(AudioRackError::UnknownTargetId)
+    );
+    assert_eq!(
+        history.apply(AudioRackEdit::SaveMacroVariation {
+            variation_id: id(1003),
+            name: "   ".into(),
+        }),
+        Err(AudioRackError::InvalidVariationName)
+    );
+    assert_eq!(
+        history.apply(AudioRackEdit::SaveMacroVariation {
+            variation_id: id(1001),
+            name: "dup".into(),
+        }),
+        Err(AudioRackError::DuplicateVariationId)
+    );
+    assert_eq!(history.current(), &snapshot);
+
+    // Add a structural parameter mapping onto macro 900 -> recall_variation_on_control MUST refuse
+    // visibly without changing macro 900's canonical value (remains 0.75)!
+    history
+        .apply(AudioRackEdit::AddMacroMapping {
+            macro_id: id(900),
+            mapping: AudioRackMacroMapping {
+                target: AudioRackMacroTarget {
+                    rack_id: id(200),
+                    device_id: id(23),
+                    parameter_id: PARAM_STRUCTURAL,
+                },
+                min_normalized: 0.0,
+                max_normalized: 1.0,
+                polarity: AudioRackMacroPolarity::Normal,
+                precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                bypassed: false,
+            },
+        })
+        .unwrap();
+    let before_refused_recall = history.current().clone();
+    assert_eq!(
+        history.recall_variation_on_control(id(1001), &registry),
+        Err(AudioRackError::UnsupportedMacroTarget)
+    );
+    assert_eq!(history.current(), &before_refused_recall);
+    assert_eq!(history.current().macros[0].value, 0.75);
 }

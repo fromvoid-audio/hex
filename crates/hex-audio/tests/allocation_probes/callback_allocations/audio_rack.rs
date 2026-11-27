@@ -58,6 +58,7 @@ fn real_two_branch_audio_rack_renders_inherits_drains_and_resets_with_zero_callb
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     // Successor edits Branch 1 (clear) while keeping Branch 0 identical.
@@ -203,6 +204,7 @@ fn real_nested_depth_2_audio_rack_renders_inherits_drains_and_resets_with_zero_c
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     let outer_a = AudioRackSpec {
@@ -239,6 +241,7 @@ fn real_nested_depth_2_audio_rack_renders_inherits_drains_and_resets_with_zero_c
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     // Successor clears inner Branch 1 inside the nested rack while outer Branch 1 stays identical.
@@ -389,6 +392,7 @@ fn real_nested_audio_rack_macro_multi_target_renders_and_switches_with_zero_call
             },
         ],
         macros: Vec::new(),
+        variations: Vec::new(),
     };
 
     let make_outer = |macro_value: f32| AudioRackSpec {
@@ -444,6 +448,7 @@ fn real_nested_audio_rack_macro_multi_target_renders_and_switches_with_zero_call
                 },
             ],
         }],
+        variations: Vec::new(),
     };
 
     let spec_low = make_outer(0.1);
@@ -511,4 +516,193 @@ fn real_nested_audio_rack_macro_multi_target_renders_and_switches_with_zero_call
 
     drop(rt_high);
     drop(rt_low);
+}
+
+#[test]
+fn real_nested_audio_rack_macro_variation_recall_allocates_nothing_on_callback() {
+    use hex_lattice::{
+        AudioRackEdit, AudioRackHistory, AudioRackMacroMapping, AudioRackMacroPolarity,
+        AudioRackMacroPrecedence, AudioRackMacroSpec, AudioRackMacroTarget,
+    };
+
+    let registry = hex_devices::native_registry().unwrap();
+    let utility_state = registry
+        .default_state(hex_devices::utility::UTILITY_TYPE_ID)
+        .unwrap();
+    let filter_state = registry
+        .default_state(hex_devices::filter::TYPE_ID)
+        .unwrap();
+
+    let inner = AudioRackSpec {
+        rack_id: id(88),
+        sample_rate: RATE,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(881),
+                gain: 1.0,
+                muted: false,
+                devices: vec![
+                    AudioRackDeviceSpec {
+                        device_id: id(8101),
+                        state: filter_state,
+                        bypassed: false,
+                    },
+                    AudioRackDeviceSpec {
+                        device_id: id(8102),
+                        state: utility_state,
+                        bypassed: false,
+                    },
+                ],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(882),
+                gain: 0.0,
+                muted: true,
+                devices: Vec::new(),
+            },
+        ],
+        macros: Vec::new(),
+        variations: Vec::new(),
+    };
+    let outer = AudioRackSpec {
+        rack_id: id(77),
+        sample_rate: RATE,
+        bypassed: false,
+        branches: [
+            AudioRackBranchSpec {
+                branch_id: id(1),
+                gain: 1.0,
+                muted: false,
+                devices: vec![AudioRackDeviceSpec {
+                    device_id: id(101),
+                    state: inner.encode_state().unwrap(),
+                    bypassed: false,
+                }],
+            },
+            AudioRackBranchSpec {
+                branch_id: id(2),
+                gain: 0.0,
+                muted: true,
+                devices: Vec::new(),
+            },
+        ],
+        macros: vec![AudioRackMacroSpec {
+            macro_id: id(900),
+            value: 0.15,
+            bypassed: false,
+            mappings: vec![
+                AudioRackMacroMapping {
+                    target: AudioRackMacroTarget {
+                        rack_id: id(88),
+                        device_id: id(8102),
+                        parameter_id: hex_devices::utility::parameter::GAIN,
+                    },
+                    min_normalized: 0.25,
+                    max_normalized: 0.75,
+                    polarity: AudioRackMacroPolarity::Normal,
+                    precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                    bypassed: false,
+                },
+                AudioRackMacroMapping {
+                    target: AudioRackMacroTarget {
+                        rack_id: id(88),
+                        device_id: id(8101),
+                        parameter_id: hex_devices::filter::parameter::CUTOFF,
+                    },
+                    min_normalized: 0.15,
+                    max_normalized: 0.85,
+                    polarity: AudioRackMacroPolarity::Inverted,
+                    precedence: AudioRackMacroPrecedence::MacroOverridesAuthored,
+                    bypassed: false,
+                },
+            ],
+        }],
+        variations: Vec::new(),
+    };
+
+    let limits = AudioRackLimits {
+        max_block_frames: 256,
+        ..AudioRackLimits::default()
+    };
+    let mut history = AudioRackHistory::new(outer, limits).unwrap();
+    history
+        .apply(AudioRackEdit::SaveMacroVariation {
+            variation_id: id(1),
+            name: "dark".into(),
+        })
+        .unwrap();
+    history
+        .apply(AudioRackEdit::SetMacroValue {
+            macro_id: id(900),
+            value: 0.85,
+        })
+        .unwrap();
+    history
+        .apply(AudioRackEdit::SaveMacroVariation {
+            variation_id: id(2),
+            name: "bright".into(),
+        })
+        .unwrap();
+
+    // Prepare runtime at "bright", then recall "dark" on control and prepare successor.
+    let mut rt_bright = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+    history
+        .recall_variation_on_control(id(1), &registry)
+        .unwrap();
+    let mut rt_dark = AudioRackRuntime::prepare_on_control(
+        ProcessorChainOwner::Track(1),
+        history.current(),
+        &registry,
+        limits,
+    )
+    .unwrap();
+
+    let mut buf_bright = vec![[0.0_f32; 2]; 256];
+    let mut buf_dark = vec![[0.0_f32; 2]; 256];
+    for (i, frame) in buf_bright.iter_mut().enumerate() {
+        let v = ((i as f32) * 0.2).sin() * 0.25 + ((i as f32) * 0.9).sin() * 0.15;
+        *frame = [v, -v];
+    }
+    buf_dark.copy_from_slice(&buf_bright);
+
+    let info = measure(|| {
+        rt_bright.begin_block();
+        rt_bright.process_block(&mut buf_bright).unwrap();
+        rt_bright.commit_block();
+
+        rt_dark.begin_block();
+        rt_dark.process_block(&mut buf_dark).unwrap();
+        rt_dark.commit_block();
+
+        rt_bright.reset();
+        rt_dark.reset();
+    });
+
+    assert_eq!(
+        info.count_total, 0,
+        "variation recall callback allocated: {info:?}"
+    );
+    assert_eq!(
+        info.bytes_total, 0,
+        "variation recall callback bytes: {info:?}"
+    );
+    assert_eq!(
+        info.count_current, 0,
+        "variation recall net count: {info:?}"
+    );
+    assert_eq!(
+        info.bytes_current, 0,
+        "variation recall net bytes: {info:?}"
+    );
+    assert_ne!(buf_bright, buf_dark);
+
+    drop(rt_dark);
+    drop(rt_bright);
 }
