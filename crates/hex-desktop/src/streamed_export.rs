@@ -56,42 +56,22 @@ pub(crate) fn render_with_config_and_foreign(
     foreign: Option<&mut dyn ForeignBounceRenderer>,
 ) -> Result<ExportReport, ExportError> {
     check(request.control())?;
-    if foreign.is_some() && !matches!(request.signal(), hex_export::ExportSignal::Main) {
-        return Err(ExportError::Invalid(
-            "offline vst3 export supports main only",
-        ));
-    }
     let mut pages = VerifiedPages::capture(request, config)?;
+    let spec = hex_export::ExportJobSpec {
+        path: request.path(),
+        revision: Arc::clone(request.prepared()),
+        resources: request.resources(),
+        start: request.start(),
+        frames: request.frames(),
+        signal: request.signal().clone(),
+        format: request.format(),
+        control: request.control(),
+        publication: request.publication(),
+    };
     if let Some(foreign) = foreign {
-        return hex_export::render_linear_main_with_foreign(
-            hex_export::ForeignLinearExportSpec {
-                path: request.path(),
-                revision: Arc::clone(request.prepared()),
-                resources: request.resources(),
-                start: request.start(),
-                frames: request.frames(),
-                format: request.format(),
-                control: request.control(),
-                publication: request.publication(),
-            },
-            Some(&mut pages),
-            foreign,
-        );
+        return hex_export::render_prepared_with_foreign(spec, Some(&mut pages), foreign);
     }
-    hex_export::render_prepared_with_pages_and_policy(
-        hex_export::ExportJobSpec {
-            path: request.path(),
-            revision: Arc::clone(request.prepared()),
-            resources: request.resources(),
-            start: request.start(),
-            frames: request.frames(),
-            signal: request.signal().clone(),
-            format: request.format(),
-            control: request.control(),
-            publication: request.publication(),
-        },
-        &mut pages,
-    )
+    hex_export::render_prepared_with_pages_and_policy(spec, &mut pages)
 }
 
 /// [`hex_session::StreamedBouncer`]: one isolated bounce item through the same

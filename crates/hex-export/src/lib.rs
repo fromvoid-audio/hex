@@ -75,8 +75,8 @@ pub use controlled::{
     ExportControl, ExportJobSpec, ExportProgress, ExportSignal, ForeignLinearExportSpec,
     render_linear_main_with_foreign, render_prepared_controlled,
     render_prepared_controlled_with_device_resources,
-    render_prepared_with_device_resources_and_policy, render_prepared_with_options,
-    render_prepared_with_pages_and_policy,
+    render_prepared_with_device_resources_and_policy, render_prepared_with_foreign,
+    render_prepared_with_options, render_prepared_with_pages_and_policy,
 };
 pub use controlled::{
     control_storage_allowance, controlled_frame_count, render_control_sampler_with_policy,

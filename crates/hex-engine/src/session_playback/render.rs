@@ -396,6 +396,47 @@ impl SessionPlayback {
         )
     }
 
+    /// Capture selected canonical outputs from the same linear pass while
+    /// executing borrowed foreign processors. Preflight precedes runtime
+    /// mutation; capture buffers are invalidated on any refusal.
+    pub fn render_with_foreign_processors_and_capture(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        capture: &mut OutputCapture<'_, '_>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), SessionPlaybackError> {
+        if let Err(error) = capture.validate(self, output.len()) {
+            output.fill([0.0; 2]);
+            capture.invalidate();
+            return Err(SessionPlaybackError::Capture(error));
+        }
+        if pages.is_none()
+            && self.playing
+            && !output.is_empty()
+            && self.revision.arrangement().contains_streamed_sources()
+        {
+            output.fill([0.0; 2]);
+            capture.invalidate();
+            return Err(SessionPlaybackError::MediaPagesUnavailable);
+        }
+        capture.begin(output.len());
+        self.candidate_admission_open = false;
+        let result = self.render_internal_with_foreign_and_wave(
+            output,
+            pages,
+            None,
+            Some(capture as &mut dyn CaptureSink),
+            None,
+            foreign,
+            None,
+        );
+        if result.is_err() {
+            capture.invalidate();
+        }
+        result
+    }
+
     /// Foreign-processor render entry that also executes eligible independent
     /// native waves through `wave`.
     #[allow(clippy::too_many_arguments)]

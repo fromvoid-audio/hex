@@ -119,6 +119,52 @@ struct PrivateProcessors {
     tail: Option<u64>,
 }
 
+impl PrivateProcessors {
+    fn render_block_inner(
+        &mut self,
+        playback: &mut hex_engine::SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        pages: Option<&mut dyn hex_engine::MediaPages>,
+        capture: Option<&mut hex_engine::OutputCapture<'_, '_>>,
+        control: &ExportControl,
+    ) -> Result<(), ExportError> {
+        if let Some(effects) = self.effects.take() {
+            self.running = Some(
+                NativeEffectCallbacks::from_effects_on_control(effects)
+                    .map_err(|_| ExportError::Invalid("offline vst3 endpoint unavailable"))?,
+            );
+        }
+        let (workers, callbacks) = self
+            .running
+            .as_mut()
+            .ok_or(ExportError::Invalid("offline vst3 source unavailable"))?;
+        callbacks
+            .begin_host_callback(output.len())
+            .map_err(|_| ExportError::Invalid("offline vst3 block refused"))?;
+        let render_result = if let Some(capture) = capture {
+            playback.render_with_foreign_processors_and_capture(output, pages, capture, callbacks)
+        } else {
+            playback.render_with_foreign_processors(output, pages, None, None, callbacks)
+        };
+        if let Err(error) = render_result {
+            let _ = callbacks.finish_host_callback(false);
+            return Err(ExportError::SessionRender(error));
+        }
+        callbacks
+            .finish_host_callback(true)
+            .map_err(|_| ExportError::Invalid("offline vst3 block failed"))?;
+        callbacks
+            .wait_offline_on_control(workers, || control.is_cancelled())
+            .map_err(|error| {
+                if control.is_cancelled() {
+                    ExportError::Cancelled
+                } else {
+                    ExportError::Media(error.to_string())
+                }
+            })
+    }
+}
+
 impl OfflineBounceSource for PrivateProcessors {
     fn retained_data_bytes(&self) -> usize {
         self.bytes
@@ -182,37 +228,18 @@ impl ForeignBounceRenderer for PrivateProcessors {
         pages: Option<&mut dyn hex_engine::MediaPages>,
         control: &ExportControl,
     ) -> Result<(), ExportError> {
-        if let Some(effects) = self.effects.take() {
-            self.running = Some(
-                NativeEffectCallbacks::from_effects_on_control(effects)
-                    .map_err(|_| ExportError::Invalid("offline vst3 endpoint unavailable"))?,
-            );
-        }
-        let (workers, callbacks) = self
-            .running
-            .as_mut()
-            .ok_or(ExportError::Invalid("offline vst3 source unavailable"))?;
-        callbacks
-            .begin_host_callback(output.len())
-            .map_err(|_| ExportError::Invalid("offline vst3 block refused"))?;
-        if let Err(error) =
-            playback.render_with_foreign_processors(output, pages, None, None, callbacks)
-        {
-            let _ = callbacks.finish_host_callback(false);
-            return Err(ExportError::SessionRender(error));
-        }
-        callbacks
-            .finish_host_callback(true)
-            .map_err(|_| ExportError::Invalid("offline vst3 block failed"))?;
-        callbacks
-            .wait_offline_on_control(workers, || control.is_cancelled())
-            .map_err(|error| {
-                if control.is_cancelled() {
-                    ExportError::Cancelled
-                } else {
-                    ExportError::Media(error.to_string())
-                }
-            })
+        self.render_block_inner(playback, output, pages, None, control)
+    }
+
+    fn render_block_with_capture(
+        &mut self,
+        playback: &mut hex_engine::SessionPlayback,
+        output: &mut [hex_engine::Frame],
+        pages: Option<&mut dyn hex_engine::MediaPages>,
+        capture: &mut hex_engine::OutputCapture<'_, '_>,
+        control: &ExportControl,
+    ) -> Result<(), ExportError> {
+        self.render_block_inner(playback, output, pages, Some(capture), control)
     }
 
     fn finish(&mut self, _: &ExportControl) -> Result<(), ExportError> {
