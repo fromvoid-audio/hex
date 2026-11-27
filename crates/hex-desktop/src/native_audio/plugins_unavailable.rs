@@ -167,4 +167,10 @@ impl NativeAudioSink {
         // complete canonical opaque payload; this never claims a fresh capture.
         Ok(Vec::new())
     }
+    pub(in crate::native_audio) fn finish_current_plugin_state_save(
+        &mut self,
+        _: AudioSourceContext,
+        _: bool,
+    ) {
+    }
 }

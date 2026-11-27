@@ -1172,13 +1172,15 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 Arc::clone(&ctx.worker.document_intent),
                 ctx.worker.document_intent.load(Ordering::Acquire),
             );
+            let save_context = hex_engine::AudioSourceContext {
+                project_generation: ctx.worker.project_generation,
+                editor_revision: ctx.worker.revision,
+            };
+            let mut save_committed = false;
             match plugin_state_save::project_for_save_with_capture(
                 &ctx.worker.session,
                 ctx.worker.media_base.as_deref(),
-                hex_engine::AudioSourceContext {
-                    project_generation: ctx.worker.project_generation,
-                    editor_revision: ctx.worker.revision,
-                },
+                save_context,
                 &save_cancellation,
                 ctx.worker.events.sampler_edit_audio(),
             ) {
@@ -1209,6 +1211,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         Ok((handle, commit)) => {
                             ctx.worker.document = Some(handle);
                             ctx.worker.unsaved = commit.dirty;
+                            save_committed = !commit.dirty;
                             ctx.outcome.error = commit.error;
                             ctx.worker.state =
                                 view_state_bound(
@@ -1238,6 +1241,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 },
                 Err(reason) => ctx.outcome.error = Some(reason),
             }
+            if let Some(audio) = ctx.worker.events.sampler_edit_audio() {
+                audio.finish_plugin_state_save(save_context, save_committed);
+            }
         }
 
         request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
@@ -1266,6 +1272,11 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             };
             let stale_consent =
                 matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
+            let save_context = hex_engine::AudioSourceContext {
+                project_generation: ctx.worker.project_generation,
+                editor_revision: ctx.worker.revision,
+            };
+            let mut save_committed = false;
             let save_project = if stale_consent {
                 Err("project changed · format upgrade cancelled".to_owned())
             } else if ctx.worker.document.is_none() {
@@ -1274,10 +1285,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                 plugin_state_save::project_for_save_with_capture(
                     &ctx.worker.session,
                     ctx.worker.media_base.as_deref(),
-                    hex_engine::AudioSourceContext {
-                        project_generation: ctx.worker.project_generation,
-                        editor_revision: ctx.worker.revision,
-                    },
+                    save_context,
                     &save_cancellation,
                     ctx.worker.events.sampler_edit_audio(),
                 )
@@ -1339,6 +1347,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                                 Ok(outcome) => {
                                     let commit = apply_current_save_outcome(handle, outcome);
                                     ctx.worker.unsaved = commit.dirty;
+                                    save_committed = !commit.dirty;
                                     ctx.outcome.status = Some(commit.status);
                                     ctx.outcome.error = commit.error;
                                     ctx.worker.state = view_state_bound(
@@ -1371,6 +1380,9 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
                         }
                     }
                 }
+            }
+            if let Some(audio) = ctx.worker.events.sampler_edit_audio() {
+                audio.finish_plugin_state_save(save_context, save_committed);
             }
         }
 

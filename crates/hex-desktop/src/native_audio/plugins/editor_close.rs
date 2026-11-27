@@ -24,6 +24,7 @@ pub(super) struct EditorClose {
 pub(super) struct Worker {
     binding: Binding,
     stage: Stage,
+    saved_admitted_through: u64,
 }
 
 /// The exact successor's temporary producer hold during replay. The release
@@ -182,6 +183,7 @@ impl Plugins {
             worker: Worker {
                 binding,
                 stage: Stage::Pending,
+                saved_admitted_through: 0,
             },
             ordinal,
             releasing: false,
@@ -301,6 +303,7 @@ impl Plugins {
         workers.extend(accepted.map(|source| Worker {
             binding: source.binding,
             stage: Stage::Pending,
+            saved_admitted_through: self.saved_editor_frontier(source.binding),
         }));
         let Some(ordinal) = self.next_editor_hold_ordinal() else {
             return Admission::Refused;
@@ -381,7 +384,54 @@ impl Plugins {
         }
     }
 
+    pub(super) fn saved_editor_frontier(&self, binding: Binding) -> u64 {
+        self.saved_editor_frontiers
+            .iter()
+            .find_map(|(candidate, seq)| (*candidate == binding).then_some(*seq))
+            .unwrap_or(0)
+    }
+
+    pub(super) fn held_editor_close_frontier(&self, binding: Binding) -> Option<u64> {
+        let attempt = self.editor_close.as_ref()?;
+        if !attempt.is_valid() {
+            return None;
+        }
+        attempt.workers.iter().find_map(|worker| {
+            (worker.binding == binding)
+                .then_some(match worker.stage {
+                    Stage::Held(sequence) => Some(sequence),
+                    _ => None,
+                })
+                .flatten()
+        })
+    }
+
+    pub(super) fn record_saved_editor_frontier(&mut self, binding: Binding, frontier: u64) {
+        if let Some((_, slot)) = self
+            .saved_editor_frontiers
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == binding)
+        {
+            *slot = (*slot).max(frontier);
+        } else {
+            self.saved_editor_frontiers.push((binding, frontier));
+        }
+        if let Some(attempt) = self.editor_close.as_mut() {
+            for worker in &mut attempt.workers {
+                if worker.binding == binding {
+                    worker.saved_admitted_through = worker.saved_admitted_through.max(frontier);
+                }
+            }
+        }
+        let sources = &self.sources;
+        self.saved_editor_frontiers.retain(|(candidate, _)| {
+            sources.iter().any(|s| s.binding == *candidate) || *candidate == binding
+        });
+    }
+
     pub(super) fn editor_close_output_closed(&mut self) {
+        self.saved_editor_frontiers.clear();
+        self.pending_save_frontiers = None;
         if let Some(hold) = &mut self.replay_editor_hold {
             hold.worker.retire_on_output_close(&mut self.sources);
             if matches!(hold.worker.stage, Stage::Finished) {
@@ -424,13 +474,109 @@ impl EditorClose {
             .all(|worker| matches!(worker.stage, Stage::Held(_)))
         {
             Admission::Held {
-                admitted_edits: self
-                    .workers
-                    .iter()
-                    .any(|worker| matches!(worker.stage, Stage::Held(sequence) if sequence != 0)),
+                admitted_edits: self.workers.iter().any(|worker| {
+                    matches!(
+                        worker.stage,
+                        Stage::Held(sequence) if sequence > worker.saved_admitted_through
+                    )
+                }),
             }
         } else {
             Admission::Pending
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn binding(instance: u64, epoch: u64) -> Binding {
+        Binding {
+            root: 1,
+            graph: 1,
+            instance,
+            epoch,
+        }
+    }
+
+    fn held_attempt(
+        owner: &Arc<PluginEditorCloseAttempt>,
+        binding: Binding,
+        sequence: u64,
+        saved_admitted_through: u64,
+    ) -> EditorClose {
+        EditorClose {
+            owner: Arc::downgrade(owner),
+            generation: 7,
+            output: 1,
+            ordinal: NonZeroU64::new(1).unwrap(),
+            workers: vec![Worker {
+                binding,
+                stage: Stage::Held(sequence),
+                saved_admitted_through,
+            }],
+        }
+    }
+
+    #[test]
+    fn saved_frontier_clears_close_warning_until_a_newer_editor_edit_arrives() {
+        let owner = Arc::new(PluginEditorCloseAttempt::default());
+        let b = binding(10, 1);
+        let context = AudioSourceContext {
+            project_generation: 7,
+            editor_revision: 3,
+        };
+        let mut plugins = Plugins {
+            editor_close: Some(held_attempt(&owner, b, 5, 0)),
+            ..Default::default()
+        };
+
+        // Before save, sequence 5 > saved 0 warns about unsaved VST3 edits.
+        assert_eq!(
+            plugins.editor_close.as_ref().unwrap().admission(),
+            Admission::Held {
+                admitted_edits: true
+            }
+        );
+
+        // Failed or cancelled save must NOT advance the saved frontier.
+        plugins.pending_save_frontiers = Some((7, vec![(b, 5)]));
+        plugins.finish_state_save(context, false);
+        assert_eq!(plugins.saved_editor_frontier(b), 0);
+        assert_eq!(
+            plugins.editor_close.as_ref().unwrap().admission(),
+            Admission::Held {
+                admitted_edits: true
+            }
+        );
+
+        // Clean save advances saved frontier to 5 -> no false quit warning!
+        plugins.pending_save_frontiers = Some((7, vec![(b, 5)]));
+        plugins.finish_state_save(context, true);
+        assert_eq!(plugins.saved_editor_frontier(b), 5);
+        assert_eq!(
+            plugins.editor_close.as_ref().unwrap().admission(),
+            Admission::Held {
+                admitted_edits: false
+            }
+        );
+
+        // A later close check with sequence == 5 still reports clean; sequence == 6 warns again.
+        let later_owner = Arc::new(PluginEditorCloseAttempt::default());
+        let clean = held_attempt(&later_owner, b, 5, plugins.saved_editor_frontier(b));
+        assert_eq!(
+            clean.admission(),
+            Admission::Held {
+                admitted_edits: false
+            }
+        );
+        let edited_again = held_attempt(&later_owner, b, 6, plugins.saved_editor_frontier(b));
+        assert_eq!(
+            edited_again.admission(),
+            Admission::Held {
+                admitted_edits: true
+            }
+        );
     }
 }

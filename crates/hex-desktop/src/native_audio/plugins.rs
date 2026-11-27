@@ -246,6 +246,8 @@ pub(crate) struct Plugins {
     editor_close: Option<editor_close::EditorClose>,
     replay_editor_hold: Option<editor_close::ReplayEditorHold>,
     editor_close_ordinal: u64,
+    saved_editor_frontiers: Vec<(Binding, u64)>,
+    pending_save_frontiers: Option<(u64, Vec<(Binding, u64)>)>,
     queued_editor_toggles: Vec<(Binding, u64)>,
     editor_results: std::collections::VecDeque<(u64, Result<bool, String>)>,
     editor_visibility_cursor: usize,
