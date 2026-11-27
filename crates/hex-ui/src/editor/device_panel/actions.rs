@@ -80,19 +80,37 @@ pub(in crate::editor) fn bypass_action(
     cx: &mut Context<EditorView>,
 ) -> Stateful<Div> {
     let id = device.id();
-    let bypassed = view.device_panel.bypass.displayed(id, device.bypassed());
+    let authored_bypassed = view.device_panel.bypass.displayed(id, device.bypassed());
+    let ancestor_bypassed = view
+        .state
+        .as_ref()
+        .is_some_and(|state| nested::ancestor_displayed_bypassed(view, &state.project, id));
+    let effective_enabled = !authored_bypassed && !ancestor_bypassed;
     let (on_color, off_color) = theme::device_enable_colors();
-    let tooltip = if class == NativeDeviceClass::Instrument {
+    let tooltip = if ancestor_bypassed {
+        if authored_bypassed {
+            "bypassed by parent · child switch off"
+        } else {
+            "bypassed by parent · child switch on"
+        }
+    } else if class == NativeDeviceClass::Instrument {
         "toggle instrument bypass"
     } else {
         "toggle device bypass"
     };
     hex_widgets::device_state_indicator(
         format!("device-bypass-{}", id.value()).into(),
-        !bypassed,
+        effective_enabled,
         on_color,
         off_color,
     )
+    .when(ancestor_bypassed, |indicator| {
+        indicator.child(
+            div()
+                .debug_selector(move || format!("device-bypass-parent-off-{}", id.value()))
+                .size_full(),
+        )
+    })
     .tooltip(move |_, cx| {
         cx.new(|_| crate::editor::transport::MiniTooltip {
             kind: crate::tooltips::Kind::Identification,

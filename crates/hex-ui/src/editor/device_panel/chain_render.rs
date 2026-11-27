@@ -34,6 +34,9 @@ pub(in crate::editor) fn view(
         view.device_panel
             .collapsed
             .retain(|device| state.project.device(*device).is_some());
+        view.device_panel
+            .collapsed_children
+            .retain(|device| state.project.device(*device).is_some());
         let devices = state
             .project
             .native_sources()
@@ -366,6 +369,18 @@ pub(in crate::editor) fn render_track(
             };
             std::iter::once(node).chain(suffix.iter().map(hex_project::TrackDeviceRef::Effect))
         })
+        .filter(|node| {
+            let id = match node {
+                hex_project::TrackDeviceRef::MidiProcessor(device)
+                | hex_project::TrackDeviceRef::Instrument(device)
+                | hex_project::TrackDeviceRef::Effect(device) => device.id(),
+            };
+            !nested::hidden_by_collapsed_ancestor(
+                &view.device_panel.collapsed_children,
+                &state.project,
+                id,
+            )
+        })
         .collect();
     let already_reconciled = view
         .device_panel
@@ -404,22 +419,15 @@ pub(in crate::editor) fn render_track(
                     },
                 ),
             })
-            .chain(
-                source_effects
-                    .iter()
-                    .filter(|device| {
-                        modulators::source_utility_gain_available(&state.project, device)
-                    })
-                    .map(|device| {
-                        (
-                            device.id(),
-                            DeviceControlIdentity {
-                                class: NativeDeviceClass::Effect,
-                                type_id: device.state().type_id(),
-                            },
-                        )
-                    }),
-            )
+            .chain(source_effects.iter().map(|device| {
+                (
+                    device.id(),
+                    DeviceControlIdentity {
+                        class: NativeDeviceClass::Effect,
+                        type_id: device.state().type_id(),
+                    },
+                )
+            }))
             .collect();
         let alive: HashSet<_> = identities
             .keys()
@@ -701,9 +709,14 @@ pub(in crate::editor) fn render_track(
                 hex_project::TrackDeviceRef::Effect(device) => (*device, NativeDeviceClass::Effect),
             };
             let width = if is_source_effect(device.id()) {
+                let default_width = if device.state().type_id().as_str() == Ok("hex.utility") {
+                    modulators::SOURCE_EFFECT_CARD_WIDTH + device_meter::WIDTH
+                } else {
+                    device_card_width(view, class, device)
+                };
                 view.device_panel
                     .chain_window
-                    .source_effect_width(device.id())
+                    .source_effect_width_or(device.id(), default_width)
             } else {
                 device_card_width(view, class, device)
             };
@@ -766,12 +779,72 @@ pub(in crate::editor) fn render_track(
         };
         let mounted = chain_window::must_mount(view, device.id(), window, cx);
         if is_source_effect(device.id()) {
+            let is_utility = device.state().type_id().as_str() == Ok("hex.utility");
+            let default_width = if is_utility {
+                modulators::SOURCE_EFFECT_CARD_WIDTH + device_meter::WIDTH
+            } else {
+                device_card_width(view, NativeDeviceClass::Effect, device)
+            };
             let width = view
                 .device_panel
                 .chain_window
-                .source_effect_width(device.id());
+                .source_effect_width_or(device.id(), default_width);
             let card = if mounted {
-                modulators::source_effect_card(view, cx, device)
+                if is_utility {
+                    modulators::source_effect_card(view, cx, device)
+                } else {
+                    let id = device.id();
+                    let selector = format!("source-effect-modulation-{}", id.value());
+                    let measured = view
+                        .device_panel
+                        .chain_window
+                        .measure_source_effect_with_default(id, default_width);
+                    let entity = cx.entity();
+                    let focus = view.device_panel.chain_window.focus(id, cx);
+                    let rendered = render_effect(view, window, cx, track_id, device);
+                    let wrapped = div()
+                        .on_children_prepainted(move |children, _, cx| {
+                            let width = children.first().map_or(default_width, |frame| {
+                                f32::from(frame.size.width).max(default_width)
+                            });
+                            if width.is_finite() && measured.replace(width) != width {
+                                let entity = entity.clone();
+                                cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
+                            }
+                        })
+                        .id(ElementId::Name(selector.clone().into()))
+                        .debug_selector(move || selector.clone())
+                        .min_w(px(default_width))
+                        .h(px(DEVICE_FRAME_HEIGHT))
+                        .flex()
+                        .flex_shrink_0()
+                        .track_focus(&focus)
+                        .child(rendered);
+                    let wrapped = keyboard::activation_card(
+                        view,
+                        cx,
+                        id,
+                        NativeDeviceClass::Effect,
+                        focus.clone(),
+                        wrapped,
+                    );
+                    let wrapped = crate::editor::device_comparison::card(
+                        view,
+                        cx,
+                        id,
+                        NativeDeviceClass::Effect,
+                        focus.clone(),
+                        wrapped,
+                    );
+                    crate::editor::device_preset::card(
+                        view,
+                        cx,
+                        id,
+                        NativeDeviceClass::Effect,
+                        focus,
+                        wrapped,
+                    )
+                }
             } else {
                 chain_window::spacer(device.id(), width)
             };
@@ -1540,10 +1613,17 @@ pub(in crate::editor) fn render_effect(
     );
     let selector = format!("effect-device-{}", device_id.value());
     let card_width = device_card_width(view, NativeDeviceClass::Effect, device);
+    let nest_depth = view
+        .state
+        .as_ref()
+        .map_or(0, |state| nested::depth(&state.project, device_id));
+    let marker = nested::membership_marker(device, nest_depth);
     let rendered = div()
+        .relative()
         .min_w(px(card_width - device_meter::WIDTH))
         .flex_shrink_0()
-        .child(rendered);
+        .child(rendered)
+        .children(marker);
     div()
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())

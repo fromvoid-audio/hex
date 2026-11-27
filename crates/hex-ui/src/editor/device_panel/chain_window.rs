@@ -21,16 +21,34 @@ pub(super) struct ChainWindow {
 
 impl ChainWindow {
     pub(super) fn source_effect_width(&self, device: DeviceId) -> f32 {
+        self.source_effect_width_or(
+            device,
+            modulators::SOURCE_EFFECT_CARD_WIDTH + device_meter::WIDTH,
+        )
+    }
+
+    pub(super) fn source_effect_width_or(&self, device: DeviceId, default: f32) -> f32 {
         self.source_effect_widths
             .get(&device)
-            .map_or(modulators::SOURCE_EFFECT_CARD_WIDTH, |width| width.get())
+            .map_or(default, |width| width.get())
     }
 
     /// The housing lays out its panels. Keep its measured width for rail geometry and spacers.
     pub(super) fn measure_source_effect(&mut self, device: DeviceId) -> Rc<Cell<f32>> {
+        self.measure_source_effect_with_default(
+            device,
+            modulators::SOURCE_EFFECT_CARD_WIDTH + device_meter::WIDTH,
+        )
+    }
+
+    pub(super) fn measure_source_effect_with_default(
+        &mut self,
+        device: DeviceId,
+        default: f32,
+    ) -> Rc<Cell<f32>> {
         self.source_effect_widths
             .entry(device)
-            .or_insert_with(|| Rc::new(Cell::new(modulators::SOURCE_EFFECT_CARD_WIDTH)))
+            .or_insert_with(|| Rc::new(Cell::new(default)))
             .clone()
     }
 

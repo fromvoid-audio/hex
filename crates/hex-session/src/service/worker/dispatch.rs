@@ -509,6 +509,7 @@ impl WorkerLoop {
                 | Request::ImportDeviceAsset { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::InsertNestedCatalogDevice { .. }
                 | Request::InsertPluginEffect(..)
                 | Request::InspectSealedAutomationRecovery { .. }
                 | Request::LoadDevicePreset { .. }

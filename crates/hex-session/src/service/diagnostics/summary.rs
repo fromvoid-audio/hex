@@ -1784,6 +1784,15 @@ pub(super) fn request(value: &Request) -> Description {
             description.nested("destination", self::effect_bus_destination(destination));
             description
         }
+        Request::InsertNestedCatalogDevice {
+            project_generation,
+            revision,
+            parent,
+            type_id,
+            ..
+        } => {
+            describe!("insert_nested_catalog_device"; ["project_generation" => project_generation, "revision" => revision, "parent" => parent.value(), "type_id" => type_id.as_str()]; omitted="class")
+        }
         Request::LoadTrackCatalogDevice {
             project_generation,
             revision,

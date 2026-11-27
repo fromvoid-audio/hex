@@ -2,28 +2,108 @@
 use super::*;
 
 #[derive(Clone, Copy)]
-pub(super) struct Target {
-    generation: u64,
-    owner: DevicePanelOwner,
-    after: DeviceId,
+pub(super) enum Target {
+    After {
+        generation: u64,
+        owner: DevicePanelOwner,
+        after: DeviceId,
+    },
+    Nested {
+        generation: u64,
+        owner: DevicePanelOwner,
+        parent: DeviceId,
+    },
+}
+
+impl Target {
+    pub(super) fn nested(generation: u64, owner: DevicePanelOwner, parent: DeviceId) -> Self {
+        Self::Nested {
+            generation,
+            owner,
+            parent,
+        }
+    }
+}
+
+/// Resolved catalog destination at activation time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Destination {
+    Chain { before: Option<DeviceId> },
+    Nested { parent: DeviceId },
+}
+
+/// Active nested parent when the searchable picker was opened from a nested slot.
+pub(super) fn nested_parent(view: &EditorView, owner: DevicePanelOwner) -> Option<DeviceId> {
+    let Target::Nested {
+        generation,
+        owner: target_owner,
+        parent,
+    } = view.device_panel.add_menu_target?
+    else {
+        return None;
+    };
+    if view.device_panel.owner != Some(owner)
+        || target_owner != owner
+        || generation != view.project_generation
+    {
+        return None;
+    }
+    let state = view.state.as_ref()?;
+    nested::can_accept_nested_child(&state.project, parent).then_some(parent)
+}
+
+/// Resolve a chain-sibling `before` anchor for tests and callers expecting chain insertion.
+#[cfg(test)]
+pub(super) fn before(view: &EditorView, owner: DevicePanelOwner) -> Option<Option<DeviceId>> {
+    match destination(view, owner)? {
+        Destination::Chain { before } => Some(before),
+        Destination::Nested { .. } => None,
+    }
 }
 
 /// Resolve at activation time, so reordering preserves "after this device" and
 /// deleting the source or changing owner never silently appends.
-pub(super) fn before(view: &EditorView, owner: DevicePanelOwner) -> Option<Option<DeviceId>> {
+pub(super) fn destination(view: &EditorView, owner: DevicePanelOwner) -> Option<Destination> {
     if view.device_panel.owner != Some(owner) {
         return None;
     }
     let state = view.state.as_ref()?;
     let Some(target) = view.device_panel.add_menu_target else {
-        return Some(None);
+        return Some(Destination::Chain { before: None });
     };
-    if target.owner != owner || target.generation != view.project_generation {
-        return None;
+    match target {
+        Target::After {
+            generation,
+            owner: target_owner,
+            after,
+        } => {
+            if target_owner != owner || generation != view.project_generation {
+                return None;
+            }
+            let order = chain_ids(&state.project, owner);
+            if let Some(index) = order.iter().position(|id| *id == after) {
+                return Some(Destination::Chain {
+                    before: order.get(index + 1).copied(),
+                });
+            }
+            // Source post-instrument effects live in the retained source's child
+            // unit rather than the track-local chain; insert into the same parent.
+            let parent = state.project.device(after)?.parent()?;
+            nested::can_accept_nested_child(&state.project, parent)
+                .then_some(Destination::Nested { parent })
+        }
+        Target::Nested {
+            generation,
+            owner: target_owner,
+            parent,
+        } => {
+            if target_owner != owner || generation != view.project_generation {
+                return None;
+            }
+            nested::can_accept_nested_child(&state.project, parent)
+                .then_some(Destination::Nested { parent })
+        }
     }
-    let order = chain_ids(&state.project, owner);
-    let index = order.iter().position(|id| *id == target.after)?;
-    Some(order.get(index + 1).copied())
 }
 
 pub(super) fn button(
@@ -55,14 +135,20 @@ pub(super) fn button(
             let Some(owner) = owner.filter(|owner| {
                 generation == view.project_generation
                     && view.device_panel.owner == Some(*owner)
-                    && view
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| chain_ids(&state.project, *owner).contains(&device))
+                    && view.state.as_ref().is_some_and(|state| {
+                        chain_ids(&state.project, *owner).contains(&device)
+                            || state
+                                .project
+                                .device(device)
+                                .and_then(hex_project::Device::parent)
+                                .is_some_and(|parent| {
+                                    nested::can_accept_nested_child(&state.project, parent)
+                                })
+                    })
             }) else {
                 return;
             };
-            view.device_panel.add_menu_target = Some(Target {
+            view.device_panel.add_menu_target = Some(Target::After {
                 generation,
                 owner,
                 after: device,

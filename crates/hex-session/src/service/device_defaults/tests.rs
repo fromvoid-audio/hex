@@ -855,3 +855,229 @@ fn midi_processor_catalog_insert_parameter_patch_bypass_replace_and_undo_redo() 
         Some(new_id)
     );
 }
+
+#[test]
+fn insert_nested_catalog_device_applies_unit_default_and_refuses_stale_depth_and_unsupported() {
+    let directory = TestDir::new();
+    let mut service = Service::new(48_000, 16, 4096).unwrap();
+    let _ = next_event(&service);
+    service
+        .set_device_defaults_directory(directory.0.clone())
+        .unwrap();
+
+    let operator_type = DeviceTypeId::from_static("hex.instrument.operator");
+    let delay_type = DeviceTypeId::from_static("hex.delay");
+    let utility_type = DeviceTypeId::from_static("hex.utility");
+    let limiter_type = DeviceTypeId::from_static("hex.limiter");
+
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "vector".into(),
+        }))
+        .unwrap();
+    let track_ev = next_event(&service);
+    let Created::Track(track) = track_ev.created.unwrap() else {
+        panic!("track")
+    };
+    let vector_state = hex_engine::default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        operator_type,
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertInstrument {
+            track,
+            state: vector_state,
+        }))
+        .unwrap();
+    let inst_ev = next_event(&service);
+    assert!(inst_ev.error.is_none(), "{:?}", inst_ev.error);
+    let Created::Device(vector_id) = inst_ev.created.unwrap() else {
+        panic!("vector")
+    };
+
+    // Save a whole-unit default for hex.delay containing a nested hex.utility child.
+    let delay_state =
+        hex_engine::default_native_device_state_for_class(NativeDeviceClass::Effect, delay_type)
+            .unwrap();
+    let utility_state =
+        hex_engine::default_native_device_state_for_class(NativeDeviceClass::Effect, utility_type)
+            .unwrap();
+    service
+        .submit(Request::Edit(Command::InsertDevice {
+            track,
+            before: None,
+            state: delay_state,
+        }))
+        .unwrap();
+    let donor_ev = next_event(&service);
+    let Created::Device(donor_delay) = donor_ev.created.unwrap() else {
+        panic!("donor delay")
+    };
+    service
+        .submit(Request::Edit(Command::InsertNestedDevice {
+            parent: donor_delay,
+            state: utility_state.clone(),
+        }))
+        .unwrap();
+    let donor_child_ev = next_event(&service);
+    assert!(donor_child_ev.error.is_none(), "{:?}", donor_child_ev.error);
+    service
+        .submit(Request::SaveDeviceUnitDefault {
+            owner: crate::service::preset::Owner {
+                project_generation: 0,
+                revision: donor_child_ev.state.revision,
+                device: donor_delay,
+                class: NativeDeviceClass::Effect,
+                type_id: delay_type,
+            },
+            root: directory.0.clone(),
+        })
+        .unwrap();
+    let saved = next_event(&service);
+    assert!(saved.error.is_none(), "{:?}", saved.error);
+
+    // Insert hex.delay under Vector via Request::InsertNestedCatalogDevice: whole-unit
+    // default (Delay + nested Utility) lands atomically in one history step.
+    let revision_before = saved.state.revision;
+    service
+        .submit(Request::InsertNestedCatalogDevice {
+            project_generation: 0,
+            revision: revision_before,
+            parent: vector_id,
+            class: NativeDeviceClass::Effect,
+            type_id: delay_type,
+            control: None,
+        })
+        .unwrap();
+    let inserted = next_event(&service);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let source_id = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .source_id()
+        .unwrap();
+    let suffix = inserted
+        .state
+        .project
+        .native_source(source_id)
+        .unwrap()
+        .post_instrument_effects();
+    assert_eq!(suffix.len(), 2);
+    assert_eq!(suffix[0].state().type_id(), delay_type);
+    assert_eq!(suffix[0].parent(), Some(vector_id));
+    assert_eq!(suffix[1].state().type_id(), utility_type);
+    assert_eq!(suffix[1].parent(), Some(suffix[0].id()));
+
+    // One Undo removes the entire inserted default unit cleanly.
+    service.submit(Request::Undo).unwrap();
+    let undone = next_event(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert!(
+        undone
+            .state
+            .project
+            .native_source(source_id)
+            .unwrap()
+            .post_instrument_effects()
+            .is_empty()
+    );
+    service.submit(Request::Redo).unwrap();
+    let redone = next_event(&service);
+    assert_eq!(
+        redone
+            .state
+            .project
+            .native_source(source_id)
+            .unwrap()
+            .post_instrument_effects()
+            .len(),
+        2
+    );
+
+    let baseline = redone.state.project.clone();
+    let rev = redone.state.revision;
+
+    // Stale revision, non-Effect class, and unsupported source effect (hex.limiter) all refuse cleanly.
+    for bad in [
+        Request::InsertNestedCatalogDevice {
+            project_generation: 0,
+            revision: rev.saturating_sub(1),
+            parent: vector_id,
+            class: NativeDeviceClass::Effect,
+            type_id: utility_type,
+            control: None,
+        },
+        Request::InsertNestedCatalogDevice {
+            project_generation: 0,
+            revision: rev,
+            parent: vector_id,
+            class: NativeDeviceClass::Instrument,
+            type_id: operator_type,
+            control: None,
+        },
+        Request::InsertNestedCatalogDevice {
+            project_generation: 0,
+            revision: rev,
+            parent: vector_id,
+            class: NativeDeviceClass::Effect,
+            type_id: limiter_type,
+            control: None,
+        },
+    ] {
+        service.submit(bad).unwrap();
+        let refused = next_event(&service);
+        assert!(refused.error.is_some());
+        assert_eq!(*refused.state.project, *baseline);
+    }
+
+    // Depth-capped parent refuses cleanly without mutating the project.
+    let mut deepest = donor_delay;
+    for _ in 0..hex_project::MAX_SERIAL_DEVICE_DEPTH {
+        let state = utility_state.clone();
+        service
+            .submit(Request::Edit(Command::InsertNestedDevice {
+                parent: deepest,
+                state,
+            }))
+            .unwrap();
+        let ev = next_event(&service);
+        if let Some(Created::Device(next)) = ev.created {
+            deepest = next;
+        } else {
+            break;
+        }
+    }
+    let capped_rev = {
+        service
+            .submit(Request::Edit(Command::InsertNestedDevice {
+                parent: deepest,
+                state: utility_state,
+            }))
+            .unwrap();
+        let ev = next_event(&service);
+        assert!(ev.error.is_some());
+        ev.state.revision
+    };
+    let capped_project = {
+        service
+            .submit(Request::InsertNestedCatalogDevice {
+                project_generation: 0,
+                revision: capped_rev,
+                parent: deepest,
+                class: NativeDeviceClass::Effect,
+                type_id: utility_type,
+                control: None,
+            })
+            .unwrap();
+        let ev = next_event(&service);
+        assert!(ev.error.is_some());
+        ev.state.project.clone()
+    };
+    assert_eq!(
+        hex_engine::project_device_nesting_depth(&capped_project, deepest),
+        Some(hex_project::MAX_SERIAL_DEVICE_DEPTH - 1)
+    );
+}

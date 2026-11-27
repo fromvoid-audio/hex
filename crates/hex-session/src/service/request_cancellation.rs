@@ -167,6 +167,7 @@ impl Sender {
                 | Request::ReplaceNativeDevice { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::InsertNestedCatalogDevice { .. }
                 | Request::LoadTrackCatalogDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::SaveDeviceUnitPreset { .. }

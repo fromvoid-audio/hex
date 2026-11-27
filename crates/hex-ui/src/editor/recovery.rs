@@ -99,6 +99,7 @@ pub(super) fn is_graph_republishing_edit(request: &Request) -> bool {
         | Request::InsertBrowserInstrumentTrack { .. }
         | Request::InsertPluginEffect(_)
         | Request::InsertEffectBusDevice { .. }
+        | Request::InsertNestedCatalogDevice { .. }
         | Request::DropBrowserDeviceOnArrangement { .. }
         | Request::CopyArrangementClipToConsoleTrack { .. }
         | Request::CommitMidiTake { .. }
@@ -362,6 +363,11 @@ fn request_is_current_for_recovery(
             ..
         }
         | Request::InsertEffectBusDevice {
+            project_generation,
+            revision,
+            ..
+        }
+        | Request::InsertNestedCatalogDevice {
             project_generation,
             revision,
             ..
@@ -637,6 +643,9 @@ impl EditorView {
                 class: NativeDeviceClass::Effect,
                 ..
             } | Request::LoadTrackCatalogDevice {
+                class: NativeDeviceClass::Effect,
+                ..
+            } | Request::InsertNestedCatalogDevice {
                 class: NativeDeviceClass::Effect,
                 ..
             }

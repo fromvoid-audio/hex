@@ -100,6 +100,7 @@ mod fold;
 mod gate_panel;
 mod keyboard;
 mod navigation;
+mod nested;
 mod reverb_panel;
 pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;

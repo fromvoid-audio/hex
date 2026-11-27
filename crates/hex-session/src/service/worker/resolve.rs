@@ -1248,6 +1248,55 @@ impl WorkerLoop {
                     })
                 },
             ),
+            Request::InsertNestedCatalogDevice {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                parent,
+                class,
+                type_id,
+                ..
+            } => Some(
+                if *expected_generation != project_generation || *expected_revision != revision {
+                    Err("nested device insertion canceled · project changed".to_owned())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Err(
+                        "finish or cancel the active device edit before inserting a nested device"
+                            .into(),
+                    )
+                } else if *class != hex_engine::NativeDeviceClass::Effect {
+                    Err("nested device slots accept compatible effects only".into())
+                } else {
+                    hex_engine::native_effect_admitted_for_nested_parent(
+                        session.project(),
+                        *parent,
+                        *type_id,
+                    )
+                    .map_err(str::to_owned)
+                    .and_then(|()| {
+                        hex_engine::default_native_device_state_for_class(*class, *type_id).map_err(
+                            |error| {
+                                hex_storage::text::lowercase_outside_verbatim(&error.to_string())
+                            },
+                        )
+                    })
+                    .and_then(|state| {
+                        device_defaults::initialize(
+                            session,
+                            Command::InsertNestedDevice {
+                                parent: *parent,
+                                state,
+                            },
+                            *class,
+                            defaults_root,
+                        )
+                    })
+                    .map(|prepared| {
+                        exec.outcome.pending_unit_originals = prepared.originals;
+                        prepared.command
+                    })
+                },
+            ),
             Request::LoadTrackCatalogDevice {
                 project_generation: expected_generation,
                 revision: expected_revision,

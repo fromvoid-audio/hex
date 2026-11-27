@@ -158,6 +158,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::InsertNestedCatalogDevice { .. }
                 | Request::LoadTrackCatalogDevice { .. }
                 | Request::InsertPluginEffect(_)
                 | Request::CompareDevice { .. }
@@ -551,6 +552,7 @@ impl EditorView {
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::InsertEffectBusDevice { .. }
+                | Request::InsertNestedCatalogDevice { .. }
                 | Request::LoadTrackCatalogDevice { .. }
                 | Request::InsertPluginEffect(_)
                 | Request::AddNativeDevice { .. }

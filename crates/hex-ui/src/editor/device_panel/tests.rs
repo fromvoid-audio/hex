@@ -64,6 +64,8 @@ mod limiter_ui_tests;
 
 mod navigation_ui_tests;
 
+mod nested_host_ui_tests;
+
 mod operator_algorithm_ui_tests;
 
 mod operator_context_selection_tests;
