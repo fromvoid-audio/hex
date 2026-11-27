@@ -5,6 +5,7 @@ use crate::editor::device_comparison;
 pub(in crate::editor) const SOURCE_EFFECT_CARD_WIDTH: f32 = 172.0;
 
 /// Static Utility matrix controls share the verified source handoff.
+#[cfg(test)]
 pub(in crate::editor) fn source_utility_gain_available(
     project: &hex_project::Project,
     device: &Device,
@@ -27,11 +28,19 @@ pub(in crate::editor) fn source_effect_card(
     let selector = format!("source-effect-modulation-{}", id.value());
     let measured = view.device_panel.chain_window.measure_source_effect(id);
     let entity = cx.entity();
+    let min_width = SOURCE_EFFECT_CARD_WIDTH + device_meter::WIDTH;
     let outer = div()
         .on_children_prepainted(move |children, _, cx| {
-            let width = children.first().map_or(SOURCE_EFFECT_CARD_WIDTH, |frame| {
-                f32::from(frame.size.width).max(SOURCE_EFFECT_CARD_WIDTH)
-            });
+            let width = if children.is_empty() {
+                min_width
+            } else {
+                children
+                    .iter()
+                    .take(2)
+                    .map(|frame| f32::from(frame.size.width))
+                    .sum::<f32>()
+                    .max(min_width)
+            };
             if width.is_finite() && measured.replace(width) != width {
                 let entity = entity.clone();
                 cx.defer(move |cx| entity.update(cx, |_, cx| cx.notify()));
@@ -39,10 +48,10 @@ pub(in crate::editor) fn source_effect_card(
         })
         .id(ElementId::Name(selector.clone().into()))
         .debug_selector(move || selector.clone())
-        .min_w(px(SOURCE_EFFECT_CARD_WIDTH))
+        .min_w(px(min_width))
         .h(px(DEVICE_FRAME_HEIGHT))
         .flex()
-        .flex_col()
+        .flex_row()
         .flex_shrink_0();
     let Some(state) = view.state.as_ref() else {
         return outer;
@@ -349,6 +358,12 @@ pub(in crate::editor) fn source_effect_card(
     let selected = view.device_panel.is_selected(id);
     let class = NativeDeviceClass::Effect;
     let focus = view.device_panel.chain_window.focus(id, cx);
+    let nest_depth = view
+        .state
+        .as_ref()
+        .map_or(0, |state| nested::depth(&state.project, id));
+    let marker = nested::membership_marker(device, nest_depth);
+    let output = device_meter::render(view, device, cx);
     let rendered = hex_widgets::device_frame_with_modulators(
         device_comparison::source_title(id, metadata.name, cx),
         theme::device_frame_style(selected),
@@ -358,7 +373,13 @@ pub(in crate::editor) fn source_effect_card(
         modulation,
     )
     .h_full();
-    let card = outer.track_focus(&focus).child(rendered);
+    let rendered = div()
+        .relative()
+        .h_full()
+        .flex_shrink_0()
+        .child(rendered)
+        .children(marker);
+    let card = outer.track_focus(&focus).child(rendered).child(output);
     let card = keyboard::activation_card(view, cx, id, class, focus.clone(), card);
     device_comparison::card(view, cx, id, class, focus, card)
 }

@@ -20,8 +20,11 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
             let (handle, editor) = editor_window(cx, project, Arc::default());
             editor.update(cx, |view, cx| {
                 view.browser.section = match class {
-                    NativeDeviceClass::Instrument => super::browser::BrowserSection::Instruments,
-                    NativeDeviceClass::Effect => super::browser::BrowserSection::Instruments,
+                    NativeDeviceClass::Instrument
+                    | NativeDeviceClass::Effect
+                    | NativeDeviceClass::MidiProcessor => {
+                        super::browser::BrowserSection::Instruments
+                    }
                 };
                 view.selected_track = if destination == 2 { None } else { Some(first) };
                 cx.notify();
@@ -32,6 +35,7 @@ fn arrangement_catalog_pointer_drop_captures_target_and_preview_without_selectio
                 .debug_bounds(match class {
                     NativeDeviceClass::Instrument => "browser-device-instrument-hex.instrument.fm4",
                     NativeDeviceClass::Effect => "browser-device-effect-hex.utility",
+                    NativeDeviceClass::MidiProcessor => unreachable!("midi processor not tested"),
                 })
                 .expect("catalog source");
             let down = point(
@@ -385,6 +389,7 @@ fn arrangement_header_column_device_drops_insert_tracks_and_preview_like_the_gri
                 .debug_bounds(match class {
                     NativeDeviceClass::Instrument => "browser-device-instrument-hex.instrument.fm4",
                     NativeDeviceClass::Effect => "browser-device-effect-hex.utility",
+                    NativeDeviceClass::MidiProcessor => unreachable!("midi processor not tested"),
                 })
                 .expect("catalog source");
             let down = source.center();

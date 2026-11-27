@@ -13,7 +13,19 @@ pub(super) fn render_chain(
     let visible_bounds = Rc::new(RefCell::new(None));
     let receiver_bounds = visible_bounds.clone();
     let entity = cx.entity();
-    let geometry: Vec<_> = devices
+    let visible_devices: Vec<&hex_project::Device> = devices
+        .iter()
+        .filter(|device| {
+            view.state.as_ref().is_none_or(|state| {
+                !nested::hidden_by_collapsed_ancestor(
+                    &view.device_panel.collapsed_children,
+                    &state.project,
+                    device.id(),
+                )
+            })
+        })
+        .collect();
+    let geometry: Vec<_> = visible_devices
         .iter()
         .map(|device| {
             (
@@ -75,7 +87,7 @@ pub(super) fn render_chain(
                 entity.update(cx, |_, cx| cx.notify());
             }
         });
-    for (index, device) in devices.iter().enumerate() {
+    for (index, device) in visible_devices.iter().copied().enumerate() {
         if proposed == Some(index) {
             chain = chain.children([view.proposed_plugin_slot_card(cx)]);
         }
@@ -113,7 +125,7 @@ pub(super) fn render_chain(
                 cx,
                 owner,
                 Some(device),
-                devices.get(index + 1),
+                visible_devices.get(index + 1).copied(),
                 visible_bounds.clone(),
                 rendered,
             ));

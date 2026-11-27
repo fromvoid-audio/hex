@@ -266,6 +266,128 @@ pub fn native_device_catalog_for_class(
     }
 }
 
+/// Whether a built-in native effect type satisfies the control-side source
+/// post-instrument stage contract (asset-free, bounded factory, zero latency).
+pub fn native_effect_admitted_for_source_child(type_id: DeviceTypeId, sample_rate: u32) -> bool {
+    let Ok(registry) = hex_devices::native_registry() else {
+        return false;
+    };
+    let Some(definition) = registry.definition(type_id) else {
+        return false;
+    };
+    let Ok(state) = definition.default_state() else {
+        return false;
+    };
+    if crate::source_effect_stage::metadata::validate_authored(&state, &registry).is_err() {
+        return false;
+    }
+    let tuning = hex_lattice::TuningTable::default();
+    let context = hex_lattice::DevicePreparationContext {
+        sample_rate,
+        tuning: &tuning,
+        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+    };
+    registry
+        .prepare_runtime_device(&state, &context)
+        .is_ok_and(|device| {
+            device.processor.is_none_or(|factory| {
+                !matches!(factory, hex_lattice::PreparedProcessorFactory::Foreign(_))
+                    && factory.algorithmic_latency_frames() == Some(0)
+            })
+        })
+}
+
+/// Nesting depth of `device` within its canonical serial unit (`0` for roots).
+pub fn project_device_nesting_depth(
+    project: &hex_project::Project,
+    device: hex_project::DeviceId,
+) -> Option<usize> {
+    let mut current = project.device(device)?;
+    let mut depth = 0usize;
+    while let Some(parent) = current.parent() {
+        depth = depth.checked_add(1)?;
+        if depth >= hex_project::MAX_SERIAL_DEVICE_DEPTH {
+            return None;
+        }
+        current = project.device(parent)?;
+    }
+    Some(depth)
+}
+
+/// Whether any strict canonical ancestor of `device` is authored as bypassed.
+/// Preserves each child's local `bypassed()` flag while exposing effective unit bypass.
+pub fn project_device_ancestor_bypassed(
+    project: &hex_project::Project,
+    device: hex_project::DeviceId,
+) -> bool {
+    let Some(mut current) = project.device(device) else {
+        return false;
+    };
+    for _ in 0..hex_project::MAX_SERIAL_DEVICE_DEPTH {
+        let Some(parent) = current.parent() else {
+            return false;
+        };
+        let Some(ancestor) = project.device(parent) else {
+            return false;
+        };
+        if ancestor.bypassed() {
+            return true;
+        }
+        current = ancestor;
+    }
+    false
+}
+
+/// Validate whether a fresh catalog effect of `type_id` is admitted as a direct
+/// serial child of `parent` under canonical depth, capacity and provider rules.
+pub fn native_effect_admitted_for_nested_parent(
+    project: &hex_project::Project,
+    parent: hex_project::DeviceId,
+    type_id: DeviceTypeId,
+) -> Result<(), &'static str> {
+    let location = project
+        .device_location(parent)
+        .ok_or("nested device target no longer exists")?;
+    if location.class == hex_project::DeviceUnitClass::MidiProcessor {
+        return Err("midi processors cannot host nested effects");
+    }
+    let depth =
+        project_device_nesting_depth(project, parent).ok_or("serial device depth limit reached")?;
+    if depth + 1 >= hex_project::MAX_SERIAL_DEVICE_DEPTH {
+        return Err("serial device depth limit reached");
+    }
+    let has_capacity = match location.owner {
+        hex_project::DeviceOwner::Track(id) => project
+            .track(id)
+            .is_some_and(|track| track.devices().len() < hex_project::MAX_DEVICES_PER_TRACK),
+        hex_project::DeviceOwner::Return(id) => project
+            .return_tracks()
+            .iter()
+            .find(|bus| bus.id() == id)
+            .is_some_and(|bus| bus.devices().len() < hex_project::MAX_DEVICES_PER_TRACK),
+        hex_project::DeviceOwner::Main => {
+            project.main_devices().len() < hex_project::MAX_DEVICES_PER_TRACK
+        }
+        hex_project::DeviceOwner::Source(id) => project
+            .native_source(id)
+            .is_some_and(|source| source.devices().count() < hex_project::MAX_SOURCE_DEVICES),
+    };
+    if !has_capacity {
+        return Err("device chain capacity limit reached");
+    }
+    if matches!(location.owner, hex_project::DeviceOwner::Source(_)) {
+        if !native_effect_admitted_for_source_child(type_id, project.sample_rate()) {
+            return Err("source nested effects require zero-latency native effects");
+        }
+    } else if hex_devices::native_registry()
+        .ok()
+        .is_none_or(|registry| registry.definition(type_id).is_none())
+    {
+        return Err("native effect type is unavailable");
+    }
+    Ok(())
+}
+
 fn catalog_entries<D: NativeDeviceMetadata + ?Sized>(
     definitions: &[&D],
 ) -> Result<Vec<NativeDeviceCatalogEntry>, Invalid> {
@@ -985,6 +1107,142 @@ mod tests {
             );
             assert_eq!(state, before);
         }
+    }
+
+    #[test]
+    fn nested_parent_admission_enforces_depth_midi_processor_and_source_zero_latency() {
+        use crate::default_native_device_state_for_class;
+        use hex_project::{Command, Created, Editor, MAX_SERIAL_DEVICE_DEPTH, Project};
+
+        let delay = DeviceTypeId::from_static("hex.delay");
+        let utility = DeviceTypeId::from_static("hex.utility");
+        let limiter = DeviceTypeId::from_static("hex.limiter");
+        let operator = DeviceTypeId::from_static("hex.instrument.operator");
+        let unknown = DeviceTypeId::new("hex.unknown.effect").unwrap();
+        let midi_proc = native_device_catalog_for_class(NativeDeviceClass::MidiProcessor)
+            .unwrap()
+            .remove(0)
+            .type_id;
+
+        assert!(native_effect_admitted_for_source_child(delay, 48_000));
+        assert!(native_effect_admitted_for_source_child(utility, 48_000));
+        assert!(!native_effect_admitted_for_source_child(limiter, 48_000));
+        assert!(!native_effect_admitted_for_source_child(unknown, 48_000));
+
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "lead".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let Created::Device(midi_id) = editor
+            .execute(Command::InsertMidiProcessor {
+                track,
+                state: default_native_device_state_for_class(
+                    NativeDeviceClass::MidiProcessor,
+                    midi_proc,
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("midi processor")
+        };
+        let Created::Device(vector_id) = editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: default_native_device_state_for_class(
+                    NativeDeviceClass::Instrument,
+                    operator,
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("vector")
+        };
+        assert!(
+            native_effect_admitted_for_nested_parent(editor.project(), midi_id, delay).is_err()
+        );
+        assert!(
+            native_effect_admitted_for_nested_parent(editor.project(), vector_id, delay).is_ok()
+        );
+        assert!(
+            native_effect_admitted_for_nested_parent(editor.project(), vector_id, limiter).is_err()
+        );
+
+        let Created::Device(delay_child) = editor
+            .execute(Command::InsertNestedDevice {
+                parent: vector_id,
+                state: default_native_device_state_for_class(NativeDeviceClass::Effect, delay)
+                    .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("delay child")
+        };
+        assert_eq!(
+            project_device_nesting_depth(editor.project(), vector_id),
+            Some(0)
+        );
+        assert_eq!(
+            project_device_nesting_depth(editor.project(), delay_child),
+            Some(1)
+        );
+        assert!(!project_device_ancestor_bypassed(
+            editor.project(),
+            delay_child
+        ));
+        editor
+            .execute(Command::SetDeviceBypass {
+                device: vector_id,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(project_device_ancestor_bypassed(
+            editor.project(),
+            delay_child
+        ));
+        assert!(!editor.project().device(delay_child).unwrap().bypassed());
+
+        // Effect host depth boundary: depth 0..MAX_SERIAL_DEVICE_DEPTH-1 accepted, next refused.
+        let utility_state =
+            default_native_device_state_for_class(NativeDeviceClass::Effect, utility).unwrap();
+        let Created::Device(mut current) = editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: utility_state.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("root effect")
+        };
+        for expected_depth in 1..MAX_SERIAL_DEVICE_DEPTH {
+            assert!(
+                native_effect_admitted_for_nested_parent(editor.project(), current, delay).is_ok()
+            );
+            let Created::Device(next) = editor
+                .execute(Command::InsertNestedDevice {
+                    parent: current,
+                    state: utility_state.clone(),
+                })
+                .unwrap()
+            else {
+                panic!("child")
+            };
+            assert_eq!(
+                project_device_nesting_depth(editor.project(), next),
+                Some(expected_depth)
+            );
+            current = next;
+        }
+        assert!(
+            native_effect_admitted_for_nested_parent(editor.project(), current, delay).is_err()
+        );
     }
 }
 

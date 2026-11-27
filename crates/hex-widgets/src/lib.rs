@@ -35,8 +35,9 @@ mod color_picker;
 mod curve;
 mod device_housing;
 pub use device_housing::{
-    DEVICE_HOST_PANEL_HEIGHT, HostSlotGridLayout, HostSlotItem, HostSlotModulationRing,
-    HostSlotPanelConfig, HostSlotPreview, HostSlotWaveform, host_slot_panel,
+    DEVICE_HOST_PANEL_HEIGHT, DEVICE_NESTED_SLOT_WIDTH, HostSlotGridLayout, HostSlotItem,
+    HostSlotModulationRing, HostSlotPanelConfig, HostSlotPreview, HostSlotWaveform,
+    host_slot_panel,
 };
 mod device_meters;
 mod device_parts;
@@ -100,9 +101,9 @@ pub use frame::{
     DEVICE_LAYOUT_GUTTER, DEVICE_ROW_GUTTER, DEVICE_SECTION_INSET, DEVICE_SECTION_RADIUS,
     DeviceLayout, DeviceSectionSurface, device_body, device_compact_row, device_compact_section,
     device_dense_section, device_display, device_frame, device_frame_header_only,
-    device_frame_with_modulators, device_frame_with_panels, device_grouped_row, device_header,
-    device_layout, device_rail, device_section, device_split, device_windowed_body,
-    vertical_device_name,
+    device_frame_with_host_panels, device_frame_with_modulators, device_frame_with_panels,
+    device_grouped_row, device_header, device_layout, device_rail, device_section, device_split,
+    device_windowed_body, vertical_device_name,
 };
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{

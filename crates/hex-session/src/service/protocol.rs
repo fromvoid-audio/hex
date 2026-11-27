@@ -887,6 +887,15 @@ pub enum Request {
         before: Option<hex_project::DeviceId>,
         control: Option<Arc<PluginEffectControl>>,
     },
+    /// Catalog nested child effect insertion under one canonical parent device.
+    InsertNestedCatalogDevice {
+        project_generation: u64,
+        revision: u64,
+        parent: hex_project::DeviceId,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        control: Option<Arc<PluginEffectControl>>,
+    },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
         project_generation: u64,
@@ -1280,6 +1289,7 @@ impl Request {
         match self {
             Self::InsertBrowserInstrumentTrack { control, .. }
             | Self::InsertEffectBusDevice { control, .. }
+            | Self::InsertNestedCatalogDevice { control, .. }
             | Self::DropBrowserDeviceOnArrangement { control, .. }
             | Self::DropNativeDevice {
                 source: NativeDeviceDropSource::Browser { .. },

@@ -342,6 +342,7 @@ pub(super) fn render(
             cx.notify();
         }
     });
+    let nested_controls = nested::end_slot_controls(view, device, cx);
     div()
         .id(ElementId::Name(
             format!("device-{}-output-meter-strip", id.value()).into(),
@@ -364,6 +365,7 @@ pub(super) fn render(
         .items_center()
         .gap(px(2.0))
         .py(px(4.0))
+        .children(nested_controls)
         .child(
             div()
                 .flex_1()

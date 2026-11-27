@@ -162,6 +162,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
         | Request::InsertBrowserInstrumentTrack { .. }
         | Request::ContinueDeviceInsert
         | Request::InsertEffectBusDevice { .. }
+        | Request::InsertNestedCatalogDevice { .. }
         | Request::LoadTrackCatalogDevice { .. }
         | Request::DropBrowserDeviceOnArrangement { .. }
         | Request::DropNativeDevice { .. }

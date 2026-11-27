@@ -261,7 +261,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             }
         }
 
-        Request::InsertEffectBusDevice { .. } => {
+        Request::InsertEffectBusDevice { .. } | Request::InsertNestedCatalogDevice { .. } => {
             ctx.outcome.error =
                 Some("effect insertion request was not prepared; select it again".into());
         }

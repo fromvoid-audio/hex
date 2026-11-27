@@ -92,6 +92,7 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
     }
     let mut rows = Vec::new();
     let mut errors = Vec::new();
+    let nested_parent = device_add::nested_parent(view, owner);
     let is_group_track = match owner {
         DevicePanelOwner::Track(track) => view
             .state
@@ -106,6 +107,9 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
         NativeDeviceClass::Effect,
         NativeDeviceClass::Instrument,
     ] {
+        if nested_parent.is_some() && class != NativeDeviceClass::Effect {
+            continue;
+        }
         if matches!(
             class,
             NativeDeviceClass::Instrument | NativeDeviceClass::MidiProcessor
@@ -124,6 +128,18 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
         match catalog {
             Ok(catalog) => {
                 for entry in catalog {
+                    if let Some(parent) = nested_parent
+                        && !view.state.as_ref().is_some_and(|state| {
+                            hex_engine::native_effect_admitted_for_nested_parent(
+                                &state.project,
+                                parent,
+                                entry.type_id,
+                            )
+                            .is_ok()
+                        })
+                    {
+                        continue;
+                    }
                     let kind = match class {
                         NativeDeviceClass::MidiProcessor => "midi",
                         NativeDeviceClass::Effect => "effect",
@@ -149,11 +165,15 @@ fn entries(view: &EditorView, owner: DevicePanelOwner, query: &str) -> (Vec<Entr
                             .is_some_and(|track| track.midi_processor().is_some()),
                         _ => false,
                     };
-                    let prefix = match owner {
-                        DevicePanelOwner::Track(_) => "native",
-                        DevicePanelOwner::Main => "main",
-                        DevicePanelOwner::Return(_) => "return",
-                        DevicePanelOwner::Source(_) => continue,
+                    let prefix = if nested_parent.is_some() {
+                        "nested"
+                    } else {
+                        match owner {
+                            DevicePanelOwner::Track(_) => "native",
+                            DevicePanelOwner::Main => "main",
+                            DevicePanelOwner::Return(_) => "return",
+                            DevicePanelOwner::Source(_) => continue,
+                        }
                     };
                     rows.push(Entry {
                         class,
@@ -182,7 +202,7 @@ fn activate(
 ) {
     use hex_session::service::{PluginEffectControl, TrackCatalogPlacement};
 
-    let Some(before) = device_add::before(view, owner) else {
+    let Some(destination) = device_add::destination(view, owner) else {
         view.device_panel.message = Some("device insertion cancelled · chain changed".into());
         close(view, window, cx);
         return;
@@ -190,62 +210,88 @@ fn activate(
     let Some(state) = view.state.as_ref() else {
         return;
     };
-    let request = match owner {
-        DevicePanelOwner::Track(track) => {
-            let track_ref = state.project.track(track);
-            if matches!(
-                class,
-                NativeDeviceClass::Instrument | NativeDeviceClass::MidiProcessor
-            ) && track_ref.is_some_and(hex_project::Track::is_group)
-            {
-                return;
-            }
-            let instrument = track_ref
-                .and_then(|track| track.instrument())
-                .map(hex_project::Device::id);
-            let midi_processor = track_ref
-                .and_then(|track| track.midi_processor())
-                .map(hex_project::Device::id);
-            let placement = match (class, instrument, midi_processor) {
-                (NativeDeviceClass::Instrument, Some(device), _) => {
-                    TrackCatalogPlacement::ReplaceInstrument(device)
-                }
-                (NativeDeviceClass::Instrument, None, _) => {
-                    TrackCatalogPlacement::Insert { before: None }
-                }
-                (NativeDeviceClass::MidiProcessor, _, Some(device)) => {
-                    TrackCatalogPlacement::ReplaceMidiProcessor(device)
-                }
-                (NativeDeviceClass::MidiProcessor, _, None) => {
-                    TrackCatalogPlacement::Insert { before: None }
-                }
-                (NativeDeviceClass::Effect, _, _) => TrackCatalogPlacement::Insert { before },
-            };
-            Request::LoadTrackCatalogDevice {
-                project_generation: view.project_generation,
-                revision: state.revision,
-                track,
-                class,
-                type_id,
-                placement,
-                control: std::sync::Arc::new(PluginEffectControl::default()),
-            }
-        }
-        DevicePanelOwner::Main | DevicePanelOwner::Return(_) => {
+    let (nested_parent_to_expand, request) = match destination {
+        device_add::Destination::Nested { parent } => {
             if class != NativeDeviceClass::Effect {
                 return;
             }
-            let bus = match owner {
-                DevicePanelOwner::Main => EffectBusOwner::Main,
-                DevicePanelOwner::Return(id) => EffectBusOwner::Return(id),
-                // The outer match arm excludes Track.
-                DevicePanelOwner::Track(_) | DevicePanelOwner::Source(_) => return,
-            };
-            bus.insert_request(view.project_generation, state.revision, before, type_id)
+            (
+                Some(parent),
+                Request::InsertNestedCatalogDevice {
+                    project_generation: view.project_generation,
+                    revision: state.revision,
+                    parent,
+                    class,
+                    type_id,
+                    control: Some(std::sync::Arc::new(PluginEffectControl::default())),
+                },
+            )
         }
-        DevicePanelOwner::Source(_) => return,
+        device_add::Destination::Chain { before } => (
+            None,
+            match owner {
+                DevicePanelOwner::Track(track) => {
+                    let track_ref = state.project.track(track);
+                    if matches!(
+                        class,
+                        NativeDeviceClass::Instrument | NativeDeviceClass::MidiProcessor
+                    ) && track_ref.is_some_and(hex_project::Track::is_group)
+                    {
+                        return;
+                    }
+                    let instrument = track_ref
+                        .and_then(|track| track.instrument())
+                        .map(hex_project::Device::id);
+                    let midi_processor = track_ref
+                        .and_then(|track| track.midi_processor())
+                        .map(hex_project::Device::id);
+                    let placement = match (class, instrument, midi_processor) {
+                        (NativeDeviceClass::Instrument, Some(device), _) => {
+                            TrackCatalogPlacement::ReplaceInstrument(device)
+                        }
+                        (NativeDeviceClass::Instrument, None, _) => {
+                            TrackCatalogPlacement::Insert { before: None }
+                        }
+                        (NativeDeviceClass::MidiProcessor, _, Some(device)) => {
+                            TrackCatalogPlacement::ReplaceMidiProcessor(device)
+                        }
+                        (NativeDeviceClass::MidiProcessor, _, None) => {
+                            TrackCatalogPlacement::Insert { before: None }
+                        }
+                        (NativeDeviceClass::Effect, _, _) => {
+                            TrackCatalogPlacement::Insert { before }
+                        }
+                    };
+                    Request::LoadTrackCatalogDevice {
+                        project_generation: view.project_generation,
+                        revision: state.revision,
+                        track,
+                        class,
+                        type_id,
+                        placement,
+                        control: std::sync::Arc::new(PluginEffectControl::default()),
+                    }
+                }
+                DevicePanelOwner::Main | DevicePanelOwner::Return(_) => {
+                    if class != NativeDeviceClass::Effect {
+                        return;
+                    }
+                    let bus = match owner {
+                        DevicePanelOwner::Main => EffectBusOwner::Main,
+                        DevicePanelOwner::Return(id) => EffectBusOwner::Return(id),
+                        // The outer match arm excludes Track.
+                        DevicePanelOwner::Track(_) | DevicePanelOwner::Source(_) => return,
+                    };
+                    bus.insert_request(view.project_generation, state.revision, before, type_id)
+                }
+                DevicePanelOwner::Source(_) => return,
+            },
+        ),
     };
     if finalize_controls(view, cx) && view.enqueue_catalog_device(request) {
+        if let Some(parent) = nested_parent_to_expand {
+            view.device_panel.collapsed_children.remove(&parent);
+        }
         view.device_panel.message = None;
         close(view, window, cx);
     }

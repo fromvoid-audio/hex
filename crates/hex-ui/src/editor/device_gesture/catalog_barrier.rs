@@ -26,6 +26,11 @@ fn stamps(request: &Request) -> Option<(u64, u64)> {
             revision,
             ..
         }
+        | Request::InsertNestedCatalogDevice {
+            project_generation,
+            revision,
+            ..
+        }
         | Request::LoadTrackCatalogDevice {
             project_generation,
             revision,
@@ -144,6 +149,16 @@ fn valid_intent(project: &hex_project::Project, request: &Request) -> bool {
             };
             before.is_none_or(|anchor| devices.iter().any(|device| device.id() == anchor))
                 && registered(*class, *type_id)
+        }
+        Request::InsertNestedCatalogDevice {
+            parent,
+            class,
+            type_id,
+            ..
+        } => {
+            *class == hex_engine::NativeDeviceClass::Effect
+                && hex_engine::native_effect_admitted_for_nested_parent(project, *parent, *type_id)
+                    .is_ok()
         }
         Request::InsertBrowserInstrumentTrack { class, type_id, .. } => {
             registered(*class, *type_id)
@@ -412,6 +427,7 @@ impl EditorView {
             for request in &mut self.device_panel.gesture_barriers {
                 match request {
                     Request::InsertEffectBusDevice { revision, .. }
+                    | Request::InsertNestedCatalogDevice { revision, .. }
                     | Request::LoadTrackCatalogDevice { revision, .. }
                     | Request::InsertBrowserInstrumentTrack { revision, .. }
                     | Request::DropBrowserDeviceOnArrangement { revision, .. }

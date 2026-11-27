@@ -250,6 +250,33 @@ pub fn device_frame_with_panels(
         Some(body.into_any_element()),
         macro_panel,
         modulator_panel,
+        None,
+    )
+}
+
+/// Shared housing with independent horizontal macro/modulator slot panels and
+/// an optional right-end nested-device widget (`sidebar → macros → modulators →
+/// device controls → nested-device widget`).
+#[allow(clippy::too_many_arguments)]
+pub fn device_frame_with_host_panels(
+    title: impl IntoElement,
+    style: impl Into<DeviceFrameStyle>,
+    leading_control: impl IntoElement,
+    header_actions: impl IntoElement,
+    body: impl IntoElement,
+    macro_panel: Option<AnyElement>,
+    modulator_panel: Option<AnyElement>,
+    nested_slot: Option<AnyElement>,
+) -> Div {
+    device_frame_inner(
+        title,
+        style.into(),
+        leading_control,
+        header_actions,
+        Some(body.into_any_element()),
+        macro_panel,
+        modulator_panel,
+        nested_slot,
     )
 }
 
@@ -268,9 +295,11 @@ pub fn device_frame_header_only(
         None,
         None,
         None,
+        None,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn device_frame_inner(
     title: impl IntoElement,
     style: DeviceFrameStyle,
@@ -279,6 +308,7 @@ fn device_frame_inner(
     body: Option<AnyElement>,
     macro_panel: Option<AnyElement>,
     modulator_panel: Option<AnyElement>,
+    nested_slot: Option<AnyElement>,
 ) -> Div {
     let radius = DEVICE_CORNER_RADIUS;
     div()
@@ -296,6 +326,7 @@ fn device_frame_inner(
             body,
             macro_panel,
             modulator_panel,
+            nested_slot,
             title: title.into_any_element(),
             leading: leading_control.into_any_element(),
             actions: header_actions.into_any_element(),

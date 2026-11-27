@@ -455,13 +455,20 @@ pub(super) fn render_return_effect(
         ),
     );
     let card_width = device_card_width(view, NativeDeviceClass::Effect, device);
+    let nest_depth = view
+        .state
+        .as_ref()
+        .map_or(0, |state| nested::depth(&state.project, id));
+    let marker = nested::membership_marker(device, nest_depth);
     let rendered = rendered
         .h_full()
         .debug_selector(move || format!("device-shell-{}", id.value()));
     let rendered = div()
+        .relative()
         .min_w(px(card_width - super::device_meter::WIDTH))
         .flex_shrink_0()
-        .child(rendered);
+        .child(rendered)
+        .children(marker);
     div()
         .id(ElementId::Name(
             format!("effect-device-{}", id.value()).into(),

@@ -73,6 +73,8 @@ pub(in crate::editor) struct DevicePanelState {
     pub(in crate::editor) selected_device: Option<DeviceId>,
     pub(super) selected_others: HashSet<DeviceId>,
     pub(super) collapsed: HashSet<DeviceId>,
+    /// Pure UI-only collapse of a parent device's nested child chain; never alters audio.
+    pub(super) collapsed_children: HashSet<DeviceId>,
     pub(super) selection_anchor: Option<DeviceId>,
     /// View-only chain gap chosen for paste; exclusive with device selection.
     pub(super) insertion: Option<InsertionPoint>,
@@ -756,6 +758,7 @@ pub(in crate::editor) fn clear_owner_state(
             let _ = audio.control.audition_cancel();
         }
         view.device_panel.collapsed.clear();
+        view.device_panel.collapsed_children.clear();
         view.device_panel.generation = view.project_generation;
     } else {
         view.device_panel.message = None;

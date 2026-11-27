@@ -14,6 +14,8 @@ use gpui::{
 
 /// Canonical height of a shared device host in pixels (`device-host-brief.md`).
 pub const DEVICE_HOST_PANEL_HEIGHT: f32 = 200.0;
+/// Canonical width of the optional right-end nested-device widget strip inside a device frame.
+pub const DEVICE_NESTED_SLOT_WIDTH: f32 = 16.0;
 const HOST_PANEL_PADDING: f32 = 4.0;
 const HOST_PANEL_GAP: f32 = 3.0;
 const HOST_PANEL_HEADER_HEIGHT: f32 = 16.0;
@@ -526,6 +528,7 @@ pub(super) struct Housing {
     pub body: Option<AnyElement>,
     pub macro_panel: Option<AnyElement>,
     pub modulator_panel: Option<AnyElement>,
+    pub nested_slot: Option<AnyElement>,
     pub title: AnyElement,
     pub leading: AnyElement,
     pub actions: AnyElement,
@@ -689,7 +692,7 @@ impl RenderOnce for Housing {
                     .child(panel),
             );
         }
-        row.child(
+        let mut row = row.child(
             div()
                 .id("device-housing-content")
                 .flex()
@@ -708,7 +711,24 @@ impl RenderOnce for Housing {
                         .min_h_full()
                         .child(body),
                 ),
-        )
+        );
+        if let Some(nested_slot) = self.nested_slot {
+            row = row.child(
+                div()
+                    .debug_selector(|| "device-nested-slot".into())
+                    .w(px(DEVICE_NESTED_SLOT_WIDTH))
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .flex_shrink_0()
+                    .border_l_1()
+                    .border_color(rgb(style.border))
+                    .bg(rgb(style.rail))
+                    .overflow_hidden()
+                    .child(nested_slot),
+            );
+        }
+        row
     }
 }
 
