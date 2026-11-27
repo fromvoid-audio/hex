@@ -102,7 +102,7 @@ impl OutputLifecycle {
     }
 
     pub(super) fn request_open(&mut self, rate: Option<u32>, request: Option<u64>) {
-        self.initial_open_started = None;
+        self.initial_open_started = Some(Instant::now());
         self.opening = None;
         self.open_pending = true;
         self.requested_rate = rate;
@@ -203,6 +203,16 @@ mod tests {
         let mut lifecycle = OutputLifecycle::new();
         assert!(!lifecycle.startup_timed_out(Duration::ZERO));
         lifecycle.initial_open_started = Some(Instant::now());
+        assert!(lifecycle.startup_timed_out(Duration::ZERO));
+        assert!(!lifecycle.startup_timed_out(Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn restart_open_arms_bounded_open_deadline() {
+        let mut lifecycle = OutputLifecycle::new();
+        lifecycle.request_open(Some(44_100), Some(1));
+        assert!(lifecycle.open_pending);
+        assert!(lifecycle.initial_open_started.is_some());
         assert!(lifecycle.startup_timed_out(Duration::ZERO));
         assert!(!lifecycle.startup_timed_out(Duration::from_secs(60)));
     }
