@@ -40,12 +40,13 @@ mod tests;
 
 use crate::{
     DevicePreparationContext, DeviceResourceView, DeviceResources, INSTRUMENT_RACK_TYPE_ID,
-    InstrumentHistoryRetargetPreparation, MAX_MAIN_PASS_DELAY_FRAMES, MutableInstrumentRuntime,
-    NativeInstrumentClock, NativeInstrumentDefinition, NativeInstrumentEvent,
-    NativeInstrumentOccurrenceGain, NativeInstrumentRegistry, NativeInstrumentRuntimeError,
-    NativeInstrumentRuntimeLimits, OffsetClock, PreparedAnalyticNote,
-    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime, PreparedNativeInstrument,
-    StereoFrame,
+    InstrumentHistoryRetargetPreparation, MAX_MAIN_PASS_DELAY_FRAMES, MAX_NATIVE_OUTPUT_PORTS,
+    MultiOutputInstrumentRuntime, MutableInstrumentRuntime, NativeInstrumentClock,
+    NativeInstrumentDefinition, NativeInstrumentEvent, NativeInstrumentOccurrenceGain,
+    NativeInstrumentRegistry, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
+    NativeOutputChannelLayout, NativeOutputPortDescriptor, NativeOutputPortId, OffsetClock,
+    PreparedAnalyticNote, PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
+    PreparedNativeInstrument, StereoFrame,
 };
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceContractError, DeviceTypeId,
@@ -61,9 +62,11 @@ use std::{
 
 /// Reserved native instrument type ID for a bounded Drum Rack.
 pub const DRUM_RACK_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.rack.drum");
-/// Current v1 wire format for bounded Drum Rack state (`HXDR`).
-pub const DRUM_RACK_STATE_VERSION: u32 = 1;
-pub const DRUM_RACK_RUNTIME_VERSION: u32 = 1;
+/// Prior v1 wire format (single main output per pad) migrated cleanly to v2.
+pub const DRUM_RACK_STATE_VERSION_V1: u32 = 1;
+/// Current v2 wire format adding explicit per-pad native output port (`HXDR`).
+pub const DRUM_RACK_STATE_VERSION: u32 = 2;
+pub const DRUM_RACK_RUNTIME_VERSION: u32 = 2;
 pub const DRUM_RACK_MAX_PADS: usize = 16;
 pub const DRUM_RACK_MAX_CHOKE_GROUPS: u8 = 16;
 pub const DRUM_RACK_MAX_PAD_NAME_BYTES: usize = 48;
@@ -99,6 +102,8 @@ pub struct DrumRackPadSpec {
     pub choke_group: Option<NonZeroU8>,
     pub gain: f32,
     pub muted: bool,
+    /// Explicit native output port (`MAIN_STEREO` or `AUX_STEREO`).
+    pub output_port: NativeOutputPortId,
     /// `None` represents an empty or cleared pad slot.
     pub state: Option<NativeDeviceState>,
 }
@@ -137,6 +142,11 @@ impl DrumRackSpec {
                 return Err(DeviceContractError::InvalidParameterValue);
             }
             if !pad.gain.is_finite() || !(0.0..=DRUM_RACK_MAX_PAD_GAIN).contains(&pad.gain) {
+                return Err(DeviceContractError::InvalidParameterValue);
+            }
+            if pad.output_port != NativeOutputPortId::MAIN_STEREO
+                && pad.output_port != NativeOutputPortId::AUX_STEREO
+            {
                 return Err(DeviceContractError::InvalidParameterValue);
             }
             if seen_pads[..index].contains(&pad.pad_id.get())
@@ -234,6 +244,21 @@ impl DrumRackSpec {
         Ok(())
     }
 
+    pub fn set_pad_output_port(
+        &mut self,
+        pad_id: NonZeroU64,
+        output_port: NativeOutputPortId,
+    ) -> Result<(), DeviceContractError> {
+        let mut candidate = self.clone();
+        let Some(pad) = candidate.pads.iter_mut().find(|p| p.pad_id == pad_id) else {
+            return Err(DeviceContractError::InvalidId);
+        };
+        pad.output_port = output_port;
+        candidate.validate()?;
+        *self = candidate;
+        Ok(())
+    }
+
     pub fn remove_pad(&mut self, pad_id: NonZeroU64) -> Result<(), DeviceContractError> {
         let Some(index) = self.pads.iter().position(|p| p.pad_id == pad_id) else {
             return Err(DeviceContractError::InvalidId);
@@ -276,9 +301,26 @@ impl DrumRackSpec {
         })
     }
 
-    /// Encode this validated Drum Rack into a current v1 `NativeDeviceState`,
+    /// Encode this validated Drum Rack into a current v2 `NativeDeviceState`,
     /// aggregating child asset references onto the outer state envelope.
     pub fn encode_state(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        self.encode_state_version(DRUM_RACK_STATE_VERSION)
+    }
+
+    /// Encode this validated Drum Rack into the prior v1 wire format (only when
+    /// every pad targets `MAIN_STEREO`), used for historical migration tests.
+    pub fn encode_state_v1(&self) -> Result<NativeDeviceState, DeviceContractError> {
+        if self
+            .pads
+            .iter()
+            .any(|pad| pad.output_port != NativeOutputPortId::MAIN_STEREO)
+        {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        self.encode_state_version(DRUM_RACK_STATE_VERSION_V1)
+    }
+
+    fn encode_state_version(&self, version: u32) -> Result<NativeDeviceState, DeviceContractError> {
         self.validate()?;
         let bindings = self.compute_asset_bindings()?;
         let mut bytes = Vec::with_capacity(128);
@@ -302,6 +344,9 @@ impl DrumRackSpec {
             bytes.push(pad.choke_group.map_or(0, NonZeroU8::get));
             bytes.extend_from_slice(&pad.gain.to_le_bytes());
             bytes.push(u8::from(pad.muted));
+            if version >= DRUM_RACK_STATE_VERSION {
+                bytes.extend_from_slice(&pad.output_port.get().to_le_bytes());
+            }
 
             match &pad.state {
                 None => bytes.push(0),
@@ -337,18 +382,34 @@ impl DrumRackSpec {
         if bytes.len() > MAX_NATIVE_DEVICE_STATE_BYTES {
             return Err(DeviceContractError::StateTooLarge);
         }
-        let state = NativeDeviceState::new(DRUM_RACK_TYPE_ID, DRUM_RACK_STATE_VERSION, bytes)?;
+        let state = NativeDeviceState::new(DRUM_RACK_TYPE_ID, version, bytes)?;
         state.with_asset_references(bindings.outer_refs)
     }
 
-    /// Decode and strictly validate a Drum Rack `NativeDeviceState`.
+    /// Strictly decode and validate a current v2 Drum Rack `NativeDeviceState`.
+    pub fn decode_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
+        Self::decode_state_raw(state, false)
+    }
+
+    /// Decode and migrate a supported v1 or v2 Drum Rack `NativeDeviceState`
+    /// into the current canonical `DrumRackSpec`.
     pub fn decode_and_migrate_state(
         state: &NativeDeviceState,
+    ) -> Result<Self, DeviceContractError> {
+        Self::decode_state_raw(state, true)
+    }
+
+    fn decode_state_raw(
+        state: &NativeDeviceState,
+        allow_v1: bool,
     ) -> Result<Self, DeviceContractError> {
         if state.type_id() != DRUM_RACK_TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
         }
-        if state.state_version() != DRUM_RACK_STATE_VERSION {
+        let version = state.state_version();
+        let valid_version = version == DRUM_RACK_STATE_VERSION
+            || (allow_v1 && version == DRUM_RACK_STATE_VERSION_V1);
+        if !valid_version {
             return Err(DeviceContractError::UnsupportedStateVersion);
         }
         let bytes = state.payload();
@@ -388,6 +449,14 @@ impl DrumRackSpec {
                 0 => false,
                 1 => true,
                 _ => return Err(DeviceContractError::MalformedState),
+            };
+            let output_port = if version >= DRUM_RACK_STATE_VERSION {
+                let raw_port = read_u32(bytes, &mut cursor)?;
+                let nz = std::num::NonZeroU32::new(raw_port)
+                    .ok_or(DeviceContractError::InvalidParameterValue)?;
+                NativeOutputPortId::new(nz)
+            } else {
+                NativeOutputPortId::MAIN_STEREO
             };
             let child_state = match read_u8(bytes, &mut cursor)? {
                 0 => None,
@@ -433,6 +502,7 @@ impl DrumRackSpec {
                 choke_group,
                 gain: pad_gain,
                 muted,
+                output_port,
                 state: child_state,
             });
         }
@@ -535,12 +605,37 @@ impl<'a> DrumRackDefinition<'a> {
         Ok(Self { children })
     }
 
+    /// Prepare a control-side multi-output Drum Rack factory whose pads are
+    /// latency-aligned per native output port (`MAIN_STEREO`, and `AUX_STEREO`
+    /// only when at least one active pad routes to it).
+    pub fn prepare_multi_output_runtime(
+        &self,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+        limits: Option<NativeInstrumentRuntimeLimits>,
+    ) -> Result<PreparedDrumRackMultiOutput, DeviceContractError> {
+        let prepared = self.prepare_rack_inner(state, context, limits, true)?;
+        Ok(PreparedDrumRackMultiOutput { inner: prepared })
+    }
+
     fn prepare_rack(
         &self,
         state: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
         limits: Option<NativeInstrumentRuntimeLimits>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        Ok(Box::new(
+            self.prepare_rack_inner(state, context, limits, false)?,
+        ))
+    }
+
+    fn prepare_rack_inner(
+        &self,
+        state: &NativeDeviceState,
+        context: &DevicePreparationContext<'_>,
+        limits: Option<NativeInstrumentRuntimeLimits>,
+        align_per_port: bool,
+    ) -> Result<PreparedDrumRack, DeviceContractError> {
         context.validate_for(state)?;
         let spec = DrumRackSpec::decode_and_migrate_state(state)?;
         let bindings = spec.compute_asset_bindings()?;
@@ -590,24 +685,77 @@ impl<'a> DrumRackDefinition<'a> {
                 play_note: pad.play_note,
                 choke_group: pad.choke_group,
                 gain: pad.gain,
+                output_port: pad.output_port,
                 compensation_delay_frames: 0,
                 asset_slot_map: slot_map,
                 factory,
             });
         }
 
-        let rack_latency_frames = pad_latencies.iter().copied().max().unwrap_or(0);
+        let has_aux_port = prepared_pads
+            .iter()
+            .any(|pad| pad.output_port == NativeOutputPortId::AUX_STEREO);
+        let main_port_latency = prepared_pads
+            .iter()
+            .zip(&pad_latencies)
+            .filter(|(pad, _)| pad.output_port == NativeOutputPortId::MAIN_STEREO)
+            .map(|(_, &lat)| lat)
+            .max()
+            .unwrap_or(0);
+        let aux_port_latency = prepared_pads
+            .iter()
+            .zip(&pad_latencies)
+            .filter(|(pad, _)| pad.output_port == NativeOutputPortId::AUX_STEREO)
+            .map(|(_, &lat)| lat)
+            .max()
+            .unwrap_or(0);
+        let rack_latency_frames = main_port_latency.max(aux_port_latency);
         if rack_latency_frames > DRUM_RACK_MAX_COMPENSATION_DELAY_FRAMES {
             return Err(DeviceContractError::RuntimeBudgetExceeded);
         }
 
         for (pad, latency) in prepared_pads.iter_mut().zip(&pad_latencies) {
-            let comp = rack_latency_frames.saturating_sub(*latency);
+            let target_latency = if align_per_port {
+                if pad.output_port == NativeOutputPortId::AUX_STEREO {
+                    aux_port_latency
+                } else {
+                    main_port_latency
+                }
+            } else {
+                rack_latency_frames
+            };
+            let comp = target_latency.saturating_sub(*latency);
             if comp > DRUM_RACK_MAX_COMPENSATION_DELAY_FRAMES {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
             }
             pad.compensation_delay_frames = comp;
         }
+
+        let port_count = if has_aux_port { 2 } else { 1 };
+        let reported_main_latency = if align_per_port {
+            main_port_latency
+        } else {
+            rack_latency_frames
+        };
+        let reported_aux_latency = if align_per_port {
+            aux_port_latency
+        } else {
+            rack_latency_frames
+        };
+        let port_descriptors = [
+            NativeOutputPortDescriptor {
+                id: NativeOutputPortId::MAIN_STEREO,
+                label: "main",
+                layout: NativeOutputChannelLayout::Stereo,
+                algorithmic_latency_frames: reported_main_latency,
+            },
+            NativeOutputPortDescriptor {
+                id: NativeOutputPortId::AUX_STEREO,
+                label: "aux",
+                layout: NativeOutputChannelLayout::Stereo,
+                algorithmic_latency_frames: reported_aux_latency,
+            },
+        ];
 
         let mut max_events = DRUM_RACK_MAX_EVENTS_PER_BLOCK;
         let mut max_active = DRUM_RACK_MAX_ACTIVE_OCCURRENCES;
@@ -687,11 +835,13 @@ impl<'a> DrumRackDefinition<'a> {
             }
         }
 
-        Ok(Box::new(PreparedDrumRack {
+        Ok(PreparedDrumRack {
             rack_id: spec.rack_id,
             gain: spec.gain,
             sample_rate: context.sample_rate,
             rack_latency_frames,
+            port_descriptors,
+            port_count,
             max_events_per_block: max_events,
             max_active_occurrences: max_active,
             max_release_tail_frames: max_tail,
@@ -700,7 +850,7 @@ impl<'a> DrumRackDefinition<'a> {
             supports_active_occurrence_ids: supports_active_ids,
             steals_releasing_voices: steals_releasing,
             pads: Arc::new(prepared_pads),
-        }))
+        })
     }
 }
 
@@ -812,9 +962,31 @@ struct PreparedPadFactory {
     play_note: u8,
     choke_group: Option<NonZeroU8>,
     gain: f32,
+    output_port: NativeOutputPortId,
     compensation_delay_frames: u32,
     asset_slot_map: Vec<(DeviceAssetSlot, DeviceAssetSlot)>,
     factory: Box<dyn PreparedMutableInstrumentRuntime>,
+}
+
+/// Control-prepared multi-output Drum Rack factory exposing exact non-decorative
+/// native output port descriptors (`MAIN_STEREO`, plus `AUX_STEREO` when used)
+/// and creating a zero-allocation `DrumRackRuntime`.
+pub struct PreparedDrumRackMultiOutput {
+    inner: PreparedDrumRack,
+}
+
+impl PreparedDrumRackMultiOutput {
+    pub fn output_port_descriptors(&self) -> &[NativeOutputPortDescriptor] {
+        &self.inner.port_descriptors[..self.inner.port_count]
+    }
+
+    pub const fn declared_twin_bytes(&self) -> usize {
+        self.inner.declared_twin_bytes
+    }
+
+    pub fn create_runtime(&self) -> DrumRackRuntime {
+        self.inner.create_runtime_inner()
+    }
 }
 
 struct PreparedDrumRack {
@@ -822,6 +994,8 @@ struct PreparedDrumRack {
     gain: f32,
     sample_rate: u32,
     rack_latency_frames: u32,
+    port_descriptors: [NativeOutputPortDescriptor; MAX_NATIVE_OUTPUT_PORTS],
+    port_count: usize,
     max_events_per_block: usize,
     max_active_occurrences: usize,
     max_release_tail_frames: u64,
@@ -830,6 +1004,78 @@ struct PreparedDrumRack {
     supports_active_occurrence_ids: bool,
     steals_releasing_voices: bool,
     pads: Arc<Vec<PreparedPadFactory>>,
+}
+
+impl PreparedDrumRack {
+    fn create_runtime_inner(&self) -> DrumRackRuntime {
+        let mut pads = Vec::with_capacity(self.pads.len());
+        let mut note_to_pad = [None; 128];
+
+        for (index, prepared) in self.pads.iter().enumerate() {
+            let delay = if prepared.compensation_delay_frames > 0 {
+                Some(DrumCompensationDelay::new_on_control(
+                    prepared.compensation_delay_frames as usize,
+                ))
+            } else {
+                None
+            };
+            let mut asset_slot_map = Vec::with_capacity(prepared.asset_slot_map.len());
+            asset_slot_map.extend_from_slice(&prepared.asset_slot_map);
+            let event_scratch = vec![
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                };
+                self.max_events_per_block
+            ];
+            let port_index = if prepared.output_port == NativeOutputPortId::AUX_STEREO {
+                1
+            } else {
+                0
+            };
+            note_to_pad[usize::from(prepared.receive_note)] = Some(index as u8);
+            pads.push(PadRuntime {
+                pad_id: prepared.pad_id,
+                device_id: prepared.device_id,
+                receive_note: prepared.receive_note,
+                play_note: prepared.play_note,
+                choke_group: prepared.choke_group,
+                gain: prepared.gain,
+                output_port: prepared.output_port,
+                port_index,
+                compensation_delay_frames: prepared.compensation_delay_frames,
+                asset_slot_map,
+                runtime: prepared.factory.create_runtime(),
+                delay,
+                event_scratch,
+                event_len: 0,
+            });
+        }
+
+        let chunk_events = vec![
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 1,
+            };
+            self.max_events_per_block
+        ];
+
+        DrumRackRuntime {
+            rack_id: self.rack_id,
+            gain: self.gain,
+            sample_rate: self.sample_rate,
+            port_descriptors: self.port_descriptors,
+            port_count: self.port_count,
+            max_events_per_block: self.max_events_per_block,
+            supports_occurrence_gain: self.supports_occurrence_gain,
+            supports_active_occurrence_ids: self.supports_active_occurrence_ids,
+            pads,
+            note_to_pad,
+            routed: [None; DRUM_RACK_MAX_ACTIVE_OCCURRENCES],
+            chunk_events,
+            pad_scratch: [[0.0; 2]; DRUM_RACK_CHUNK_FRAMES],
+        }
+    }
 }
 
 impl PreparedNativeInstrument for PreparedDrumRack {
@@ -853,6 +1099,8 @@ impl PreparedNativeInstrument for PreparedDrumRack {
             gain: self.gain,
             sample_rate: self.sample_rate,
             rack_latency_frames: self.rack_latency_frames,
+            port_descriptors: self.port_descriptors,
+            port_count: self.port_count,
             max_events_per_block: self.max_events_per_block,
             max_active_occurrences: self.max_active_occurrences,
             max_release_tail_frames: self.max_release_tail_frames,
@@ -870,6 +1118,8 @@ struct PreparedDrumRackRuntime {
     gain: f32,
     sample_rate: u32,
     rack_latency_frames: u32,
+    port_descriptors: [NativeOutputPortDescriptor; MAX_NATIVE_OUTPUT_PORTS],
+    port_count: usize,
     max_events_per_block: usize,
     max_active_occurrences: usize,
     max_release_tail_frames: u64,
@@ -937,64 +1187,23 @@ impl PreparedMutableInstrumentRuntime for PreparedDrumRackRuntime {
     }
 
     fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
-        let mut pads = Vec::with_capacity(self.pads.len());
-        let mut note_to_pad = [None; 128];
-
-        for (index, prepared) in self.pads.iter().enumerate() {
-            let delay = if prepared.compensation_delay_frames > 0 {
-                Some(DrumCompensationDelay::new_on_control(
-                    prepared.compensation_delay_frames as usize,
-                ))
-            } else {
-                None
-            };
-            let mut asset_slot_map = Vec::with_capacity(prepared.asset_slot_map.len());
-            asset_slot_map.extend_from_slice(&prepared.asset_slot_map);
-            let event_scratch = vec![
-                NativeInstrumentEvent::NoteOff {
-                    frame_offset: 0,
-                    occurrence_id: 1,
-                };
-                self.max_events_per_block
-            ];
-            note_to_pad[usize::from(prepared.receive_note)] = Some(index as u8);
-            pads.push(PadRuntime {
-                pad_id: prepared.pad_id,
-                device_id: prepared.device_id,
-                receive_note: prepared.receive_note,
-                play_note: prepared.play_note,
-                choke_group: prepared.choke_group,
-                gain: prepared.gain,
-                compensation_delay_frames: prepared.compensation_delay_frames,
-                asset_slot_map,
-                runtime: prepared.factory.create_runtime(),
-                delay,
-                event_scratch,
-                event_len: 0,
-            });
-        }
-
-        let chunk_events = vec![
-            NativeInstrumentEvent::NoteOff {
-                frame_offset: 0,
-                occurrence_id: 1,
-            };
-            self.max_events_per_block
-        ];
-
-        Box::new(DrumRackRuntime {
+        let prepared = PreparedDrumRack {
             rack_id: self.rack_id,
             gain: self.gain,
             sample_rate: self.sample_rate,
+            rack_latency_frames: self.rack_latency_frames,
+            port_descriptors: self.port_descriptors,
+            port_count: self.port_count,
             max_events_per_block: self.max_events_per_block,
+            max_active_occurrences: self.max_active_occurrences,
+            max_release_tail_frames: self.max_release_tail_frames,
+            declared_twin_bytes: self.declared_twin_bytes,
             supports_occurrence_gain: self.supports_occurrence_gain,
             supports_active_occurrence_ids: self.supports_active_occurrence_ids,
-            pads,
-            note_to_pad,
-            routed: [None; DRUM_RACK_MAX_ACTIVE_OCCURRENCES],
-            chunk_events,
-            pad_scratch: [[0.0; 2]; DRUM_RACK_CHUNK_FRAMES],
-        })
+            steals_releasing_voices: self.steals_releasing_voices,
+            pads: Arc::clone(&self.pads),
+        };
+        Box::new(prepared.create_runtime_inner())
     }
 
     fn as_any(&self) -> &dyn Any {
@@ -1076,6 +1285,8 @@ struct PadRuntime {
     play_note: u8,
     choke_group: Option<NonZeroU8>,
     gain: f32,
+    output_port: NativeOutputPortId,
+    port_index: usize,
     compensation_delay_frames: u32,
     asset_slot_map: Vec<(DeviceAssetSlot, DeviceAssetSlot)>,
     runtime: Box<dyn MutableInstrumentRuntime>,
@@ -1084,10 +1295,15 @@ struct PadRuntime {
     event_len: usize,
 }
 
-struct DrumRackRuntime {
+/// Real-time Drum Rack runtime implementing both `MutableInstrumentRuntime`
+/// (single stereo sum) and `MultiOutputInstrumentRuntime` (distinct `MAIN_STEREO`
+/// and optional `AUX_STEREO` pad outputs without silent duplication).
+pub struct DrumRackRuntime {
     rack_id: NonZeroU64,
     gain: f32,
     sample_rate: u32,
+    port_descriptors: [NativeOutputPortDescriptor; MAX_NATIVE_OUTPUT_PORTS],
+    port_count: usize,
     max_events_per_block: usize,
     supports_occurrence_gain: bool,
     supports_active_occurrence_ids: bool,
@@ -1638,6 +1854,7 @@ impl MutableInstrumentRuntime for DrumRackRuntime {
                 && a.play_note == b.play_note
                 && a.choke_group == b.choke_group
                 && a.gain.to_bits() == b.gain.to_bits()
+                && a.output_port == b.output_port
                 && a.compensation_delay_frames == b.compensation_delay_frames
                 && a.asset_slot_map == b.asset_slot_map
                 && a.runtime.can_copy_history_from(b.runtime.as_ref())
@@ -1693,6 +1910,7 @@ impl MutableInstrumentRuntime for DrumRackRuntime {
                 Some(dst) => {
                     if !src_quiescent
                         && (dst.device_id != src.device_id
+                            || dst.output_port != src.output_port
                             || dst.compensation_delay_frames != src.compensation_delay_frames
                             || dst.asset_slot_map != src.asset_slot_map
                             || !dst.runtime.can_copy_history_from(src.runtime.as_ref()))
@@ -1898,5 +2116,122 @@ impl DrumRackRuntime {
                 }
             }
         }
+    }
+}
+
+impl MultiOutputInstrumentRuntime for DrumRackRuntime {
+    fn output_port_descriptors(&self) -> &[NativeOutputPortDescriptor] {
+        &self.port_descriptors[..self.port_count]
+    }
+
+    fn preflight_events(
+        &self,
+        events: &[NativeInstrumentEvent],
+        frame_count: usize,
+        resources: &dyn DeviceResources,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        MutableInstrumentRuntime::preflight_events(self, events, frame_count, resources)
+    }
+
+    fn process_block_multi_output(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        outputs: &mut [&mut [StereoFrame]],
+        clock: Option<&dyn NativeInstrumentClock>,
+        resources: &dyn DeviceResources,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if outputs.len() != self.port_count {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
+        let total_frames = outputs[0].len();
+        if outputs.iter().any(|buf| buf.len() != total_frames) {
+            return Err(NativeInstrumentRuntimeError::InvalidEventBatch);
+        }
+        for out in outputs.iter_mut() {
+            out.fill([0.0; 2]);
+        }
+        if total_frames == 0 || self.pads.is_empty() {
+            return Ok(());
+        }
+
+        let mut event_cursor = 0_usize;
+        let mut chunk_start = 0_usize;
+        while chunk_start < total_frames {
+            let chunk_len = (total_frames - chunk_start).min(DRUM_RACK_CHUNK_FRAMES);
+            let chunk_end = chunk_start + chunk_len;
+
+            let mut chunk_event_len = 0_usize;
+            while event_cursor < events.len() && events[event_cursor].frame_offset() < chunk_end {
+                if chunk_event_len < self.chunk_events.len() {
+                    let local_offset = events[event_cursor]
+                        .frame_offset()
+                        .saturating_sub(chunk_start);
+                    self.chunk_events[chunk_event_len] =
+                        shift_event_offset(events[event_cursor], local_offset);
+                    chunk_event_len += 1;
+                }
+                event_cursor += 1;
+            }
+
+            for pad in &mut self.pads {
+                pad.event_len = 0;
+            }
+            for idx in 0..chunk_event_len {
+                let ev = self.chunk_events[idx];
+                self.route_single_event(ev);
+            }
+
+            let offset_clock = clock.map(|base| OffsetClock {
+                clock: base,
+                offset: chunk_start,
+            });
+            let chunk_clock_ref: Option<&dyn NativeInstrumentClock> = offset_clock
+                .as_ref()
+                .map(|c| c as &dyn NativeInstrumentClock);
+            let rack_gain = self.gain;
+
+            for pad in &mut self.pads {
+                let scratch = &mut self.pad_scratch[..chunk_len];
+                scratch.fill([0.0; 2]);
+                let pad_resources = PadDeviceResources {
+                    parent: resources,
+                    mappings: &pad.asset_slot_map,
+                };
+                pad.runtime.process_block_with_clock_and_occurrence_gains(
+                    &pad.event_scratch[..pad.event_len],
+                    scratch,
+                    chunk_clock_ref,
+                    &[],
+                    &pad_resources,
+                );
+                if let Some(delay) = &mut pad.delay {
+                    delay.process(scratch);
+                }
+                let combined_gain = pad.gain * rack_gain;
+                if let Some(port_out) = outputs.get_mut(pad.port_index) {
+                    let out_slice = &mut port_out[chunk_start..chunk_end];
+                    for (dst, &src) in out_slice.iter_mut().zip(scratch.iter()) {
+                        dst[0] += src[0] * combined_gain;
+                        dst[1] += src[1] * combined_gain;
+                    }
+                }
+            }
+
+            self.prune_finished_routed();
+            chunk_start = chunk_end;
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        MutableInstrumentRuntime::reset(self);
+    }
+
+    fn is_quiescent(&self) -> bool {
+        MutableInstrumentRuntime::is_quiescent(self)
+    }
+
+    fn fixed_storage_bytes(&self) -> usize {
+        MutableInstrumentRuntime::fixed_storage_bytes(self)
     }
 }

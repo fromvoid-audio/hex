@@ -112,6 +112,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_allocates_nothing_on_callback() {
                 choke_group: NonZeroU8::new(1),
                 gain: 0.75,
                 muted: false,
+                output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                 state: Some(sampler_state),
             },
             DrumRackPadSpec {
@@ -123,6 +124,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_allocates_nothing_on_callback() {
                 choke_group: NonZeroU8::new(1),
                 gain: 0.5,
                 muted: false,
+                output_port: hex_lattice::NativeOutputPortId::MAIN_STEREO,
                 state: Some(sub),
             },
         ],
@@ -324,5 +326,345 @@ fn two_pad_sampler_and_subtractive_drum_rack_allocates_nothing_on_callback() {
     // Drop retired playback & leased resources off callback on control.
     drop(pb_a);
     drop(pb_b);
+    drop(store);
+}
+
+#[test]
+fn two_pad_multi_output_drum_rack_sampler_and_subtractive_allocates_nothing_on_callback() {
+    use hex_lattice::{
+        DevicePreparationContext, MultiOutputDestinationBuffer, MultiOutputInstrumentRuntime,
+        NativeInstrumentEvent, NativeMultiOutputLimits, NativeMultiOutputPlan,
+        NativeMultiOutputRoute, NativeMultiOutputTopology, NativeOutputDestination,
+        NativeOutputDestinationInfo, NativeOutputPortId, PreparedMultiOutputRouter, TuningTable,
+    };
+
+    let sub_base = default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::subtractive::SUBTRACTIVE_TYPE_ID,
+    )
+    .unwrap();
+    let sub = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &sub_base,
+        hex_devices::subtractive::parameter::RELEASE,
+        ParameterValue::Float(0.002),
+    )
+    .unwrap();
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Asset(asset) = editor
+        .execute(Command::ImportDeviceAsset {
+            path: "kick-mo.wav".into(),
+            sample_rate: RATE,
+            frames: 8,
+        })
+        .unwrap()
+    else {
+        panic!("asset");
+    };
+    let mut sampler = hex_devices::sampler::state::SamplerState::for_source_frames(8).unwrap();
+    sampler.mode = hex_devices::sampler::state::AuthoredMode::Classic {
+        loop_enabled: true,
+        loop_region: sampler.region,
+    };
+    sampler.envelope = hex_devices::sampler::Envelope {
+        attack_seconds: 0.0,
+        decay_seconds: 0.0,
+        sustain: 1.0,
+        release_seconds: 0.0,
+    };
+    let sampler_state = sampler
+        .to_native()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+        }])
+        .unwrap();
+
+    let spec = DrumRackSpec {
+        rack_id: id(40),
+        gain: 1.0,
+        pads: vec![
+            DrumRackPadSpec {
+                pad_id: id(1),
+                device_id: id(401),
+                name: "kick-main".into(),
+                receive_note: 36,
+                play_note: 60,
+                choke_group: NonZeroU8::new(1),
+                gain: 0.8,
+                muted: false,
+                output_port: NativeOutputPortId::MAIN_STEREO,
+                state: Some(sampler_state),
+            },
+            DrumRackPadSpec {
+                pad_id: id(2),
+                device_id: id(402),
+                name: "snare-aux".into(),
+                receive_note: 38,
+                play_note: 64,
+                choke_group: NonZeroU8::new(1),
+                gain: 0.6,
+                muted: false,
+                output_port: NativeOutputPortId::AUX_STEREO,
+                state: Some(sub),
+            },
+        ],
+    };
+    let encoded = spec.encode_state().unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "drum-mo-probe".into(),
+            devices: vec![encoded.clone()],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("source");
+    };
+    let Created::Track(track_a) = editor
+        .execute(Command::AddMidiTrack {
+            name: "receiver".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    if editor
+        .project()
+        .track(track_a)
+        .unwrap()
+        .instrument()
+        .is_some()
+    {
+        editor
+            .execute(Command::RemoveInstrument { track: track_a })
+            .unwrap();
+    }
+    editor
+        .execute(Command::BindTrackSource {
+            track: track_a,
+            source: Some(source),
+        })
+        .unwrap();
+
+    // Control-side preparation & lease admission outside callback measurement.
+    let cancel = AtomicBool::new(false);
+    let mut store = ResidentDeviceAssets::default();
+    store
+        .insert_on_control(
+            (
+                asset,
+                OwnedAudioSource::try_resident(RATE, KICK_PCM.to_vec())
+                    .ok()
+                    .unwrap(),
+            ),
+            0,
+            AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 64,
+                root_rows: 32,
+                max_retained_bytes: 20_000_000,
+                max_construction_peak_bytes: 20_000_000,
+            },
+            64,
+            &cancel,
+            || Ok::<_, ResourcePreparationError>(()),
+        )
+        .unwrap();
+    let builtin = hex_devices::native_instrument_registry().unwrap();
+    let drum_def = DrumRackDefinition::new(&builtin).unwrap();
+    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
+    defs.push(&drum_def);
+    let instruments = NativeInstrumentRegistry::new(&defs).unwrap();
+    let resources = PreparedDeviceResources::prepare_on_control_with_registry(
+        &store,
+        editor.project(),
+        &instruments,
+        20_000_000,
+        &cancel,
+    )
+    .unwrap();
+    let views = [hex_lattice::DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: hex_lattice::DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            content: [7_u8; 32],
+            derivation_version: 1,
+            derivation: [1_u8; 32],
+        },
+        sample_rate: RATE,
+        pcm: hex_lattice::DeviceResourcePcm::Stereo(&KICK_PCM),
+    }];
+    let borrowed_resources = hex_lattice::BorrowedDeviceResources(&views);
+    let tuning = TuningTable::default();
+    let ctx = DevicePreparationContext {
+        sample_rate: RATE,
+        tuning: &tuning,
+        resources: &borrowed_resources,
+    };
+
+    let prepared = drum_def
+        .prepare_multi_output_runtime(&encoded, &ctx, None)
+        .unwrap();
+    let ports = prepared.output_port_descriptors();
+    let mut runtime = prepared.create_runtime();
+
+    let source_nz = id(source.value());
+    let topology = NativeMultiOutputTopology {
+        source_host: NativeOutputDestination::Track(id(1)),
+        destinations: vec![
+            NativeOutputDestinationInfo {
+                destination: NativeOutputDestination::Track(id(2)),
+                latency_frames: 4,
+            },
+            NativeOutputDestinationInfo {
+                destination: NativeOutputDestination::Return(id(10)),
+                latency_frames: 0,
+            },
+        ],
+        edges: Vec::new(),
+    };
+    let plan = NativeMultiOutputPlan {
+        source_id: source_nz,
+        routes: vec![
+            NativeMultiOutputRoute {
+                route_id: id(1),
+                source_id: source_nz,
+                port_id: NativeOutputPortId::MAIN_STEREO,
+                destination: NativeOutputDestination::Track(id(2)),
+                gain: 0.9,
+                enabled: true,
+            },
+            NativeMultiOutputRoute {
+                route_id: id(2),
+                source_id: source_nz,
+                port_id: NativeOutputPortId::AUX_STEREO,
+                destination: NativeOutputDestination::Return(id(10)),
+                gain: 0.7,
+                enabled: true,
+            },
+        ],
+    };
+    let limits = NativeMultiOutputLimits {
+        max_block_frames: 256,
+        ..NativeMultiOutputLimits::default()
+    };
+    let mut router_a =
+        PreparedMultiOutputRouter::prepare_on_control(&plan, ports, &topology, limits).unwrap();
+    let mut router_b =
+        PreparedMultiOutputRouter::prepare_on_control(&plan, ports, &topology, limits).unwrap();
+
+    let mut port_main = vec![[0.0_f32; 2]; 256];
+    let mut port_aux = vec![[0.0_f32; 2]; 256];
+    let mut dest_track = vec![[0.0_f32; 2]; 256];
+    let mut dest_return = vec![[0.0_f32; 2]; 256];
+    let events_1 = [
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 36,
+            velocity: 115,
+        },
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 64,
+            occurrence_id: 2,
+            pitch: 38,
+            velocity: 100,
+        },
+    ];
+    let events_2 = [
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 32,
+            occurrence_id: 1,
+        },
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 64,
+            occurrence_id: 2,
+        },
+    ];
+
+    let info = measure(|| {
+        MultiOutputInstrumentRuntime::preflight_events(
+            &runtime,
+            &events_1,
+            256,
+            &borrowed_resources,
+        )
+        .unwrap();
+        runtime
+            .process_block_multi_output(
+                &events_1,
+                &mut [&mut port_main, &mut port_aux],
+                None,
+                &borrowed_resources,
+            )
+            .unwrap();
+        router_a.begin_block();
+        router_a
+            .route_ports(
+                &[&port_main, &port_aux],
+                &mut [
+                    MultiOutputDestinationBuffer {
+                        destination: NativeOutputDestination::Track(id(2)),
+                        frames: &mut dest_track,
+                    },
+                    MultiOutputDestinationBuffer {
+                        destination: NativeOutputDestination::Return(id(10)),
+                        frames: &mut dest_return,
+                    },
+                ],
+            )
+            .unwrap();
+        router_a.commit_block();
+
+        // Compatible route handoff + second block + Stop/reset on callback.
+        let inherited = router_b.inherit_compatible_routes_from(&router_a).unwrap();
+        assert_eq!(inherited, 2);
+        runtime
+            .process_block_multi_output(
+                &events_2,
+                &mut [&mut port_main, &mut port_aux],
+                None,
+                &borrowed_resources,
+            )
+            .unwrap();
+        router_b.begin_block();
+        router_b
+            .route_ports(
+                &[&port_main, &port_aux],
+                &mut [
+                    MultiOutputDestinationBuffer {
+                        destination: NativeOutputDestination::Track(id(2)),
+                        frames: &mut dest_track,
+                    },
+                    MultiOutputDestinationBuffer {
+                        destination: NativeOutputDestination::Return(id(10)),
+                        frames: &mut dest_return,
+                    },
+                ],
+            )
+            .unwrap();
+        router_b.commit_block();
+
+        MultiOutputInstrumentRuntime::reset(&mut runtime);
+        router_b.reset();
+    });
+    assert_eq!(
+        (
+            info.count_total,
+            info.bytes_total,
+            info.count_current,
+            info.bytes_current
+        ),
+        (0, 0, 0, 0),
+        "multi-output drum rack callback (Sampler+Subtractive, PDC, choke, handoff, Stop) must allocate nothing: {info:?}"
+    );
+    // Drop retired runtime, routers, and leased resources off-callback on control.
+    drop(runtime);
+    drop(router_a);
+    drop(router_b);
+    drop(resources);
     drop(store);
 }
