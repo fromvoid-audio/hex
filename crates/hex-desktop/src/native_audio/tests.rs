@@ -116,6 +116,7 @@ pub(crate) struct Observation {
     pub(crate) received_verified_device:
         Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     verified_clip_updates: Vec<(hex_session::service::ClipMovePreviewIdentity, &'static str)>,
+    pub(crate) verified_play_start_updates: usize,
     replay_verified_device: Option<Arc<hex_session::service::VerifiedDeviceParameterSource>>,
     pub(super) received_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
     pub(super) replay_verified_gain: Option<Arc<hex_session::service::VerifiedTrackGainSource>>,
@@ -579,6 +580,7 @@ impl WorkerAudioSink for ObservedSink {
         &mut self,
         update: hex_session::service::VerifiedArrangementPlayStartUpdate,
     ) -> bool {
+        self.observation.lock().unwrap().verified_play_start_updates += 1;
         self.inner.verified_arrangement_play_start_update(update)
     }
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {

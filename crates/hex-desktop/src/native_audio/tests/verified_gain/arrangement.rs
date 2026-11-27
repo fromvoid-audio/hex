@@ -284,6 +284,74 @@ fn verified_arrangement_play_start_refuses_transformed_streamed_clips_without_in
     use hex_session::service::{ArrangementPlayStartAudition, PlayStartEdit};
     use std::sync::atomic::Ordering::Acquire;
 
+    const BLOCKS: usize = 24;
+
+    let assert_uninterrupted =
+        |h: &Harness,
+         label: &str,
+         expected_source: hex_audio::prepared::AppliedAudioSource,
+         context: AudioSourceContext,
+         expected_domain: AudioCandidateDomainToken| {
+            let status = h.audio.as_ref().unwrap().status().unwrap();
+            let baseline_starved = status.stream_starved_callbacks.load(Acquire);
+            let mut expected_pos = status.position.load(Acquire);
+            for block in 0..BLOCKS {
+                let pcm = h.render();
+                let status = h.audio.as_ref().unwrap().status().unwrap();
+                let pos = status.position.load(Acquire);
+                let starved = status.stream_starved_callbacks.load(Acquire);
+                let buffering = status.stream_buffering.load(Acquire);
+                let read_failed = status.stream_read_failed.load(Acquire);
+                let source_changed = status.stream_source_changed.load(Acquire);
+                let applied = status.applied_audio_source();
+                assert!(
+                    status.playing.load(Acquire),
+                    "{label} block {block}: stopped"
+                );
+                assert!(
+                    !status.render_fault.load(Acquire),
+                    "{label} block {block}: render_fault"
+                );
+                assert!(!read_failed, "{label} block {block}: stream_read_failed");
+                assert!(
+                    !source_changed,
+                    "{label} block {block}: stream_source_changed"
+                );
+                assert!(!buffering, "{label} block {block}: stream_buffering");
+                assert_eq!(
+                    starved, baseline_starved,
+                    "{label} block {block}: starved callbacks advanced ({baseline_starved} -> {starved}) at pos={pos}"
+                );
+                assert_eq!(
+                    applied,
+                    Some(expected_source),
+                    "{label} block {block}: applied source changed"
+                );
+                assert_eq!(
+                    pos,
+                    expected_pos + 64,
+                    "{label} block {block}: transport position jumped (expected {}, got {pos})",
+                    expected_pos + 64
+                );
+                expected_pos = pos;
+                assert!(
+                    pcm.into_iter().flatten().all(|s| (s - 0.25).abs() < 1e-6),
+                    "{label} block {block}: unexpected PCM {:?} at pos={pos} starved={starved} buffering={buffering} applied={applied:?}",
+                    pcm[0]
+                );
+                // Pace slower than 48 kHz real time (64 frames = 1.33 ms) so the
+                // manual callback loop cannot outrun page prefetch under CI load.
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            assert_eq!(
+                h.observation.lock().unwrap().verified_play_start_updates,
+                0,
+                "{label}: refused play-start audition must not reach the verified native sink"
+            );
+            assert_eq!(h.domain(context).0, expected_domain);
+            assert!(h.service.as_ref().unwrap().try_event().is_err());
+        };
+
     let _native = native_fixture();
     let files = Files::new();
     let mut h = open_verified();
@@ -313,18 +381,7 @@ fn verified_arrangement_play_start_refuses_transformed_streamed_clips_without_in
                 position: u64::from(segment),
             },
         }));
-    let wait_until = Instant::now() + Duration::from_millis(60);
-    while Instant::now() < wait_until {
-        let pcm = h.render();
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        assert!(status.playing.load(Acquire));
-        assert!(!status.render_fault.load(Acquire));
-        assert_eq!(status.applied_audio_source(), Some(canonical));
-        assert!(pcm.into_iter().flatten().all(|s| (s - 0.25).abs() < 1e-6));
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(h.domain(context).0, domain);
-    assert!(h.service.as_ref().unwrap().try_event().is_err());
+    assert_uninterrupted(&h, "plain-placed", canonical, context, domain);
     h.service
         .as_ref()
         .unwrap()
@@ -350,6 +407,15 @@ fn verified_arrangement_play_start_refuses_transformed_streamed_clips_without_in
     let warped_context = h.context.unwrap();
     let warped_canonical = h.applied(warped_context);
     let warped_domain = h.domain(warped_context).0;
+    // Re-anchor near the clip start and confirm warm warped pages before
+    // auditioning so a slow warp preparation under load cannot overrun the clip.
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::PlayFrom(0))
+        .unwrap();
+    expect_pcm_level(&h, 0.25);
     h.service
         .as_ref()
         .unwrap()
@@ -363,18 +429,13 @@ fn verified_arrangement_play_start_refuses_transformed_streamed_clips_without_in
                 source_length: u64::from(segment),
             },
         }));
-    let wait_until = Instant::now() + Duration::from_millis(60);
-    while Instant::now() < wait_until {
-        let pcm = h.render();
-        let status = h.audio.as_ref().unwrap().status().unwrap();
-        assert!(status.playing.load(Acquire));
-        assert!(!status.render_fault.load(Acquire));
-        assert_eq!(status.applied_audio_source(), Some(warped_canonical));
-        assert!(pcm.into_iter().flatten().all(|s| (s - 0.25).abs() < 1e-6));
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    assert_eq!(h.domain(warped_context).0, warped_domain);
-    assert!(h.service.as_ref().unwrap().try_event().is_err());
+    assert_uninterrupted(
+        &h,
+        "warped-trim-start",
+        warped_canonical,
+        warped_context,
+        warped_domain,
+    );
     assert_eq!(warped.state.project.clip(clip).unwrap().source_offset(), 0);
     h.service
         .as_ref()
@@ -527,8 +588,8 @@ fn new_verified_project() -> Request {
 
 fn open_verified() -> Harness {
     let mut h = actual_native_harness();
-    h.wait = Duration::from_secs(2);
     h.next();
+    h.wait = Duration::from_secs(2);
     h.open();
     h.run(new_verified_project());
     h.open();
