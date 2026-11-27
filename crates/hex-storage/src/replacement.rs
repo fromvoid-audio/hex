@@ -704,6 +704,8 @@ pub(crate) fn parse_envelope(bytes: &[u8]) -> Result<(&str, &[u8]), StorageError
 
 pub(crate) struct Temporary {
     pub(crate) path: PathBuf,
+    #[cfg(unix)]
+    identity: (u64, u64),
     armed: bool,
 }
 
@@ -711,12 +713,39 @@ impl Temporary {
     pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
+
+    /// Remove `self.path` only when its entry still resolves without symlink
+    /// traversal to the exact regular-file identity created by this process.
+    ///
+    /// Platform limitation: POSIX/macOS has no kernel-atomic `unlink`-if-inode
+    /// syscall, so a same-user process racing the window between `lstat` and
+    /// `unlink` cannot be ruled out by pathname unlink alone. Any substitution
+    /// observed before removal preserves the foreign entry untouched.
+    pub(crate) fn remove_if_unsubstituted(&self) -> io::Result<bool> {
+        let metadata = match fs::symlink_metadata(&self.path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Ok(false);
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            if (metadata.dev(), metadata.ino()) != self.identity {
+                return Ok(false);
+            }
+        }
+        fs::remove_file(&self.path)?;
+        Ok(true)
+    }
 }
 
 impl Drop for Temporary {
     fn drop(&mut self) {
         if self.armed {
-            let _ = fs::remove_file(&self.path);
+            let _ = self.remove_if_unsubstituted();
         }
     }
 }
@@ -747,7 +776,21 @@ pub(crate) fn prepare_temp_with(
         }
         match options.open(&path) {
             Ok(file) => {
-                created = Some((Temporary { path, armed: true }, file));
+                #[cfg(unix)]
+                let identity = {
+                    use std::os::unix::fs::MetadataExt;
+                    let meta = file.metadata()?;
+                    (meta.dev(), meta.ino())
+                };
+                created = Some((
+                    Temporary {
+                        path,
+                        #[cfg(unix)]
+                        identity,
+                        armed: true,
+                    },
+                    file,
+                ));
                 break;
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -789,7 +832,7 @@ fn publish_recovery(
         }
         let published = crate::publication::publish_new(&temporary.path, recovery)?;
         if published.staging_remains()
-            && let Err(source) = fs::remove_file(&temporary.path)
+            && let Err(source) = temporary.remove_if_unsubstituted()
         {
             return Err(StorageError::RecoveryBackupPublished {
                 path: target.to_path_buf(),

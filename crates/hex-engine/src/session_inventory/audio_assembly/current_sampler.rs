@@ -40,6 +40,7 @@ impl SessionAssembly {
                 resource_factory_inline_bound: None,
                 track: config.track,
                 factory: Box::new(config.prepared.clone()),
+                midi_processor: None,
                 history_retarget_target: None,
                 history_retarget_requires_quiescence: false,
             });

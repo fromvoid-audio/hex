@@ -59,6 +59,9 @@ impl Project {
             | Command::MoveMainDevice { .. }) => crate::main_devices::apply(self, main_command),
             device_command @ (Command::InsertDevice { .. }
             | Command::ReplaceTrackDevice { .. }
+            | Command::InsertMidiProcessor { .. }
+            | Command::RemoveMidiProcessor { .. }
+            | Command::ReplaceTrackMidiProcessor { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
             | Command::ReplaceTrackInstrument { .. }

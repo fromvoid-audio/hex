@@ -1199,6 +1199,7 @@ impl WorkerLoop {
                         })
                         .and_then(|state| {
                             device_defaults::initialize(
+                                session,
                                 device_track_command(
                                     None,
                                     hex_project::TrackDeviceSlot::Instrument,
@@ -1209,6 +1210,10 @@ impl WorkerLoop {
                                 *class,
                                 defaults_root,
                             )
+                        })
+                        .map(|prepared| {
+                            exec.outcome.pending_unit_originals = prepared.originals;
+                            prepared.command
                         })
                 },
             ),
@@ -1234,7 +1239,13 @@ impl WorkerLoop {
                         *type_id,
                         *before,
                     )
-                    .and_then(|command| device_defaults::initialize(command, *class, defaults_root))
+                    .and_then(|command| {
+                        device_defaults::initialize(session, command, *class, defaults_root)
+                    })
+                    .map(|prepared| {
+                        exec.outcome.pending_unit_originals = prepared.originals;
+                        prepared.command
+                    })
                 },
             ),
             Request::LoadTrackCatalogDevice {
@@ -1253,13 +1264,17 @@ impl WorkerLoop {
                     Err("finish or cancel the active device edit before loading a device".into())
                 } else {
                     device_defaults::track_picker_command(
-                        session.project(),
+                        session,
                         *track,
                         *class,
                         *type_id,
                         *placement,
                         defaults_root,
                     )
+                    .map(|prepared| {
+                        exec.outcome.pending_unit_originals = prepared.originals;
+                        prepared.command
+                    })
                 },
             ),
             Request::ReplaceDeviceModulation {

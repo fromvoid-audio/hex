@@ -36,8 +36,9 @@ pub const PRESET_SCHEMA: u32 = 2;
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum DeviceClass {
+    MidiProcessor,
     Instrument,
     Effect,
 }
@@ -45,6 +46,7 @@ pub enum DeviceClass {
 impl From<hex_project::DeviceUnitClass> for DeviceClass {
     fn from(value: hex_project::DeviceUnitClass) -> Self {
         match value {
+            hex_project::DeviceUnitClass::MidiProcessor => Self::MidiProcessor,
             hex_project::DeviceUnitClass::Instrument => Self::Instrument,
             hex_project::DeviceUnitClass::Effect => Self::Effect,
         }

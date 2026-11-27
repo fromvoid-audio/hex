@@ -868,6 +868,7 @@ fn export_reservation_rolls_back_when_request_admission_fails() {
         track_switch_views,
         arrangement_edit_views,
         export_events,
+        export_recovery: crate::ExportRecoveryJournal::new(None),
         export_drain_signal: Arc::new(WakeSignal::default()),
         outcome_drain_signal: Arc::new(WakeSignal::default()),
         worker_wake_signal: Arc::new(WakeSignal::default()),
@@ -1102,6 +1103,7 @@ fn dropping_service_detaches_an_active_export_worker() {
                 data_bytes: frames * 4,
                 clipped_samples: 0,
                 recovery_path: None,
+                retained_stage: None,
                 applied_gain_linear: 1.0,
                 applied_gain_db: 0.0,
             })

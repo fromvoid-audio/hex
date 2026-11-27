@@ -483,6 +483,21 @@ pub enum Command {
         replacing: DeviceId,
         state: hex_lattice_contract::NativeDeviceState,
     },
+    /// Insert one bounded pre-instrument native MIDI processor on an ordinary track.
+    InsertMidiProcessor {
+        track: TrackId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Remove the pre-instrument native MIDI processor from an ordinary track.
+    RemoveMidiProcessor {
+        track: TrackId,
+    },
+    /// Replace the pre-instrument native MIDI processor on an ordinary track with a fresh identity.
+    ReplaceTrackMidiProcessor {
+        track: TrackId,
+        replacing: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
     /// Fill a removed native instrument slot with a new stable device identity.
     InsertInstrument {
         track: TrackId,

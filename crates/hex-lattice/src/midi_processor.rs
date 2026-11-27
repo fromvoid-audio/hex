@@ -7,10 +7,17 @@
 //! note-offs, Stop, Seek, loop wraps, route transitions, and revision handoffs
 //! leave no stuck notes.
 
+mod future_queue;
 mod pair;
 #[cfg(test)]
 mod tests;
 
+pub use future_queue::{
+    BoundedFutureMidiQueue, DueMidiEvent, FUTURE_MIDI_EVENT_QUEUE_CAPACITY,
+    FUTURE_MIDI_MAX_HORIZON_BEATS_Q32, FUTURE_MIDI_MAX_HORIZON_FRAMES,
+    FUTURE_MIDI_RESERVED_NOTE_OFF_SLOTS, FutureMidiTime, GENERATED_OCCURRENCE_ID_BASE,
+    ScheduledMidiEvent, ScheduledMidiKind, resolve_future_time_in_block, validate_future_horizon,
+};
 pub use pair::NativeMidiProcessorRuntimePair;
 
 use super::{MAX_NATIVE_DEVICE_TYPES, NativeInstrumentClock, NativeInstrumentEvent};
@@ -53,6 +60,9 @@ pub enum NativeMidiProcessorError {
     OrphanedNoteOff,
     DuplicateOccurrence,
     InvalidEventPayload,
+    ClockUnavailable,
+    FutureEventHorizonExceeded,
+    FutureQueueCapacityExceeded,
 }
 
 impl NativeMidiProcessorError {
@@ -78,6 +88,13 @@ impl NativeMidiProcessorError {
             Self::OrphanedNoteOff => "native midi processor note-off has no active occurrence",
             Self::DuplicateOccurrence => "native midi processor occurrence is already active",
             Self::InvalidEventPayload => "native midi processor event payload is out of range",
+            Self::ClockUnavailable => "native midi processor host clock is unavailable",
+            Self::FutureEventHorizonExceeded => {
+                "native midi processor future event exceeds finite horizon"
+            }
+            Self::FutureQueueCapacityExceeded => {
+                "native midi processor future event queue capacity is exceeded"
+            }
         }
     }
 }

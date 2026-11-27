@@ -55,20 +55,36 @@ pub(crate) fn save_document_as(
 pub(crate) fn bind_new_save(
     outcome: hex_storage::SaveNewOutcome,
 ) -> (DocumentHandle, SaveCurrentCommit) {
+    let retained_note = outcome.retained_stage.as_ref().map(|stage| {
+        format!(
+            "staging path {} was retained; inspect it before removing it",
+            hex_storage::text::verbatim(stage.display())
+        )
+    });
     let commit = match outcome.warning {
-        Some(warning) => SaveCurrentCommit {
-            dirty: true,
-            status: "project was published, but durability could not be confirmed".into(),
-            error: Some(format!(
+        Some(warning) => {
+            let mut message = format!(
                 "complete project was published at {}, but could not {}: {}",
                 hex_storage::text::verbatim(outcome.path.display()),
                 warning.operation,
                 warning.source
-            )),
-        },
+            );
+            if let Some(note) = retained_note {
+                message.push_str("; ");
+                message.push_str(&note);
+            }
+            SaveCurrentCommit {
+                dirty: true,
+                status: "project was published, but durability could not be confirmed".into(),
+                error: Some(message),
+            }
+        }
         None => SaveCurrentCommit {
             dirty: false,
-            status: save_status::SAVED.into(),
+            status: match retained_note {
+                Some(note) => format!("{} · {note}", save_status::SAVED),
+                None => save_status::SAVED.into(),
+            },
             error: None,
         },
     };

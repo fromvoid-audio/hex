@@ -200,10 +200,12 @@ pub const DEVICE_INPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
         presentation: hex_lattice_contract::ParameterPresentation::Linear,
     };
 
-/// Distinguishes native effect processors from native track instruments.
-/// Type identifiers are resolved only inside the requested class registry.
+/// Distinguishes native MIDI processors, native audio effect processors, and
+/// native track instruments. Type identifiers are resolved only inside the
+/// requested class registry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeDeviceClass {
+    MidiProcessor,
     Effect,
     Instrument,
 }
@@ -246,6 +248,11 @@ pub fn native_device_catalog_for_class(
     class: NativeDeviceClass,
 ) -> Result<Vec<NativeDeviceCatalogEntry>, Invalid> {
     match class {
+        NativeDeviceClass::MidiProcessor => {
+            let registry = hex_devices::native_midi_processor_registry()
+                .map_err(|_| Invalid("invalid built-in native midi processor registry"))?;
+            catalog_entries(registry.definitions())
+        }
         NativeDeviceClass::Effect => {
             let registry = hex_devices::native_registry()
                 .map_err(|_| Invalid("invalid built-in native device registry"))?;
@@ -282,6 +289,17 @@ pub fn native_device_view_for_class(
     state: &NativeDeviceState,
 ) -> Result<NativeDeviceView, Invalid> {
     match class {
+        NativeDeviceClass::MidiProcessor => {
+            let registry = hex_devices::native_midi_processor_registry()
+                .map_err(|_| Invalid("invalid built-in native midi processor registry"))?;
+            let definition = registry
+                .definition(state.type_id())
+                .ok_or(Invalid("native midi processor type is unavailable"))?;
+            let migrated = registry
+                .migrate_state(state)
+                .map_err(|_| Invalid("native midi processor state is unsupported or malformed"))?;
+            build_view(state, definition, &migrated)
+        }
         NativeDeviceClass::Effect => {
             let registry = hex_devices::native_registry()
                 .map_err(|_| Invalid("invalid built-in native device registry"))?;
@@ -314,6 +332,17 @@ pub fn native_device_parameter_for_class(
     parameter: hex_lattice_contract::ParameterId,
 ) -> Result<ParameterValue, Invalid> {
     match class {
+        NativeDeviceClass::MidiProcessor => {
+            let registry = hex_devices::native_midi_processor_registry()
+                .map_err(|_| Invalid("invalid built-in native midi processor registry"))?;
+            let definition = registry
+                .definition(state.type_id())
+                .ok_or(Invalid("native midi processor type is unavailable"))?;
+            let migrated = registry
+                .migrate_state(state)
+                .map_err(|_| Invalid("native midi processor state is unsupported or malformed"))?;
+            read_parameter(definition, &migrated, parameter)
+        }
         NativeDeviceClass::Effect => {
             let registry = hex_devices::native_registry()
                 .map_err(|_| Invalid("invalid built-in native device registry"))?;
@@ -374,6 +403,11 @@ pub fn native_device_descriptors_for_class(
     type_id: DeviceTypeId,
 ) -> Result<&'static [ParameterDescriptor], Invalid> {
     match class {
+        NativeDeviceClass::MidiProcessor => hex_devices::native_midi_processor_registry()
+            .map_err(|_| Invalid("invalid built-in native midi processor registry"))?
+            .definition(type_id)
+            .map(NativeDeviceMetadata::descriptors)
+            .ok_or(Invalid("native midi processor type is unavailable")),
         NativeDeviceClass::Effect => hex_devices::native_registry()
             .map_err(|_| Invalid("invalid built-in native device registry"))?
             .definition(type_id)

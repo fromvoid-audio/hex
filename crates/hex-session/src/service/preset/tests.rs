@@ -1574,7 +1574,9 @@ fn full_unit_preset_and_fresh_default_live_playback_undo_redo_and_malformed_refu
     assert_eq!(render(&redone.state.project), unit_pcm);
 
     // Fresh nested catalog construction via device_defaults::initialize honors saved default.
+    let nested_session = crate::Session::new(48_000, 8, 1024).unwrap();
     let nested_cmd = crate::service::device_defaults::initialize(
+        &nested_session,
         Command::InsertNestedDevice {
             parent: target,
             state: base,
@@ -1583,5 +1585,6 @@ fn full_unit_preset_and_fresh_default_live_playback_undo_redo_and_malformed_refu
         Some(&dir.0),
     )
     .unwrap();
-    assert!(matches!(nested_cmd, Command::InitializeDevice(_)));
+    assert!(matches!(nested_cmd.command, Command::InitializeDevice(_)));
+    assert!(nested_cmd.originals.is_empty());
 }

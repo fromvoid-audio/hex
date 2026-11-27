@@ -489,3 +489,1755 @@ fn revision_handoff_changed_processor_stale_publication_and_refusal_preserve_sta
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn canonical_pitch_device_renders_exact_shifted_pcm_and_handles_mid_note_changes_and_bypass() {
+    use hex_devices::midi_pitch::{PITCH_TYPE_ID, PitchOverflowPolicy, PitchSettings};
+
+    // Note 1: C4 (60) from 0..1/32 (0..750 frames);
+    // Note 2: C4 (60) overlapping from 1/64..3/64 (375..1125 frames);
+    // Note 3: C4 (60) starting after handoff at 1/16..3/32 (1500..2250 frames).
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 105),
+    ];
+
+    // 1. Canonical project with Pitch (+7 st, Clamp) matches shifted PCM oracle bit-for-bit.
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let pitch_7 = PitchSettings {
+        semitones: 7,
+        ..PitchSettings::default()
+    }
+    .encode()
+    .unwrap();
+    let Created::Device(pitch_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: pitch_7.clone(),
+        })
+        .unwrap()
+    else {
+        panic!("expected midi processor id");
+    };
+    let (oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 67, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 105),
+    ]);
+
+    let rev_7 = prepare_revision(editor.project());
+    let oracle_rev = prepare_revision(oracle_editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle = SessionPlayback::new(oracle_rev).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_7 = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_7).unwrap();
+
+    let mut playback_7 = SessionPlayback::new(Arc::clone(&rev_7)).unwrap();
+    playback_7.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_7 = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_7.chunks_mut(128) {
+        playback_7.render(chunk).unwrap();
+    }
+    assert_eq!(actual_7, expected_7);
+    assert!(
+        playback_7.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Transposition change (+7 -> +12) WHILE notes 1 and 2 are held!
+    // Notes 1 & 2 stay at +7 (67) and release cleanly; Note 3 starts at +12 (72)!
+    let pitch_12 = PitchSettings {
+        semitones: 12,
+        ..PitchSettings::default()
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: pitch_id,
+            state: pitch_12,
+        })
+        .unwrap();
+    let rev_12 = prepare_revision(editor.project());
+
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 67, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 72, 105),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_7)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    // Render 500 frames: both overlapping C4 notes are active!
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    assert!(
+        !live_a.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    let mut live_b = SessionPlayback::new(Arc::clone(&rev_12)).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 3. Bypass toggled ON mid-note: already-held +7 notes release cleanly; Note 3 plays untransposed (60)!
+    editor.undo(); // back to +7
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: pitch_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = prepare_revision(editor.project());
+
+    let (bypass_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 67, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 105),
+    ]);
+    let mut bypass_oracle =
+        SessionPlayback::new(prepare_revision(bypass_oracle_editor.project())).unwrap();
+    bypass_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_bypass = vec![[0.0_f32; 2]; total_frames];
+    bypass_oracle.render(&mut expected_bypass).unwrap();
+
+    let mut active_pre_bypass = SessionPlayback::new(Arc::clone(&rev_7)).unwrap();
+    active_pre_bypass
+        .apply(SessionPlaybackCommand::Play)
+        .unwrap();
+    let mut actual_bypass = vec![[0.0_f32; 2]; total_frames];
+    active_pre_bypass.render(&mut actual_bypass[..500]).unwrap();
+    let mut bypassed_cand = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    bypassed_cand
+        .try_inherit_state_from(&mut active_pre_bypass)
+        .unwrap();
+    bypassed_cand.render(&mut actual_bypass[500..]).unwrap();
+    assert_eq!(actual_bypass, expected_bypass);
+    assert!(
+        bypassed_cand.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 4. Drop policy at upper MIDI boundary suppresses note cleanly and produces pure silence.
+    let pitch_drop = PitchSettings {
+        semitones: 24,
+        overflow: PitchOverflowPolicy::Drop,
+        ..PitchSettings::default()
+    }
+    .encode()
+    .unwrap();
+    let (mut drop_editor, drop_track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 32), 115, 110)]);
+    drop_editor
+        .execute(Command::InsertMidiProcessor {
+            track: drop_track,
+            state: pitch_drop,
+        })
+        .unwrap();
+    let mut drop_pb = SessionPlayback::new(prepare_revision(drop_editor.project())).unwrap();
+    drop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut silent = vec![[0.0_f32; 2]; 2_000];
+    drop_pb.render(&mut silent).unwrap();
+    assert!(silent.iter().flatten().all(|s| *s == 0.0));
+    assert!(
+        drop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 5. Removal + Stop leave zero stuck notes, and malformed state refuses at preparation.
+    editor
+        .execute(Command::RemoveMidiProcessor { track })
+        .unwrap();
+    let rev_removed = prepare_revision(editor.project());
+    let mut removed_pb = SessionPlayback::new(rev_removed).unwrap();
+    removed_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut mid = [[0.0_f32; 2]; 256];
+    removed_pb.render(&mut mid).unwrap();
+    removed_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        removed_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    let malformed =
+        hex_lattice_contract::NativeDeviceState::new(PITCH_TYPE_ID, 1, vec![0, 0]).unwrap();
+    editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: malformed,
+        })
+        .unwrap();
+    assert!(
+        PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn canonical_chord_device_matches_pcm_oracle_across_overlaps_live_edits_bypass_and_loop() {
+    use hex_devices::midi_chord::ChordSettings;
+
+    // Two overlapping C4 notes + a 3rd C4 after live edit / bypass handoff.
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 80),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 100),
+    ];
+
+    let major = ChordSettings {
+        shifts: [4, 7, 0, 0, 0, 0],
+        ..ChordSettings::default()
+    };
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(chord_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: major.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected chord device id");
+    };
+
+    // Exact multi-note PCM oracle for major triad (root, +4, +7) on every authored note.
+    let mut oracle_notes = Vec::new();
+    for &(start, dur, pitch, vel) in &authored_notes {
+        oracle_notes.push((start, dur, pitch, vel));
+        oracle_notes.push((start, dur, pitch + 4, vel));
+        oracle_notes.push((start, dur, pitch + 7, vel));
+    }
+    let (oracle_editor, _) = build_subtractive_project(&oracle_notes);
+
+    let rev_major = prepare_revision(editor.project());
+    let oracle_rev = prepare_revision(oracle_editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle = SessionPlayback::new(oracle_rev).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_major = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_major).unwrap();
+    assert!(expected_major.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Chunked render matches authored multi-note oracle bit-for-bit!
+    let mut pb_major = SessionPlayback::new(Arc::clone(&rev_major)).unwrap();
+    pb_major.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_major = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_major.chunks_mut(128) {
+        pb_major.render(chunk).unwrap();
+    }
+    assert_eq!(actual_major, expected_major);
+    assert!(
+        pb_major.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live voicing change (major -> minor: +3, +7) WHILE notes 1 & 2 are held!
+    // Notes 1 & 2 release all 6 major voices cleanly; Note 3 plays minor triad (60, 63, 67).
+    let minor = ChordSettings {
+        shifts: [3, 7, 0, 0, 0, 0],
+        ..ChordSettings::default()
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: chord_id,
+            state: minor.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_minor = prepare_revision(editor.project());
+
+    let mixed_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 80),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 80),
+        (beat_frac(1, 64), beat_frac(1, 32), 67, 80),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 63, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 100),
+    ];
+    let (mixed_oracle_editor, _) = build_subtractive_project(&mixed_notes);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_major)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(Arc::clone(&rev_minor)).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Mid-note bypass toggle: held major chord releases all 6 voices; Note 3 plays dry root (60)!
+    editor.undo(); // back to major
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: chord_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = prepare_revision(editor.project());
+
+    let bypass_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 80),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 80),
+        (beat_frac(1, 64), beat_frac(1, 32), 67, 80),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 100),
+    ];
+    let (bypass_oracle_editor, _) = build_subtractive_project(&bypass_notes);
+    let mut bypass_oracle =
+        SessionPlayback::new(prepare_revision(bypass_oracle_editor.project())).unwrap();
+    bypass_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_bypass = vec![[0.0_f32; 2]; total_frames];
+    bypass_oracle.render(&mut expected_bypass).unwrap();
+
+    let mut pre_bypass = SessionPlayback::new(Arc::clone(&rev_major)).unwrap();
+    pre_bypass.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_bypass = vec![[0.0_f32; 2]; total_frames];
+    pre_bypass.render(&mut actual_bypass[..500]).unwrap();
+    let mut bypassed = SessionPlayback::new(rev_bypassed).unwrap();
+    bypassed.try_inherit_state_from(&mut pre_bypass).unwrap();
+    bypassed.render(&mut actual_bypass[500..]).unwrap();
+    assert_eq!(actual_bypass, expected_bypass);
+    assert!(
+        bypassed.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Stop mid-chord & Seek(0) leave zero stuck notes.
+    let mut stop_pb = SessionPlayback::new(Arc::clone(&rev_major)).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut mid = [[0.0_f32; 2]; 256];
+    stop_pb.render(&mut mid).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replayed = vec![[0.0_f32; 2]; total_frames];
+    stop_pb.render(&mut replayed).unwrap();
+    assert_eq!(replayed, expected_major);
+}
+
+#[test]
+fn canonical_velocity_device_matches_pcm_oracle_across_fixed_gate_live_edits_and_bypass() {
+    use hex_devices::midi_velocity::{VelocityMode, VelocitySettings};
+
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 40),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 30),
+    ];
+
+    // Fixed(110) maps every note velocity to 110 -> matches authored vel=110 PCM oracle bit-for-bit.
+    let fixed_110 = VelocitySettings {
+        mode: VelocityMode::Fixed,
+        out_high: 110,
+        ..VelocitySettings::default()
+    };
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(vel_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: fixed_110.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected velocity processor id");
+    };
+    let (oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 110),
+    ]);
+
+    let rev_fixed = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_fixed = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_fixed).unwrap();
+
+    let mut pb_fixed = SessionPlayback::new(Arc::clone(&rev_fixed)).unwrap();
+    pb_fixed.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_fixed = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_fixed.chunks_mut(128) {
+        pb_fixed.render(chunk).unwrap();
+    }
+    assert_eq!(actual_fixed, expected_fixed);
+    assert!(
+        pb_fixed.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live edit to Gate([60..=127]) mid-note: already-held notes 1 & 2 release cleanly; Note 3 (vel=30) is gated!
+    let gate_60 = VelocitySettings {
+        mode: VelocityMode::Gate,
+        lowest: 60,
+        range: 67,
+        ..VelocitySettings::default()
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: vel_id,
+            state: gate_60.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_gate = prepare_revision(editor.project());
+
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 110),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_fixed)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(Arc::clone(&rev_gate)).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn canonical_scale_device_matches_pcm_oracle_across_quantize_off_degree_and_live_edits() {
+    use hex_devices::midi_scale::{DEGREE_OFF, ScaleSettings};
+
+    // C#4 (61) snaps to C4 (60), F#4 (66) is OFF, D#4 (63) snaps to D4 (62).
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 61, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 66, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 63, 105),
+    ];
+
+    let c_major = ScaleSettings {
+        base: 0,
+        degree_map: [0, 0, 2, 2, 4, 5, DEGREE_OFF, 7, 7, 9, 9, 11],
+        ..ScaleSettings::default()
+    };
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(scale_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: c_major.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected scale processor id");
+    };
+    let (oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 62, 105),
+    ]);
+
+    let rev_scale = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_scale)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Mid-note live edit: change degree 3 (D#) to map to E (4) while C#4 & suppressed F#4 are held!
+    let c_major_up = ScaleSettings {
+        base: 0,
+        degree_map: [0, 0, 2, 4, 4, 5, DEGREE_OFF, 7, 7, 9, 9, 11],
+        ..ScaleSettings::default()
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: scale_id,
+            state: c_major_up.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_up = prepare_revision(editor.project());
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_scale)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_up).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn canonical_random_device_matches_seeded_pcm_oracle_across_partitions_seeds_and_live_edits() {
+    use hex_devices::midi_random::{
+        MAX_CHANCE_BPS, RandomOverflowPolicy, RandomSettings, RandomSign, initial_rng_state,
+    };
+
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 105),
+    ];
+
+    let settings_a = RandomSettings {
+        chance_bps: MAX_CHANCE_BPS,
+        choices: 6,
+        scale: 2,
+        sign: RandomSign::Bi,
+        seed: 77,
+        overflow: RandomOverflowPolicy::Clamp,
+    };
+    let settings_b = RandomSettings {
+        seed: 99,
+        ..settings_a
+    };
+
+    // Independent oracle pitches for seed 77 and seed 99.
+    let mut rng_a = initial_rng_state(settings_a.seed);
+    let expected_pitches_a: Vec<u8> = authored_notes
+        .iter()
+        .map(|&(_, _, p, _)| settings_a.next_pitch(p, &mut rng_a).unwrap())
+        .collect();
+    assert_ne!(
+        expected_pitches_a[0], expected_pitches_a[1],
+        "overlapping notes remain distinct pitches in oracle clip"
+    );
+    let mut rng_b = initial_rng_state(settings_b.seed);
+    let expected_pitches_b: Vec<u8> = authored_notes
+        .iter()
+        .map(|&(_, _, p, _)| settings_b.next_pitch(p, &mut rng_b).unwrap())
+        .collect();
+    assert_ne!(expected_pitches_a, expected_pitches_b);
+
+    let oracle_notes_a: Vec<_> = authored_notes
+        .iter()
+        .zip(&expected_pitches_a)
+        .map(|(&(s, d, _, v), &p)| (s, d, p, v))
+        .collect();
+    let (oracle_editor_a, _) = build_subtractive_project(&oracle_notes_a);
+
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(random_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: settings_a.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected random processor id");
+    };
+    let rev_a = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle_a = SessionPlayback::new(prepare_revision(oracle_editor_a.project())).unwrap();
+    oracle_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_pcm_a = vec![[0.0_f32; 2]; total_frames];
+    oracle_a.render(&mut expected_pcm_a).unwrap();
+    assert!(expected_pcm_a.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Irregular block partitions match oracle bit-for-bit!
+    let mut pb_a = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    pb_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_a = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        pb_a.render(&mut actual_a[cursor..cursor + len]).unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual_a, expected_pcm_a);
+    assert!(
+        pb_a.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Stop + Seek(0) + Play deterministically reseeds and reproduces bit-identically.
+    pb_a.apply(SessionPlaybackCommand::Stop).unwrap();
+    pb_a.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    pb_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay_a = vec![[0.0_f32; 2]; total_frames];
+    pb_a.render(&mut replay_a).unwrap();
+    assert_eq!(replay_a, expected_pcm_a);
+
+    // Distinct seed produces distinct PCM.
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: random_id,
+            state: settings_b.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_b = prepare_revision(editor.project());
+    let mut pb_b = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    pb_b.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_b = vec![[0.0_f32; 2]; total_frames];
+    pb_b.render(&mut actual_b).unwrap();
+    assert_ne!(actual_b, expected_pcm_a);
+
+    // Live mid-note reseed (seed 77 -> seed 99 while notes 1 & 2 are held):
+    // Notes 1 & 2 stay at seed 77 pitches and release cleanly; Note 3 (pitch 67) uses first draw of seed 99!
+    let mut rng_reseeded = initial_rng_state(settings_b.seed);
+    let reseeded_note3_pitch = settings_b.next_pitch(67, &mut rng_reseeded).unwrap();
+    let mixed_oracle_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), expected_pitches_a[0], 100),
+        (
+            beat_frac(1, 64),
+            beat_frac(1, 32),
+            expected_pitches_a[1],
+            90,
+        ),
+        (
+            beat_frac(1, 16),
+            beat_frac(1, 32),
+            reseeded_note3_pitch,
+            105,
+        ),
+    ];
+    let (mixed_editor, _) = build_subtractive_project(&mixed_oracle_notes);
+    let mut mixed_oracle = SessionPlayback::new(prepare_revision(mixed_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_b).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn bounded_control_change_routing_preserves_same_offset_order_remapping_pcm_and_bypass() {
+    use hex_lattice::{
+        NativeInstrumentEvent, conformance::midi_cc_remap::PreparedCcRemapMidiProcessor,
+    };
+    use hex_project::{MidiLaneKind, MidiLanePoint};
+
+    // 1. Allocation-free stable sort preserves wire order of same-offset CCs before NoteOff/NoteOn.
+    let mut batch = [
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 2,
+            pitch: 64,
+            velocity: 100,
+        },
+        NativeInstrumentEvent::ControlChange {
+            frame_offset: 0,
+            cc: 74,
+            value: 120,
+        },
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        },
+        NativeInstrumentEvent::ControlChange {
+            frame_offset: 0,
+            cc: 74,
+            value: 16,
+        },
+    ];
+    crate::mutable_instrument::stable_sort_native_events(&mut batch);
+    assert_eq!(
+        batch,
+        [
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 74,
+                value: 120,
+            },
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 74,
+                value: 16,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 1,
+            },
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 2,
+                pitch: 64,
+                velocity: 100,
+            },
+        ]
+    );
+
+    // 2. Real bounded consumer (FM4) + PreparedCcRemapMidiProcessor (CC20 -> CC74) matches
+    //    direct CC74 PCM oracle bit-for-bit across authored CC lane transitions!
+    let build_fm4_cc_project = |cc_lane: Option<(u8, Vec<MidiLanePoint>)>| -> (Editor, TrackId) {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "fm4-cc-proc".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+        if editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+        {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+        let base = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            hex_devices::fm4::device::FM4_TYPE_ID,
+        )
+        .unwrap();
+        let with_mod = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &base,
+            hex_devices::fm4::device::parameter::modulation(2, 1),
+            hex_lattice_contract::ParameterValue::Float(0.6),
+        )
+        .unwrap();
+        let short_release = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &with_mod,
+            hex_devices::fm4::device::parameter::RELEASE,
+            hex_lattice_contract::ParameterValue::Float(0.005),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: short_release,
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: beat(2),
+            })
+            .unwrap()
+        else {
+            panic!("expected clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat_frac(1, 16),
+                pitch: 60,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+        if let Some((cc, points)) = cc_lane {
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::ControlChange(cc),
+                    points,
+                })
+                .unwrap();
+        }
+        (editor, track)
+    };
+
+    let cc_points = vec![
+        MidiLanePoint {
+            beat: BeatTime::ZERO,
+            channel: 0,
+            value: 127,
+        },
+        MidiLanePoint {
+            beat: beat_frac(1, 32),
+            channel: 0,
+            value: 0,
+        },
+    ];
+    let (dry_editor, _) = build_fm4_cc_project(None);
+    let (oracle_editor, _) = build_fm4_cc_project(Some((74, cc_points.clone())));
+    let (remapped_editor, track) = build_fm4_cc_project(Some((20, cc_points)));
+
+    let total_frames = 2_400_usize;
+    let mut dry_pb = SessionPlayback::new(prepare_revision(dry_editor.project())).unwrap();
+    dry_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut dry_pcm = vec![[0.0_f32; 2]; total_frames];
+    dry_pb.render(&mut dry_pcm).unwrap();
+
+    let mut oracle_pb = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut oracle_pcm = vec![[0.0_f32; 2]; total_frames];
+    oracle_pb.render(&mut oracle_pcm).unwrap();
+    assert_ne!(
+        dry_pcm, oracle_pcm,
+        "CC74 must audibly change FM4 rendered PCM"
+    );
+
+    let remap = PreparedCcRemapMidiProcessor::new(20, 74).unwrap();
+    assert!(PreparedCcRemapMidiProcessor::new(128, 74).is_err());
+    assert!(PreparedCcRemapMidiProcessor::new(20, 128).is_err());
+
+    let rev = prepare_revision(remapped_editor.project());
+    let mut pb = SessionPlayback::new(Arc::clone(&rev)).unwrap();
+    pb.install_track_midi_processor_on_control(track, midi_proc_id(), &remap)
+        .unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_pcm = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_pcm.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual_pcm, oracle_pcm);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Stop + Seek(0) + Play reproduces oracle bit-for-bit with zero stuck notes.
+    pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; total_frames];
+    pb.render(&mut replay).unwrap();
+    assert_eq!(replay, oracle_pcm);
+}
+
+#[test]
+fn canonical_cc_control_device_matches_fm4_pcm_oracle_across_live_edits_override_and_bypass() {
+    use hex_devices::midi_cc_control::{CcConflictPolicy, CcControlSettings, CcLaneSettings};
+    use hex_project::{MidiLaneKind, MidiLanePoint};
+
+    let build_fm4_track = |cc74_lane: Option<u8>| -> (Editor, TrackId) {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "cc-control-test".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+        if editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+        {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+        let base = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            hex_devices::fm4::device::FM4_TYPE_ID,
+        )
+        .unwrap();
+        let with_mod = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &base,
+            hex_devices::fm4::device::parameter::modulation(2, 1),
+            hex_lattice_contract::ParameterValue::Float(0.6),
+        )
+        .unwrap();
+        let short_release = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &with_mod,
+            hex_devices::fm4::device::parameter::RELEASE,
+            hex_lattice_contract::ParameterValue::Float(0.005),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: short_release,
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: beat(2),
+            })
+            .unwrap()
+        else {
+            panic!("expected clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat_frac(1, 16),
+                pitch: 60,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+        if let Some(val) = cc74_lane {
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::ControlChange(74),
+                    points: vec![MidiLanePoint {
+                        beat: BeatTime::ZERO,
+                        channel: 0,
+                        value: i16::from(val),
+                    }],
+                })
+                .unwrap();
+        }
+        (editor, track)
+    };
+
+    // 1. Canonical hex.midi.cc_control emitting CC74=127 (while overriding conflicting upstream CC74=10)
+    //    matches direct CC74=127 FM4 PCM oracle bit-for-bit!
+    let (oracle_editor, _) = build_fm4_track(Some(127));
+    let (dry_editor, _) = build_fm4_track(Some(10));
+    let (mut editor, track) = build_fm4_track(Some(10));
+
+    let cc_high = CcControlSettings {
+        conflict: CcConflictPolicy::Override,
+        lanes: [
+            CcLaneSettings {
+                enabled: true,
+                cc: 74,
+                value: 127,
+                min: 0,
+                max: 127,
+            },
+            CcControlSettings::default().lanes[1],
+        ],
+        ..CcControlSettings::default()
+    };
+    let Created::Device(cc_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: cc_high.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected cc control processor id");
+    };
+
+    let total_frames = 2_400_usize;
+    let mut oracle_pb = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_high = vec![[0.0_f32; 2]; total_frames];
+    oracle_pb.render(&mut expected_high).unwrap();
+
+    let mut dry_pb = SessionPlayback::new(prepare_revision(dry_editor.project())).unwrap();
+    dry_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_low = vec![[0.0_f32; 2]; total_frames];
+    dry_pb.render(&mut expected_low).unwrap();
+    assert_ne!(expected_high, expected_low);
+
+    let rev_high = prepare_revision(editor.project());
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_high)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_high = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_high.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual_high, expected_high);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Bypass restores upstream CC74=10 bit-identically!
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: cc_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let mut bypassed_pb = SessionPlayback::new(prepare_revision(editor.project())).unwrap();
+    bypassed_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_bypassed = vec![[0.0_f32; 2]; total_frames];
+    bypassed_pb.render(&mut actual_bypassed).unwrap();
+    assert_eq!(actual_bypassed, expected_low);
+
+    // 3. Live mid-note value edit (127 -> 0) transitions cleanly with zero stuck notes.
+    editor.undo();
+    let cc_zero = CcControlSettings {
+        lanes: [
+            CcLaneSettings {
+                enabled: true,
+                cc: 74,
+                value: 0,
+                min: 0,
+                max: 127,
+            },
+            CcControlSettings::default().lanes[1],
+        ],
+        ..cc_high
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: cc_id,
+            state: cc_zero.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_zero = prepare_revision(editor.project());
+    let mut live_a = SessionPlayback::new(rev_high).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut live_pcm = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut live_pcm[..512]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_zero).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut live_pcm[512..]).unwrap();
+    assert_ne!(live_pcm, expected_high);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn timed_future_midi_events_match_pcm_oracle_across_partitions_tempo_change_loop_and_handoff() {
+    use hex_lattice::conformance::midi_timed_gate::{
+        PreparedTimedGateMidiProcessor, TimedGateDomain,
+    };
+    use hex_project::Tempo;
+
+    let delay_beats = beat_frac(1, 32);
+    let gate_beats = beat_frac(1, 32);
+
+    // Source note starts at beat 0 (duration 1/64); timed gate schedules generated NoteOn at beat 1/32
+    // and generated NoteOff at beat 1/16. A tempo jump from 120 BPM -> 240 BPM happens at beat 1/64!
+    let (mut source_editor, track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 64), 60, 110)]);
+    let (mut oracle_editor, _) = build_subtractive_project(&[(delay_beats, gate_beats, 60, 110)]);
+
+    for editor in [&mut source_editor, &mut oracle_editor] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: beat_frac(1, 64),
+                tempo: Tempo::new(240_000_000).unwrap(),
+            })
+            .unwrap();
+    }
+
+    let source_rev = prepare_revision(source_editor.project());
+    let oracle_rev = prepare_revision(oracle_editor.project());
+    let timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+        delay_beats_q32: delay_beats.raw(),
+        gate_beats_q32: gate_beats.raw(),
+    })
+    .unwrap();
+    let other_timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+        delay_beats_q32: beat_frac(1, 16).raw(),
+        gate_beats_q32: gate_beats.raw(),
+    })
+    .unwrap();
+
+    // Horizon refusal sanity check.
+    assert!(
+        PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+            delay_beats_q32: hex_lattice::FUTURE_MIDI_MAX_HORIZON_BEATS_Q32,
+            gate_beats_q32: 1,
+        })
+        .is_err()
+    );
+
+    let total_frames = 2_400_usize;
+    let mut oracle = SessionPlayback::new(oracle_rev).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+    assert!(
+        oracle.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 1. Irregular block partitions match tempo-mapped PCM oracle bit-for-bit and finish quiescent.
+    let mut chunked = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    chunked
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    chunked.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_chunked = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        chunked
+            .render(&mut actual_chunked[cursor..cursor + len])
+            .unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual_chunked, expected);
+    assert!(
+        chunked.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Stop while future events are queued -> clears queue & replays bit-for-bit from 0.
+    let mut stop_pb = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    stop_pb
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut early = [[0.0_f32; 2]; 128];
+    stop_pb.render(&mut early).unwrap();
+    // Future NoteOn/NoteOff are still queued (not yet quiescent)!
+    assert!(
+        !stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; total_frames];
+    stop_pb.render(&mut replay).unwrap();
+    assert_eq!(replay, expected);
+
+    // 3. Compatible handoff while future events are queued preserves exact pending timeline;
+    //    incompatible handoff refuses atomically without mutating active playback.
+    let mut active = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    active
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut handed_off = vec![[0.0_f32; 2]; total_frames];
+    active.render(&mut handed_off[..128]).unwrap();
+
+    let mut incompatible = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    incompatible
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &other_timed)
+        .unwrap();
+    assert_eq!(
+        incompatible.try_inherit_state_from(&mut active),
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
+    );
+
+    let mut compatible = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    compatible
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    compatible.try_inherit_state_from(&mut active).unwrap();
+    compatible.render(&mut handed_off[128..]).unwrap();
+    assert_eq!(handed_off, expected);
+    assert!(
+        compatible.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 4. Loop wrap across performance-frame scheduled NoteOff leaves zero stuck notes after Stop.
+    let (mut loop_editor, loop_track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 64), 60, 100)]);
+    loop_editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 500,
+            enabled: true,
+        })
+        .unwrap();
+    let loop_rev = prepare_revision(loop_editor.project());
+    let frame_timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::PerformanceFrames {
+        delay_frames: 200,
+        gate_frames: 400,
+    })
+    .unwrap();
+    let mut loop_pb = SessionPlayback::new(loop_rev).unwrap();
+    loop_pb
+        .install_track_midi_processor_on_control(loop_track, midi_proc_id(), &frame_timed)
+        .unwrap();
+    loop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut loop_out = vec![[0.0_f32; 2]; 1_500];
+    for chunk in loop_out.chunks_mut(128) {
+        loop_pb.render(chunk).unwrap();
+    }
+    assert!(loop_out.iter().flatten().any(|s| s.abs() > 1e-3));
+    loop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        loop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn canonical_note_length_device_matches_pcm_oracle_across_sync_tempo_trigger_and_live_edits() {
+    use hex_devices::midi_note_length::{NoteLengthMode, NoteLengthSettings, NoteLengthTrigger};
+    use hex_project::Tempo;
+
+    // 1. Sync mode (1/64 = 1/16 beat, gate 50% -> 1/32 beat) with a tempo jump 120 -> 240 BPM at 1/64 beat!
+    // Authored note is short (1/128 beat), Note Length stretches it to exact 1/32 beat across the tempo step.
+    let (mut editor, track) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 128), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 128), 64, 100),
+    ]);
+    let (mut oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 100),
+    ]);
+    for ed in [&mut editor, &mut oracle_editor] {
+        ed.execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 64),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    }
+
+    let sync_50 = NoteLengthSettings {
+        trigger: NoteLengthTrigger::NoteOn,
+        mode: NoteLengthMode::Sync,
+        sync_rate: 0, // 1/64 note = 1/16 beat
+        gate_percent: 50,
+        ..Default::default()
+    };
+    let Created::Device(nl_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: sync_50.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected note length processor id");
+    };
+
+    let rev_50 = prepare_revision(editor.project());
+    let total_frames = 2_600_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_50)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        pb.render(&mut actual[cursor..cursor + len]).unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Live mid-note edit (gate 50% -> 100%) while Note 1 is held:
+    // Note 1 keeps its already-scheduled 1/32 beat duration; Note 2 uses 1/16 beat!
+    let sync_100 = NoteLengthSettings {
+        gate_percent: 100,
+        ..sync_50
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: nl_id,
+            state: sync_100.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_100 = prepare_revision(editor.project());
+
+    let (mut mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 16), 64, 100),
+    ]);
+    mixed_oracle_editor
+        .execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 64),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(rev_50).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..256]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_100).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[256..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 3. Trigger::NoteOff starts generated note at incoming NoteOff (beat 1/64) for 1/32 beat!
+    let (mut off_editor, off_track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 64), 60, 105)]);
+    let off_settings = NoteLengthSettings {
+        trigger: NoteLengthTrigger::NoteOff,
+        mode: NoteLengthMode::Sync,
+        sync_rate: 0,
+        gate_percent: 50,
+        ..Default::default()
+    };
+    off_editor
+        .execute(Command::InsertMidiProcessor {
+            track: off_track,
+            state: off_settings.encode().unwrap(),
+        })
+        .unwrap();
+    let (off_oracle_editor, _) =
+        build_subtractive_project(&[(beat_frac(1, 64), beat_frac(1, 32), 60, 105)]);
+    let mut off_oracle =
+        SessionPlayback::new(prepare_revision(off_oracle_editor.project())).unwrap();
+    off_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_off = vec![[0.0_f32; 2]; 2_000];
+    off_oracle.render(&mut expected_off).unwrap();
+
+    let mut off_pb = SessionPlayback::new(prepare_revision(off_editor.project())).unwrap();
+    off_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_off = vec![[0.0_f32; 2]; 2_000];
+    for chunk in actual_off.chunks_mut(128) {
+        off_pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual_off, expected_off);
+    assert!(
+        off_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn canonical_arpeggiator_device_matches_pcm_oracle_across_partitions_tempo_and_live_style_edit() {
+    use hex_devices::midi_arpeggiator::{ArpeggiatorSettings, ArpeggiatorStyle};
+    use hex_project::Tempo;
+
+    // Hold C4, E4, G4 from beat 0 to beat 3/16 with rate=1/64 (1/16 beat) and gate=50% (1/32 beat).
+    // A tempo jump 120 -> 240 BPM occurs at beat 1/16!
+    // Up style emits:
+    //   step 0: C4 (60) [0 .. 1/32)
+    //   step 1: E4 (64) [1/16 .. 3/32)
+    //   step 2: G4 (67) [2/16 .. 5/32)
+    let chord = [
+        (BeatTime::ZERO, beat_frac(3, 16), 60, 100),
+        (BeatTime::ZERO, beat_frac(3, 16), 64, 100),
+        (BeatTime::ZERO, beat_frac(3, 16), 67, 100),
+    ];
+    let up_oracle_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 100),
+        (beat_frac(2, 16), beat_frac(1, 32), 67, 100),
+    ];
+
+    let (mut editor, track) = build_subtractive_project(&chord);
+    let (mut oracle_editor, _) = build_subtractive_project(&up_oracle_notes);
+    for ed in [&mut editor, &mut oracle_editor] {
+        ed.execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 16),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    }
+
+    let arp_up = ArpeggiatorSettings {
+        style: ArpeggiatorStyle::Up,
+        rate: 0, // 1/64 note = 1/16 beat
+        gate_percent: 50,
+        steps: 1,
+        ..Default::default()
+    };
+    let Created::Device(arp_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: arp_up.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected arpeggiator processor id");
+    };
+
+    let rev_up = prepare_revision(editor.project());
+    let total_frames = 3_600_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Irregular block partitions across the tempo step match the direct PCM oracle bit-for-bit!
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_up)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        pb.render(&mut actual[cursor..cursor + len]).unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live style edit (Up -> Down) after step 0 (frame 1000, beat < 1/16):
+    // Step 0 already played C4 (60); step_index=1 under Down [67, 64, 60] plays E4 (64);
+    // step_index=2 under Down plays C4 (60)!
+    let arp_down = ArpeggiatorSettings {
+        style: ArpeggiatorStyle::Down,
+        ..arp_up
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: arp_id,
+            state: arp_down.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_down = prepare_revision(editor.project());
+    let (mut mixed_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 100),
+        (beat_frac(2, 16), beat_frac(1, 32), 60, 100),
+    ]);
+    mixed_editor
+        .execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 16),
+            tempo: Tempo::new(240_000_000).unwrap(),
+        })
+        .unwrap();
+    let mut mixed_oracle = SessionPlayback::new(prepare_revision(mixed_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(rev_up).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..1_000]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_down).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[1_000..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
+
+#[test]
+fn canonical_two_branch_midi_rack_matches_pcm_oracle_across_parallel_pitch_bypass_and_stop() {
+    use hex_devices::midi_pitch::PitchSettings;
+    use hex_lattice::{MidiRackBranchSpec, MidiRackSpec};
+
+    // Authored C4 (60) + E4 (64) overlapping notes through a canonical two-branch MIDI Rack:
+    //   Branch 0: Pitch(+4)  -> 64, 68
+    //   Branch 1: Pitch(+7)  -> 67, 71
+    let authored = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 105),
+    ];
+    let rack_spec = MidiRackSpec {
+        rack_id: NonZeroU64::new(1).unwrap(),
+        branches: [
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(10).unwrap(),
+                device_id: NonZeroU64::new(100).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 4,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(20).unwrap(),
+                device_id: NonZeroU64::new(200).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 7,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+        ],
+    };
+
+    let (mut editor, track) = build_subtractive_project(&authored);
+    let Created::Device(rack_dev_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: rack_spec.encode_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected midi rack processor id");
+    };
+
+    let oracle_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 68, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 71, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 105),
+    ];
+    let (oracle_editor, _) = build_subtractive_project(&oracle_notes);
+
+    let rev_both = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_both = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_both).unwrap();
+    assert!(expected_both.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Chunked render matches dual-branch PCM oracle bit-for-bit!
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_both)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual, expected_both);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live mid-note branch 1 bypass: held notes 1 & 2 release all 4 voices cleanly;
+    // Note 3 plays ONLY branch 0 (+4 -> 64)!
+    let mut b1_bypassed = rack_spec.clone();
+    b1_bypassed.branches[1].bypassed = true;
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_dev_id,
+            state: b1_bypassed.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_b1_bypass = prepare_revision(editor.project());
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 68, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 71, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_both)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_b1_bypass).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Undo/Redo and snapshot roundtrip preserve canonical two-branch MIDI Rack state;
+    // Stop + Seek(0) + Play replays cleanly with zero stuck notes.
+    editor.undo();
+    let undone_state = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&undone_state).unwrap(),
+        rack_spec
+    );
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    let reopened_state = reopened
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&reopened_state).unwrap(),
+        rack_spec
+    );
+    editor.redo();
+    let redone_state = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&redone_state).unwrap(),
+        b1_bypassed
+    );
+    editor.undo();
+    let mut stop_pb = SessionPlayback::new(rev_both).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut mid = [[0.0_f32; 2]; 256];
+    stop_pb.render(&mut mid).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; total_frames];
+    stop_pb.render(&mut replay).unwrap();
+    assert_eq!(replay, expected_both);
+}

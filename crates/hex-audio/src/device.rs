@@ -604,17 +604,21 @@ fn render_host_callback<T: SizedSample + FromSample<f32>>(
     channels: usize,
     rate: u32,
     bridge_quantum: Option<u16>,
+    callback_clock: crate::callback_clock::CallbackClock,
     previous_callback_start: &mut Option<Instant>,
 ) where
     f32: FromSample<T>,
 {
-    let start = Instant::now();
+    let start_ns = callback_clock.try_now_ns();
+    let start = callback_clock.now_instant().unwrap_or_else(Instant::now);
     callback.with_host_callback_entry(start, |callback| {
         let timing = status
             .audio_diagnostics_flags()
             .contains(AudioDiagnosticsFlags::TIMING);
-        let start_interval_ns =
-            callback_start_interval(previous_callback_start, timing.then_some(start));
+        let start_interval_ns = callback_start_interval(
+            previous_callback_start,
+            (timing && start_ns.is_some()).then_some(start),
+        );
         callback.begin_block();
         if status.device_fault.load(Acquire) {
             callback.fence_device_fault();
@@ -712,9 +716,9 @@ fn render_host_callback<T: SizedSample + FromSample<f32>>(
         }
         status.record_output_peaks(peaks);
         let frames = data.len() / channels;
-        let elapsed = start.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        let deadline = record_callback_timing(status, elapsed, frames, rate);
-        if timing {
+        let elapsed = callback_clock.try_elapsed_ns(start_ns);
+        let deadline = record_callback_timing_optional(status, elapsed, frames, rate);
+        if timing && let Some(elapsed) = elapsed {
             callback.trace_callback_timing(
                 elapsed,
                 deadline.unwrap_or(0),
@@ -745,6 +749,8 @@ where
     #[cfg(target_os = "macos")]
     let bounded_bridge =
         bridge.and_then(|plan| Some((plan.converting_device_rate?, plan.project_quantum)));
+    // Prewarm the monotonic clock once on control before any callback executes.
+    let callback_clock = crate::callback_clock::CallbackClock::prewarm_monotonic();
     let mut previous_callback_start = None;
     let data_callback = move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
         let Some(owner) = data_guard.owner_mut() else {
@@ -760,6 +766,7 @@ where
                 channels,
                 rate,
                 bridge_quantum,
+                callback_clock,
                 &mut previous_callback_start,
             );
         });
@@ -1078,6 +1085,19 @@ pub(crate) fn headless_worker_output_with_outcomes(
         },
         crate::worker_fixture::HeadlessBackend::new(data, errors),
     ))
+}
+
+fn record_callback_timing_optional(
+    status: &prepared::Status,
+    elapsed: Option<u64>,
+    frames: usize,
+    rate: u32,
+) -> Option<u64> {
+    let Some(elapsed) = elapsed else {
+        status.cpu_meter.record_clock_unavailable();
+        return crate::cpu_meter::callback_deadline_ns(frames, rate);
+    };
+    record_callback_timing(status, elapsed, frames, rate)
 }
 
 fn record_callback_timing(

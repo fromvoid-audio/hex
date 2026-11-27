@@ -147,6 +147,9 @@ pub(in crate::editor) fn bottom_bar(
                 if let Some(track) = state.project.track(id) {
                     for node in track.ordered_device_chain() {
                         let (device, class) = match node {
+                            hex_project::TrackDeviceRef::MidiProcessor(device) => {
+                                (device, NativeDeviceClass::MidiProcessor)
+                            }
                             hex_project::TrackDeviceRef::Instrument(device) => {
                                 (device, NativeDeviceClass::Instrument)
                             }

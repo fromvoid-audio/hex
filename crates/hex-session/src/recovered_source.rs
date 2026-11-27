@@ -9,6 +9,9 @@ use std::{
 pub struct RecoveredSource {
     pub decoded: DecodedAudio,
     pub truncation: Option<WavTruncation>,
+    /// Unremoved staging pathname retained by non-renaming create-new WAV
+    /// publication (`fclonefileat` or copy fallback), when applicable.
+    pub retained_stage: Option<PathBuf>,
 }
 
 /// A failure after publication retains the named recovered file for inspection.
@@ -17,7 +20,11 @@ pub enum RecoverySourceError {
     Decode(ImportError),
     OutputLimit,
     Publish(hex_export::ExportError),
-    PublishedSourceInvalid { path: PathBuf, reason: String },
+    PublishedSourceInvalid {
+        path: PathBuf,
+        retained_stage: Option<PathBuf>,
+        reason: String,
+    },
 }
 impl fmt::Display for RecoverySourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -29,11 +36,25 @@ impl fmt::Display for RecoverySourceError {
                 "could not publish recovered source: {}",
                 crate::export_error::export_error_text(error)
             ),
-            Self::PublishedSourceInvalid { path, reason } => write!(
-                f,
-                "recovered source retained at {} but could not be verified: {reason}",
-                hex_storage::text::verbatim(path.display())
-            ),
+            Self::PublishedSourceInvalid {
+                path,
+                retained_stage,
+                reason,
+            } => {
+                write!(
+                    f,
+                    "recovered source retained at {} but could not be verified: {reason}",
+                    hex_storage::text::verbatim(path.display())
+                )?;
+                if let Some(stage) = retained_stage {
+                    write!(
+                        f,
+                        "; inspect the staging path at {} before removing anything",
+                        hex_storage::text::verbatim(stage.display())
+                    )?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -56,12 +77,14 @@ pub fn recover_wav_to_new_source(
         .and_then(|n| n.checked_add(hex_export::FLOAT32_WAV_HEADER_BYTES as usize))
         .filter(|n| *n <= max_output_bytes)
         .ok_or(RecoverySourceError::OutputLimit)?;
-    hex_export::publish_resident_source_new(destination, decoded.audio())
+    let report = hex_export::publish_resident_source_new(destination, decoded.audio())
         .map_err(RecoverySourceError::Publish)?;
-    let published = verify_published(destination, output_bytes, &decoded)?;
+    let retained_stage = report.retained_stage;
+    let published = verify_published(destination, output_bytes, &decoded, retained_stage.clone())?;
     Ok(RecoveredSource {
         decoded: published,
         truncation,
+        retained_stage,
     })
 }
 
@@ -69,9 +92,11 @@ fn verify_published(
     destination: &Path,
     output_bytes: usize,
     decoded: &DecodedAudio,
+    retained_stage: Option<PathBuf>,
 ) -> Result<DecodedAudio, RecoverySourceError> {
     let invalid = |reason: String| RecoverySourceError::PublishedSourceInvalid {
         path: destination.to_path_buf(),
+        retained_stage: retained_stage.clone(),
         reason,
     };
     let published =
@@ -204,9 +229,21 @@ mod tests {
         altered[58] ^= 1;
         fs::write(&changed, &altered).unwrap();
         let (reference, _) = hex_media::recover_wav_file(&original_path, limits).unwrap();
-        assert!(
-            matches!(verify_published(&changed, 74, &reference), Err(RecoverySourceError::PublishedSourceInvalid { path, .. }) if path == changed)
-        );
+        let retained_stage = PathBuf::from("/MixedCase/Stage.tmp");
+        let err = verify_published(&changed, 74, &reference, Some(retained_stage.clone()))
+            .expect_err("altered published source must fail verification");
+        assert!(matches!(
+            &err,
+            RecoverySourceError::PublishedSourceInvalid {
+                path,
+                retained_stage: Some(stage),
+                ..
+            } if path == &changed && stage == &retained_stage
+        ));
+        let displayed = hex_storage::text::plain(&hex_storage::text::lowercase_outside_verbatim(
+            &err.to_string(),
+        ));
+        assert!(displayed.contains("/MixedCase/Stage.tmp"), "{displayed}");
         assert_eq!(fs::read(&changed).unwrap(), altered);
         fs::remove_dir_all(dir).unwrap();
     }

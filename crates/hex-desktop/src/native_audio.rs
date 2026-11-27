@@ -20,6 +20,8 @@ use std::sync::{
 
 mod document_output;
 mod event_coalescer;
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(crate) mod external_instrument;
 mod output_lifecycle;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) mod plugins;

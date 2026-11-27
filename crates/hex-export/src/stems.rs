@@ -553,6 +553,7 @@ fn render_stems_with_resources_and_hook(
     sync_parent_directory(path).map_err(|source| ExportError::PublishedButNotDurable {
         path: path.to_owned(),
         recovery_path: None,
+        retained_stage: None,
         operation: "synchronize the stem batch parent",
         source,
     })?;
@@ -564,6 +565,7 @@ fn render_stems_with_resources_and_hook(
         // Summed across every stem file in the batch.
         clipped_samples,
         recovery_path: None,
+        retained_stage: None,
         applied_gain_linear: AppliedGain::UNITY.linear,
         applied_gain_db: AppliedGain::UNITY.db,
     })

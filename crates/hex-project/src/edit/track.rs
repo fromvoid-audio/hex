@@ -91,6 +91,7 @@ pub(crate) fn new_track(
         muted: false,
         soloed: false,
         devices: Vec::new(),
+        midi_processor: None,
         instrument: None,
         retained_source_path: false,
         instrument_position: None,

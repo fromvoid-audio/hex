@@ -681,7 +681,7 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
         "sdk_thread_cpu_ns=",
         "quantum_ns=",
         "dropped=",
-        "queue_ns=unavailable",
+        "queue_ns=",
     ] {
         assert!(line.contains(field), "{line}");
     }
@@ -695,6 +695,7 @@ fn slow_native_instrument_exchange_reaches_the_session_log() {
     };
     let exchange = number("exchange_ns=");
     let sdk = number("sdk_process_ns=");
+    let _queue = number("queue_ns=");
     let pickup = line
         .trim_end_matches('"')
         .split_whitespace()

@@ -2637,9 +2637,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-device-abi"
+version = "0.1.0"
+dependencies = [
+ "hex-lattice-contract",
+ "libc",
+]
+
+[[package]]
 name = "hex-devices"
 version = "0.1.0"
 dependencies = [
+ "hex-device-abi",
  "hex-dsp",
  "hex-lattice",
  "hex-lattice-contract",

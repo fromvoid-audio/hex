@@ -595,7 +595,8 @@ fn owned_device(
             .find(|item| item.id() == device),
         DevicePanelOwner::Track(id) => project.track(id)?.ordered_device_chain().find_map(|item| {
             let item = match item {
-                hex_project::TrackDeviceRef::Instrument(item)
+                hex_project::TrackDeviceRef::MidiProcessor(item)
+                | hex_project::TrackDeviceRef::Instrument(item)
                 | hex_project::TrackDeviceRef::Effect(item) => item,
             };
             (item.id() == device).then_some(item)

@@ -10,17 +10,23 @@ mod compressor;
 mod cursor_loop;
 #[path = "callback_allocations/device_track.rs"]
 mod device_track;
+#[path = "callback_allocations/external_audio_effect.rs"]
+mod external_audio_effect;
 mod filter;
 #[path = "callback_allocations/finite_bounce.rs"]
 mod finite_bounce;
 #[path = "callback_allocations/gate.rs"]
 mod gate;
+#[path = "callback_allocations/hardware_send_return.rs"]
+mod hardware_send_return;
 #[path = "callback_allocations/instrument_rack.rs"]
 mod instrument_rack;
 #[path = "callback_allocations/midi_processor.rs"]
 mod midi_processor;
 #[path = "callback_allocations/multi_output.rs"]
 mod multi_output;
+#[path = "callback_allocations/multi_output_routing.rs"]
+mod multi_output_routing;
 #[path = "callback_allocations/multisample_zones.rs"]
 mod multisample_zones;
 #[path = "callback_allocations/output_capture.rs"]

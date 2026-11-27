@@ -39,7 +39,9 @@ fn filter_panel_exposes_controls_and_wet_response(cx: &mut TestAppContext) {
         .unwrap();
     assert!(response.size.width >= px(100.0));
     assert!(response.size.height >= px(80.0));
-    for parameter in [1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13] {
+    for parameter in [
+        1, 2, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 21,
+    ] {
         let selector =
             Box::leak(format!("device-{}-parameter-{parameter}", device.value()).into_boxed_str());
         let control = visual

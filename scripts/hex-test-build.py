@@ -1025,8 +1025,11 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
             raise DeliveryError("invalid scoped verification plan")
         if reservation is not None:
             reservation.revalidate(runner.env.get("CARGO_TARGET_DIR"))
+        metadata_env = (
+            runner.env if reservation is None else dict(runner.env, CARGO_CACHE_RUSTC_INFO="0")
+        )
         metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"],
-                                  runner.root, env=runner.env))
+                                  runner.root, env=metadata_env))
         if reservation is not None:
             reservation.revalidate(metadata.get("target_directory"))
             if metadata.get("workspace_root") != str(runner.root):
@@ -1123,18 +1126,36 @@ def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
 
 def build(args) -> dict:
     require_delivery_source(ROOT)
-    if not getattr(args, "fresh_release_target", False):
-        return _build(args)
-    if (getattr(args, "adopt_release_target", False)
-            or getattr(args, "expected_release_owner_sha256", None) is not None
-            or getattr(args, "expected_recreated_target_device", None) is not None
-            or getattr(args, "expected_recreated_target_inode", None) is not None):
-        raise DeliveryError("fresh release target cannot adopt or recover an owner")
-    target = os.environ.get("CARGO_TARGET_DIR")
-    if not target or os.environ.get("CARGO_CACHE_RUSTC_INFO") != "0":
-        raise DeliveryError("fresh release target requires explicit CARGO_TARGET_DIR and CARGO_CACHE_RUSTC_INFO=0")
-    with ci.FreshTargetReservation.acquire(ROOT, target, {"operation": "fresh-release-delivery"}) as reservation:
-        return _build(args, reservation=reservation)
+    fresh = getattr(args, "fresh_release_target", False)
+    existing = getattr(args, "existing_release_target", False)
+    if fresh and existing:
+        raise DeliveryError("cannot combine fresh and existing release target custody")
+    if fresh:
+        if (getattr(args, "adopt_release_target", False)
+                or getattr(args, "expected_release_owner_sha256", None) is not None
+                or getattr(args, "expected_recreated_target_device", None) is not None
+                or getattr(args, "expected_recreated_target_inode", None) is not None):
+            raise DeliveryError("fresh release target cannot adopt or recover an owner")
+        target = os.environ.get("CARGO_TARGET_DIR")
+        if not target or os.environ.get("CARGO_CACHE_RUSTC_INFO") != "0":
+            raise DeliveryError("fresh release target requires explicit CARGO_TARGET_DIR and CARGO_CACHE_RUSTC_INFO=0")
+        with ci.FreshTargetReservation.acquire(ROOT, target, {"operation": "fresh-release-delivery"}) as reservation:
+            return _build(args, reservation=reservation)
+    if existing:
+        if (getattr(args, "expected_recreated_target_device", None) is not None
+                or getattr(args, "expected_recreated_target_inode", None) is not None):
+            raise DeliveryError("existing release target custody cannot use recreated-target recovery")
+        target = os.environ.get("CARGO_TARGET_DIR")
+        if not target:
+            raise DeliveryError("existing release target requires an explicit CARGO_TARGET_DIR")
+        with ci.ExistingReleaseTargetReservation.acquire(
+            ROOT,
+            target,
+            {"operation": "existing-release-delivery"},
+            expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
+        ) as reservation:
+            return _build(args, reservation=reservation)
+    return _build(args)
 
 
 def _build(args, *, reservation=None) -> dict:
@@ -1184,14 +1205,17 @@ def _build(args, *, reservation=None) -> dict:
             release_ownership = ownership
 
         def revalidate() -> None:
+            is_existing = getattr(reservation, "_RESERVATION_KIND", None) == "existing_release"
             if build_only:
                 validate_source(runner, args.candidate, expected=source_evidence)
             else:
                 validate_ci(args.ci_report, runner, args.candidate,
                             **({"allow_dev_profile": True} if getattr(args, "dev_profile", False) else {}),
-                            **({"reservation": reservation} if reservation is not None and release_ownership is None else {}))
+                            **({"reservation": reservation} if reservation is not None and (release_ownership is None or is_existing) else {}))
             if release_ownership is not None:
                 runner.validate_release_inputs(release_ownership)
+                if is_existing:
+                    reservation.revalidate(reservation._target)
 
         revalidate()
         changelog_bytes, changelog_identity = changelog_payload(ROOT)
@@ -1329,8 +1353,11 @@ def main() -> int:
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
                         help="recover a pending release target with verified empty origin and identical inputs")
-    parser.add_argument("--fresh-release-target", action="store_true",
-                        help="reserve the explicit existing empty CARGO_TARGET_DIR before metadata")
+    target_custody = parser.add_mutually_exclusive_group()
+    target_custody.add_argument("--fresh-release-target", action="store_true",
+                                help="reserve the explicit existing empty CARGO_TARGET_DIR before metadata")
+    target_custody.add_argument("--existing-release-target", action="store_true",
+                                help="reserve the explicit existing owned CARGO_TARGET_DIR and release owner before metadata")
     parser.add_argument("--vst3-instance-receipt", type=Path,
                         help="include exact-source minimal native instance helper")
     discovery = parser.add_mutually_exclusive_group()

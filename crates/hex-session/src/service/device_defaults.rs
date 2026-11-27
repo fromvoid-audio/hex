@@ -2,21 +2,23 @@
 //! existing control worker before canonical preparation; supplied state never
 //! enters this resolver. The queue captures application-directory configuration.
 use super::{TrackCatalogPlacement, native_device_name, preset};
+use crate::Session;
 use hex_engine::NativeDeviceClass;
 use hex_lattice_contract::DeviceTypeId;
-use hex_project::{Command, DeviceInitialization, Project, TrackId};
+use hex_project::{Command, DeviceInitialization, TrackId};
 use hex_storage::preset::PresetContents;
 use std::path::Path;
 
 pub(super) fn track_picker_command(
-    project: &Project,
+    session: &Session,
     track: TrackId,
     class: NativeDeviceClass,
     type_id: DeviceTypeId,
     placement: TrackCatalogPlacement,
     root: Option<&Path>,
-) -> Result<Command, String> {
-    if !project
+) -> Result<preset::PreparedCommand, String> {
+    if !session
+        .project()
         .track(track)
         .is_some_and(|track| placement.matches_track(class, track))
     {
@@ -28,6 +30,11 @@ pub(super) fn track_picker_command(
         TrackCatalogPlacement::ReplaceInstrument(device) => {
             Command::ReplaceDeviceState { device, state }
         }
+        TrackCatalogPlacement::ReplaceMidiProcessor(device) => Command::ReplaceTrackMidiProcessor {
+            track,
+            replacing: device,
+            state,
+        },
         TrackCatalogPlacement::Insert { .. } if class == NativeDeviceClass::Instrument => {
             Command::LoadInstrument {
                 track,
@@ -36,23 +43,29 @@ pub(super) fn track_picker_command(
                 device_name: native_device_name(class, type_id)?,
             }
         }
+        TrackCatalogPlacement::Insert { .. } if class == NativeDeviceClass::MidiProcessor => {
+            Command::InsertMidiProcessor { track, state }
+        }
         TrackCatalogPlacement::Insert { before } => Command::InsertDevice {
             track,
             before,
             state,
         },
     };
-    initialize(command, class, root)
+    initialize(session, command, class, root)
 }
 
 pub(super) fn initialize(
+    session: &Session,
     mut command: Command,
     class: NativeDeviceClass,
     root: Option<&Path>,
-) -> Result<Command, String> {
+) -> Result<preset::PreparedCommand, String> {
     let state = match &mut command {
         Command::InsertDevice { state, .. }
         | Command::InsertNestedDevice { state, .. }
+        | Command::InsertMidiProcessor { state, .. }
+        | Command::ReplaceTrackMidiProcessor { state, .. }
         | Command::InsertInstrument { state, .. }
         | Command::LoadInstrument { state, .. }
         | Command::InsertMainDevice { state, .. }
@@ -72,11 +85,15 @@ pub(super) fn initialize(
             *state = preset.state;
             preset.comparison
         }
-        Some(PresetContents::Unit(unit)) => return preset::initialize_default_unit(command, unit),
+        Some(PresetContents::Unit(unit)) => {
+            return preset::prepare_unit_command(session, command, unit, true, root);
+        }
         None => None,
     };
     DeviceInitialization::new(command, comparison)
-        .map(|initialization| Command::InitializeDevice(Box::new(initialization)))
+        .map(|initialization| {
+            preset::PreparedCommand::plain(Command::InitializeDevice(Box::new(initialization)))
+        })
         .map_err(|error| error.to_string())
 }
 

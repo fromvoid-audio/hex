@@ -1182,7 +1182,8 @@ fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
         || project.tracks().iter().any(|track| {
             track.ordered_device_chain().any(|node| {
                 let device = match node {
-                    hex_project::TrackDeviceRef::Instrument(device)
+                    hex_project::TrackDeviceRef::MidiProcessor(device)
+                    | hex_project::TrackDeviceRef::Instrument(device)
                     | hex_project::TrackDeviceRef::Effect(device) => device,
                 };
                 device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")

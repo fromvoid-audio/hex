@@ -109,6 +109,7 @@ pub(super) use modulators::AddModulatorAction;
 #[cfg(feature = "ui-test-support")]
 pub(super) mod operator_focus_fixture;
 mod operator_panel;
+pub(in crate::editor) mod package_panel;
 mod parameter_rows;
 pub(super) mod vst3_parameters;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;

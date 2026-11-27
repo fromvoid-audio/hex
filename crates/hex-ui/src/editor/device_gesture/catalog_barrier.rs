@@ -87,7 +87,8 @@ fn chain_contains(
     match owner {
         hex_project::DeviceChainOwner::Track(id) => project.track(id).is_some_and(|track| {
             track.ordered_device_chain().any(|node| match node {
-                hex_project::TrackDeviceRef::Instrument(candidate)
+                hex_project::TrackDeviceRef::MidiProcessor(candidate)
+                | hex_project::TrackDeviceRef::Instrument(candidate)
                 | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id() == device,
             })
         }),

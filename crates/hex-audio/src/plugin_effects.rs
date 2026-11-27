@@ -461,6 +461,12 @@ impl NativeEffect {
             instance.ready().tail_frames,
             configuration.prepared.total_latency_frames(),
         );
+        let offline = instance.is_offline_on_control();
+        let callback_clock = if offline {
+            crate::callback_clock::CallbackClock::unavailable()
+        } else {
+            crate::callback_clock::CallbackClock::prewarm_monotonic()
+        };
         let (worker, transport) = if dense_raw_id.is_some() {
             let (worker, callback) =
                 NativeWorker::start_retained_dense_effect_on_control(instance)?;
@@ -476,6 +482,7 @@ impl NativeEffect {
             callback: NativeEffectCallback {
                 configuration,
                 transport,
+                callback_clock,
                 input: [[0.0; 2]; MAX_FRAMES],
                 dry_output: [[0.0; 2]; MAX_FRAMES],
                 dry,
@@ -636,6 +643,7 @@ impl NativeEffect {
 pub struct NativeEffectCallback {
     configuration: Configuration,
     transport: EffectTransport,
+    callback_clock: crate::callback_clock::CallbackClock,
     input: [[f32; 2]; MAX_FRAMES],
     dry_output: [[f32; 2]; MAX_FRAMES],
     dry: Vec<[f32; 2]>,
@@ -717,7 +725,9 @@ impl NativeEffectCallback {
     /// Only after complete final host-format acceptance. Engine success alone
     /// must not dispatch copied input; refusal revokes instead of retry/replay.
     pub fn finish_host_callback(&mut self, accepted: bool) -> Result<(), Fault> {
-        self.transport.finish(accepted)?;
+        let published_at_ns = accepted.then(|| self.callback_clock.try_now_ns()).flatten();
+        self.transport
+            .finish_with_publish_timestamp(accepted, published_at_ns)?;
         self.tail.commit();
         Ok(())
     }
@@ -820,6 +830,7 @@ impl NativeEffectCallback {
                 state_verifier: None,
             },
             transport: EffectTransport::Ordinary(transport),
+            callback_clock: crate::callback_clock::CallbackClock::prewarm_monotonic(),
             input: [[0.0; 2]; MAX_FRAMES],
             dry_output: [[0.0; 2]; MAX_FRAMES],
             dry: vec![[0.0; 2]; latency as usize],

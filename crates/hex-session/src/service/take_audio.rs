@@ -229,6 +229,9 @@ impl ExcerptSummary {
 pub struct PreparedTakeExcerpt {
     pub path: std::path::PathBuf,
     pub preview: super::AudioPreview,
+    /// Unremoved staging pathname retained by non-renaming create-new WAV
+    /// publication (`fclonefileat` or copy fallback), when applicable.
+    pub retained_stage: Option<std::path::PathBuf>,
 }
 
 /// Prepare a selected take for dragging. If waveform construction fails after
@@ -267,20 +270,22 @@ pub fn prepare_excerpt(
     let path = take
         .path
         .with_file_name(format!("{stem}-{stamp}-{serial}.wav"));
-    hex_export::write_float_wav_new(&path, take.sample_rate, frames, cancel, |output| {
-        let at = range
-            .start
-            .checked_add(summary.processed)
-            .ok_or(ExportError::Invalid("take range overflows"))?;
-        let got = source
-            .read_frames_into(at, output)
-            .map_err(|error| ExportError::Media(error.to_string()))?;
-        if got != output.len() {
-            return Err(ExportError::Invalid("the retained take changed"));
-        }
-        summary.observe(output).map_err(ExportError::Invalid)
-    })
-    .map_err(|error| super::export_error_text(&error))?;
+    let report =
+        hex_export::write_float_wav_new(&path, take.sample_rate, frames, cancel, |output| {
+            let at = range
+                .start
+                .checked_add(summary.processed)
+                .ok_or(ExportError::Invalid("take range overflows"))?;
+            let got = source
+                .read_frames_into(at, output)
+                .map_err(|error| ExportError::Media(error.to_string()))?;
+            if got != output.len() {
+                return Err(ExportError::Invalid("the retained take changed"));
+            }
+            summary.observe(output).map_err(ExportError::Invalid)
+        })
+        .map_err(|error| super::export_error_text(&error))?;
+    let retained_stage = report.retained_stage;
     let waveform = summary.waveform();
     #[cfg(test)]
     let waveform = match excerpt_failure_hook::run(&path) {
@@ -292,10 +297,17 @@ pub fn prepare_excerpt(
         Err(error) => {
             // The published pathname may now name another process's file.
             // Keep it untouched and report it without claiming its identity.
-            return Err(format!(
+            let mut message = format!(
                 "{error} · excerpt path {} was not removed · inspect it before removing anything",
                 crate::service::text::verbatim(path.display())
-            ));
+            );
+            if let Some(stage) = retained_stage {
+                message.push_str(&format!(
+                    " · staging path {} was not removed · inspect it before removing anything",
+                    crate::service::text::verbatim(stage.display())
+                ));
+            }
+            return Err(message);
         }
     };
     Ok(PreparedTakeExcerpt {
@@ -305,6 +317,7 @@ pub fn prepare_excerpt(
             sample_rate: project_rate,
             waveform: Arc::new(waveform),
         },
+        retained_stage,
     })
 }
 

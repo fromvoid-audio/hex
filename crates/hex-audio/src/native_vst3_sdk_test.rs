@@ -31,6 +31,7 @@ pub(crate) fn retry_pending_push<T: Copy>(
 }
 
 pub mod audio_diagnostics;
+pub mod callback_clock;
 pub mod cpu_meter;
 mod device;
 pub mod input_capture;

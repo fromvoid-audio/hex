@@ -33,6 +33,35 @@ pub(crate) const MAX_MUTABLE_NOTE_EVENTS_PER_QUERY: usize = 256;
 pub(crate) const MAX_MUTABLE_EVENTS_PER_QUERY: usize = MAX_MUTABLE_NOTE_EVENTS_PER_QUERY + 3;
 pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 pub(crate) const MAX_MUTABLE_EXPRESSION_EVENTS_PER_QUERY: usize = 64;
+
+fn native_event_sort_key(event: NativeInstrumentEvent) -> (usize, u8, u64) {
+    let (rank, occurrence_id) = match event {
+        NativeInstrumentEvent::Expression { .. }
+        | NativeInstrumentEvent::ControlChange { .. }
+        | NativeInstrumentEvent::PitchBend { .. } => (0, 0),
+        NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
+        NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
+        NativeInstrumentEvent::NotePitchBend { occurrence_id, .. } => (3, occurrence_id.get()),
+        NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => (4, occurrence_id.get()),
+        NativeInstrumentEvent::NotePressure { occurrence_id, .. } => (5, occurrence_id.get()),
+    };
+    (event.frame_offset(), rank, occurrence_id)
+}
+
+/// Allocation-free stable insertion sort preserving arrival/wire order for
+/// equal `(frame_offset, rank, occurrence_id)` (e.g., same-offset CCs).
+pub(crate) fn stable_sort_native_events(events: &mut [NativeInstrumentEvent]) {
+    for i in 1..events.len() {
+        let current = events[i];
+        let key = native_event_sort_key(current);
+        let mut j = i;
+        while j > 0 && native_event_sort_key(events[j - 1]) > key {
+            events[j] = events[j - 1];
+            j -= 1;
+        }
+        events[j] = current;
+    }
+}
 /// The MIDI compiler admits at most 64 overlapping source intervals per
 /// instrument, including the declared release tail. This fixed proof capacity
 /// therefore covers every dispatched occurrence whose old-law tail can still
@@ -816,10 +845,21 @@ impl MutableInstrumentTrackRuntime {
         identity: std::num::NonZeroU64,
         prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
     ) -> Result<midi_processor::MidiProcessorStage, MutableInstrumentRuntimeError> {
+        self.prepare_midi_processor_with_bypass(identity, prepared, false)
+    }
+
+    /// Prepare the processor pair with host bypass state on control before the
+    /// graph admits its storage.
+    pub(crate) fn prepare_midi_processor_with_bypass(
+        &self,
+        identity: std::num::NonZeroU64,
+        prepared: &dyn hex_lattice::PreparedNativeMidiProcessor,
+        bypassed: bool,
+    ) -> Result<midi_processor::MidiProcessorStage, MutableInstrumentRuntimeError> {
         if !self.committed_is_quiescent() || !self.committed_state_available() {
             return Err(MutableInstrumentRuntimeError::Budget);
         }
-        midi_processor::MidiProcessorStage::new(identity, prepared)
+        midi_processor::MidiProcessorStage::new_with_bypass(identity, prepared, bypassed)
     }
 
     pub(crate) fn install_prepared_midi_processor(
@@ -1758,23 +1798,7 @@ impl MutableInstrumentTrackRuntime {
             },
         )?;
 
-        events.sort_unstable_by_key(|event| {
-            let (rank, occurrence_id) = match *event {
-                NativeInstrumentEvent::Expression { .. }
-                | NativeInstrumentEvent::ControlChange { .. }
-                | NativeInstrumentEvent::PitchBend { .. } => (0, 0),
-                NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
-                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
-                NativeInstrumentEvent::NotePitchBend { occurrence_id, .. } => {
-                    (3, occurrence_id.get())
-                }
-                NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => (4, occurrence_id.get()),
-                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
-                    (5, occurrence_id.get())
-                }
-            };
-            (event.frame_offset(), rank, occurrence_id)
-        });
+        stable_sort_native_events(events);
         if let Some(stage) = &mut self.midi_processor {
             stage.process_block(events, frames.len(), clock)?;
         }
@@ -2145,7 +2169,27 @@ pub(crate) fn validate_prepared_graph_budget(
     arrangement: &crate::Project,
     session: &crate::PreparedSessionInventory,
 ) -> Result<(), MutableInstrumentRuntimeError> {
-    validate_prepared_graph_with_midi_processors(arrangement, session, 0, 0)
+    let mut midi_count = 0_usize;
+    let mut midi_bytes = 0_usize;
+    for track in arrangement.tracks() {
+        let Some(track_id) = track.canonical_track_id() else {
+            return Err(MutableInstrumentRuntimeError::Budget);
+        };
+        if let Some((_, _, prepared)) = session.mutable_midi_processor(track_id) {
+            midi_count = midi_count
+                .checked_add(1)
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+            midi_bytes = midi_bytes
+                .checked_add(
+                    prepared
+                        .declared_twin_bytes()
+                        .checked_mul(2)
+                        .ok_or(MutableInstrumentRuntimeError::Budget)?,
+                )
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        }
+    }
+    validate_prepared_graph_with_midi_processors(arrangement, session, midi_count, midi_bytes)
 }
 
 pub(crate) fn validate_prepared_graph_with_midi_processors(

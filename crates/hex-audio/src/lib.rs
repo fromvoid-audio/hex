@@ -41,10 +41,16 @@ pub(crate) fn retry_pending_push<T: Copy>(
 }
 
 pub mod audio_diagnostics;
+pub mod callback_clock;
 pub mod cpu_meter;
 mod device;
+pub mod external_audio_effect;
+pub mod external_instrument;
+pub mod hardware_send_return;
 pub mod input_capture;
 pub mod input_devices;
+#[cfg(test)]
+mod installed_package_tests;
 mod open_outcome;
 pub mod output_devices;
 mod output_route;

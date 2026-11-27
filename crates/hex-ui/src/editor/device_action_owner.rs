@@ -34,6 +34,7 @@ pub(super) fn device_in_panel(
     };
     let location = project.device_in_chain(chain, id)?;
     let actual = match location.class {
+        DeviceUnitClass::MidiProcessor => NativeDeviceClass::MidiProcessor,
         DeviceUnitClass::Instrument => NativeDeviceClass::Instrument,
         DeviceUnitClass::Effect => NativeDeviceClass::Effect,
     };

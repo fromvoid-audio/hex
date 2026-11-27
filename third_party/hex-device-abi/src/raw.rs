@@ -1,0 +1,520 @@
+//! Strictly isolated POSIX `dlopen`/`dlsym`/`dlclose` + Hex C ABI v1 vtable
+//! wrapper (`#2992`). All `unsafe` FFI lives exclusively in this private module.
+#![allow(unsafe_code)]
+
+use crate::{BorrowedAbiPcm, BorrowedAbiResource};
+use hex_lattice_contract::package_abi::{
+    AbiDescriptor, AbiNoteEvent, AbiParamEvent, AbiParameterDescriptor, AbiProcessContext,
+    AbiResourceDescriptor, AbiStatus, CAP_BORROWED_RESOURCES, PACKAGE_ABI_MAX_RESOURCES,
+    PACKAGE_ABI_VERSION_V1, RESOURCE_LAYOUT_MONO, RESOURCE_LAYOUT_STEREO_INTERLEAVED,
+    validate_pcm_output,
+};
+use std::ffi::{CString, c_void};
+use std::os::unix::ffi::OsStrExt;
+use std::path::Path;
+use std::sync::Arc;
+
+type DescribeFn = unsafe extern "C" fn(*mut AbiDescriptor) -> i32;
+type ParamDescFn = unsafe extern "C" fn(u32, *mut AbiParameterDescriptor) -> i32;
+type CreateFn = unsafe extern "C" fn(u32, *mut *mut c_void) -> i32;
+type DestroyFn = unsafe extern "C" fn(*mut c_void);
+type SetStateFn = unsafe extern "C" fn(*mut c_void, *const u8, u32) -> i32;
+type GetStateFn = unsafe extern "C" fn(*const c_void, *mut u8, u32, *mut u32) -> i32;
+type ProcessFn = unsafe extern "C" fn(
+    *mut c_void,
+    *const AbiProcessContext,
+    *const f32,
+    *mut f32,
+    *const AbiParamEvent,
+    *const AbiNoteEvent,
+) -> i32;
+type EntryFn = unsafe extern "C" fn(u32, *mut AbiVtableV1) -> i32;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AbiResourceViewRaw {
+    meta: AbiResourceDescriptor,
+    samples: *const f32,
+}
+
+type ProcessWithResourcesFn = unsafe extern "C" fn(
+    *mut c_void,
+    *const AbiProcessContext,
+    *const f32,
+    *mut f32,
+    *const AbiParamEvent,
+    *const AbiNoteEvent,
+    *const AbiResourceViewRaw,
+    u32,
+) -> i32;
+type ResourcesEntryFn = unsafe extern "C" fn(u32, *mut AbiResourceVtableV1) -> i32;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AbiResourceVtableV1 {
+    struct_size: u32,
+    abi_version: u32,
+    process_with_resources: Option<ProcessWithResourcesFn>,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct AbiVtableV1 {
+    struct_size: u32,
+    abi_version: u32,
+    describe: Option<DescribeFn>,
+    parameter_descriptor: Option<ParamDescFn>,
+    create: Option<CreateFn>,
+    destroy: Option<DestroyFn>,
+    set_state: Option<SetStateFn>,
+    get_state: Option<GetStateFn>,
+    process: Option<ProcessFn>,
+}
+
+struct LibraryLease {
+    raw: *mut c_void,
+    vtable: AbiVtableV1,
+    resource_vtable: Option<AbiResourceVtableV1>,
+    descriptor: AbiDescriptor,
+}
+
+// SAFETY: `LibraryLease` holds an immutable `dlopen` handle and negotiated C
+// function pointers; `dlclose` runs only after every `RawInstance` holding an
+// `Arc<LibraryLease>` has been destroyed on control.
+unsafe impl Send for LibraryLease {}
+unsafe impl Sync for LibraryLease {}
+
+impl Drop for LibraryLease {
+    fn drop(&mut self) {
+        if !self.raw.is_null() {
+            // SAFETY: `self.raw` was opened by `dlopen` and all instances have dropped.
+            unsafe {
+                libc::dlclose(self.raw);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct RawPackageModule {
+    lease: Arc<LibraryLease>,
+}
+
+pub(crate) struct RawPackageInstance {
+    lease: Arc<LibraryLease>,
+    ptr: *mut c_void,
+    sample_rate: u32,
+}
+
+// SAFETY: Instance access is serialized via `&mut self`.
+unsafe impl Send for RawPackageInstance {}
+
+impl Drop for RawPackageInstance {
+    fn drop(&mut self) {
+        if !self.ptr.is_null()
+            && let Some(destroy) = self.lease.vtable.destroy
+        {
+            // SAFETY: `self.ptr` was created by `vtable.create` while `self.lease` keeps the module mapped.
+            unsafe {
+                destroy(self.ptr);
+            }
+            self.ptr = std::ptr::null_mut();
+        }
+    }
+}
+
+impl RawPackageModule {
+    pub(crate) fn load(path: &Path) -> Result<Self, AbiStatus> {
+        let c_path =
+            CString::new(path.as_os_str().as_bytes()).map_err(|_| AbiStatus::InvalidArg)?;
+        // SAFETY: Valid NUL-terminated path; eager local binding keeps symbols isolated.
+        let raw = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_LOCAL | libc::RTLD_NOW) };
+        if raw.is_null() {
+            return Err(AbiStatus::InternalFault);
+        }
+        let symbol = CString::new("hex_device_abi_v1_entry").map_err(|_| AbiStatus::InvalidArg)?;
+        // SAFETY: `raw` is a valid handle and `symbol` is NUL-terminated.
+        let sym = unsafe { libc::dlsym(raw, symbol.as_ptr()) };
+        if sym.is_null() {
+            // SAFETY: Close handle on missing entry symbol.
+            unsafe {
+                libc::dlclose(raw);
+            }
+            return Err(AbiStatus::UnsupportedAbi);
+        }
+        // SAFETY: Contractually matches `HexDeviceAbiEntryFn` in `hex_device_abi_v1.h`.
+        let entry: EntryFn = unsafe { std::mem::transmute(sym) };
+        let mut vtable = AbiVtableV1 {
+            struct_size: std::mem::size_of::<AbiVtableV1>() as u32,
+            abi_version: 0,
+            describe: None,
+            parameter_descriptor: None,
+            create: None,
+            destroy: None,
+            set_state: None,
+            get_state: None,
+            process: None,
+        };
+        // SAFETY: `vtable` carries its exact `struct_size`.
+        let status = AbiStatus::from_i32(unsafe { entry(PACKAGE_ABI_VERSION_V1, &mut vtable) });
+        if status != AbiStatus::Ok
+            || vtable.abi_version != PACKAGE_ABI_VERSION_V1
+            || vtable.describe.is_none()
+            || vtable.parameter_descriptor.is_none()
+            || vtable.create.is_none()
+            || vtable.destroy.is_none()
+            || vtable.set_state.is_none()
+            || vtable.get_state.is_none()
+            || vtable.process.is_none()
+        {
+            // SAFETY: Close handle on negotiation failure.
+            unsafe {
+                libc::dlclose(raw);
+            }
+            return Err(if status == AbiStatus::Ok {
+                AbiStatus::UnsupportedAbi
+            } else {
+                status
+            });
+        }
+        let mut descriptor = AbiDescriptor {
+            struct_size: std::mem::size_of::<AbiDescriptor>() as u32,
+            magic: 0,
+            abi_version: 0,
+            device_kind: 0,
+            state_version: 0,
+            ui_version: 0,
+            package_major: 0,
+            package_minor: 0,
+            package_patch: 0,
+            reserved0: 0,
+            capabilities: 0,
+            reported_latency_frames: 0,
+            tail_frames: 0,
+            parameter_count: 0,
+            max_state_bytes: 0,
+            type_id_len: 0,
+            reserved1: 0,
+            type_id: [0u8; 128],
+        };
+        let Some(describe_fn) = vtable.describe else {
+            // SAFETY: Close handle.
+            unsafe {
+                libc::dlclose(raw);
+            }
+            return Err(AbiStatus::UnsupportedAbi);
+        };
+        // SAFETY: `describe_fn` is non-null and `descriptor` is initialized.
+        let desc_status = AbiStatus::from_i32(unsafe { describe_fn(&mut descriptor) });
+        if desc_status != AbiStatus::Ok {
+            // SAFETY: Close handle on describe failure.
+            unsafe {
+                libc::dlclose(raw);
+            }
+            return Err(desc_status);
+        }
+        if let Err(err) = descriptor.validate() {
+            // SAFETY: Close handle on invalid descriptor.
+            unsafe {
+                libc::dlclose(raw);
+            }
+            return Err(err);
+        }
+        let resource_vtable = if (descriptor.capabilities & CAP_BORROWED_RESOURCES) != 0 {
+            let res_symbol = CString::new("hex_device_abi_v1_resources_entry")
+                .map_err(|_| AbiStatus::InvalidArg)?;
+            // SAFETY: `raw` is a valid handle and `res_symbol` is NUL-terminated.
+            let res_sym = unsafe { libc::dlsym(raw, res_symbol.as_ptr()) };
+            if res_sym.is_null() {
+                // SAFETY: Close handle when declared CAP_BORROWED_RESOURCES lacks entry symbol.
+                unsafe {
+                    libc::dlclose(raw);
+                }
+                return Err(AbiStatus::UnsupportedAbi);
+            }
+            // SAFETY: Contractually matches `HexDeviceAbiResourcesEntryFn`.
+            let res_entry: ResourcesEntryFn = unsafe { std::mem::transmute(res_sym) };
+            let mut rv = AbiResourceVtableV1 {
+                struct_size: std::mem::size_of::<AbiResourceVtableV1>() as u32,
+                abi_version: 0,
+                process_with_resources: None,
+            };
+            // SAFETY: `rv` carries its exact `struct_size`.
+            let rstatus =
+                AbiStatus::from_i32(unsafe { res_entry(PACKAGE_ABI_VERSION_V1, &mut rv) });
+            if rstatus != AbiStatus::Ok
+                || rv.abi_version != PACKAGE_ABI_VERSION_V1
+                || rv.process_with_resources.is_none()
+            {
+                // SAFETY: Close handle on resource vtable negotiation failure.
+                unsafe {
+                    libc::dlclose(raw);
+                }
+                return Err(if rstatus == AbiStatus::Ok {
+                    AbiStatus::UnsupportedAbi
+                } else {
+                    rstatus
+                });
+            }
+            Some(rv)
+        } else {
+            None
+        };
+        Ok(Self {
+            lease: Arc::new(LibraryLease {
+                raw,
+                vtable,
+                resource_vtable,
+                descriptor,
+            }),
+        })
+    }
+
+    pub(crate) fn descriptor(&self) -> AbiDescriptor {
+        self.lease.descriptor
+    }
+
+    pub(crate) fn parameter_descriptor(
+        &self,
+        index: u32,
+    ) -> Result<AbiParameterDescriptor, AbiStatus> {
+        if index >= self.lease.descriptor.parameter_count {
+            return Err(AbiStatus::InvalidArg);
+        }
+        let mut out = AbiParameterDescriptor {
+            struct_size: std::mem::size_of::<AbiParameterDescriptor>() as u32,
+            id: 0,
+            min: 0.0,
+            max: 0.0,
+            default_value: 0.0,
+            flags: 0,
+            name_len: 0,
+            reserved: 0,
+            name: [0u8; 64],
+        };
+        let f = self
+            .lease
+            .vtable
+            .parameter_descriptor
+            .ok_or(AbiStatus::UnsupportedAbi)?;
+        // SAFETY: `out` is valid mutable descriptor storage.
+        let status = AbiStatus::from_i32(unsafe { f(index, &mut out) });
+        if status != AbiStatus::Ok {
+            return Err(status);
+        }
+        out.validate()?;
+        Ok(out)
+    }
+
+    pub(crate) fn create_instance(
+        &self,
+        sample_rate: u32,
+    ) -> Result<RawPackageInstance, AbiStatus> {
+        if !(8_000..=384_000).contains(&sample_rate) {
+            return Err(AbiStatus::InvalidRate);
+        }
+        let create = self.lease.vtable.create.ok_or(AbiStatus::UnsupportedAbi)?;
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `ptr` is valid out-parameter storage.
+        let status = AbiStatus::from_i32(unsafe { create(sample_rate, &mut ptr) });
+        if status != AbiStatus::Ok || ptr.is_null() {
+            return Err(if status == AbiStatus::Ok {
+                AbiStatus::AllocationFailed
+            } else {
+                status
+            });
+        }
+        Ok(RawPackageInstance {
+            lease: Arc::clone(&self.lease),
+            ptr,
+            sample_rate,
+        })
+    }
+
+    pub(crate) fn active_lease_count(&self) -> usize {
+        Arc::strong_count(&self.lease)
+    }
+}
+
+impl RawPackageInstance {
+    pub(crate) fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    pub(crate) fn set_state(&mut self, bytes: &[u8]) -> Result<(), AbiStatus> {
+        let f = self
+            .lease
+            .vtable
+            .set_state
+            .ok_or(AbiStatus::UnsupportedAbi)?;
+        let len = u32::try_from(bytes.len()).map_err(|_| AbiStatus::InvalidState)?;
+        // SAFETY: `self.ptr` is live and `bytes` is borrowed for the duration of the call.
+        let status = AbiStatus::from_i32(unsafe { f(self.ptr, bytes.as_ptr(), len) });
+        if status == AbiStatus::Ok {
+            Ok(())
+        } else {
+            Err(status)
+        }
+    }
+
+    pub(crate) fn get_state(&self, out: &mut [u8]) -> Result<usize, AbiStatus> {
+        let f = self
+            .lease
+            .vtable
+            .get_state
+            .ok_or(AbiStatus::UnsupportedAbi)?;
+        let cap = u32::try_from(out.len()).map_err(|_| AbiStatus::InvalidArg)?;
+        let mut written = 0u32;
+        // SAFETY: `self.ptr` is live and `out` is mutably borrowed for the call.
+        let status =
+            AbiStatus::from_i32(unsafe { f(self.ptr, out.as_mut_ptr(), cap, &mut written) });
+        if status != AbiStatus::Ok {
+            return Err(status);
+        }
+        let len = written as usize;
+        if len > out.len() {
+            return Err(AbiStatus::InvalidState);
+        }
+        Ok(len)
+    }
+
+    pub(crate) fn process(
+        &mut self,
+        input: &[[f32; 2]],
+        output: &mut [[f32; 2]],
+        param_events: &[AbiParamEvent],
+        note_events: &[AbiNoteEvent],
+    ) -> Result<(), AbiStatus> {
+        if input.len() != output.len() {
+            return Err(AbiStatus::InvalidFrames);
+        }
+        let ctx = AbiProcessContext::new(
+            self.sample_rate,
+            u32::try_from(output.len()).map_err(|_| AbiStatus::InvalidFrames)?,
+            u32::try_from(param_events.len()).map_err(|_| AbiStatus::InvalidArg)?,
+            u32::try_from(note_events.len()).map_err(|_| AbiStatus::InvalidArg)?,
+        );
+        ctx.validate()?;
+        let f = self.lease.vtable.process.ok_or(AbiStatus::UnsupportedAbi)?;
+        let p_ptr = if param_events.is_empty() {
+            std::ptr::null()
+        } else {
+            param_events.as_ptr()
+        };
+        let n_ptr = if note_events.is_empty() {
+            std::ptr::null()
+        } else {
+            note_events.as_ptr()
+        };
+        // SAFETY: Contiguous stereo slices of length `ctx.frames`, borrowed for the call only.
+        let status = AbiStatus::from_i32(unsafe {
+            f(
+                self.ptr,
+                &ctx,
+                input.as_ptr().cast::<f32>(),
+                output.as_mut_ptr().cast::<f32>(),
+                p_ptr,
+                n_ptr,
+            )
+        });
+        if status != AbiStatus::Ok {
+            output.fill([0.0; 2]);
+            return Err(status);
+        }
+        if let Err(err) = validate_pcm_output(output) {
+            output.fill([0.0; 2]);
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn process_with_resources(
+        &mut self,
+        input: &[[f32; 2]],
+        output: &mut [[f32; 2]],
+        param_events: &[AbiParamEvent],
+        note_events: &[AbiNoteEvent],
+        resources: &[BorrowedAbiResource<'_>],
+    ) -> Result<(), AbiStatus> {
+        if input.len() != output.len() {
+            return Err(AbiStatus::InvalidFrames);
+        }
+        if resources.len() > PACKAGE_ABI_MAX_RESOURCES as usize {
+            return Err(AbiStatus::InvalidArg);
+        }
+        let ctx = AbiProcessContext::new(
+            self.sample_rate,
+            u32::try_from(output.len()).map_err(|_| AbiStatus::InvalidFrames)?,
+            u32::try_from(param_events.len()).map_err(|_| AbiStatus::InvalidArg)?,
+            u32::try_from(note_events.len()).map_err(|_| AbiStatus::InvalidArg)?,
+        );
+        ctx.validate()?;
+        let f = self
+            .lease
+            .resource_vtable
+            .and_then(|rv| rv.process_with_resources)
+            .ok_or(AbiStatus::UnsupportedAbi)?;
+        let mut raw_views = [AbiResourceViewRaw {
+            meta: AbiResourceDescriptor::empty(),
+            samples: std::ptr::null(),
+        }; PACKAGE_ABI_MAX_RESOURCES as usize];
+        for (dst, src) in raw_views.iter_mut().zip(resources.iter()) {
+            src.meta.validate()?;
+            let (ptr, expected_layout, actual_frames) = match src.pcm {
+                BorrowedAbiPcm::Mono(slice) => (slice.as_ptr(), RESOURCE_LAYOUT_MONO, slice.len()),
+                BorrowedAbiPcm::Stereo(slice) => (
+                    slice.as_ptr().cast::<f32>(),
+                    RESOURCE_LAYOUT_STEREO_INTERLEAVED,
+                    slice.len(),
+                ),
+            };
+            if src.meta.channel_layout != expected_layout
+                || u64::try_from(actual_frames).ok() != Some(src.meta.frame_count)
+            {
+                return Err(AbiStatus::InvalidArg);
+            }
+            *dst = AbiResourceViewRaw {
+                meta: src.meta,
+                samples: ptr,
+            };
+        }
+        let p_ptr = if param_events.is_empty() {
+            std::ptr::null()
+        } else {
+            param_events.as_ptr()
+        };
+        let n_ptr = if note_events.is_empty() {
+            std::ptr::null()
+        } else {
+            note_events.as_ptr()
+        };
+        let r_ptr = if resources.is_empty() {
+            std::ptr::null()
+        } else {
+            raw_views.as_ptr()
+        };
+        // SAFETY: Contiguous stereo audio slices and read-only borrowed resource views
+        // are valid strictly for the duration of this call; module cannot retain pointers.
+        let status = AbiStatus::from_i32(unsafe {
+            f(
+                self.ptr,
+                &ctx,
+                input.as_ptr().cast::<f32>(),
+                output.as_mut_ptr().cast::<f32>(),
+                p_ptr,
+                n_ptr,
+                r_ptr,
+                resources.len() as u32,
+            )
+        });
+        if status != AbiStatus::Ok {
+            output.fill([0.0; 2]);
+            return Err(status);
+        }
+        if let Err(err) = validate_pcm_output(output) {
+            output.fill([0.0; 2]);
+            return Err(err);
+        }
+        Ok(())
+    }
+}
