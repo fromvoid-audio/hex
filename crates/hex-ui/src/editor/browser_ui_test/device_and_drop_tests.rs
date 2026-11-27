@@ -629,13 +629,17 @@ fn browser_superseded_preview_preparations_are_cancelled(cx: &mut TestAppContext
     editor.update(&mut visual, |view, cx| {
         // An audition still decoding when the selection moves on is cancelled.
         let audition = Arc::new(AtomicBool::new(false));
-        view.browser.playback_in_flight = Some(Arc::clone(&audition));
+        view.browser.playback_in_flight = Some(super::super::playback::PlaybackCancel::from_flag(
+            Arc::clone(&audition),
+        ));
         view.browser.results_focused = false;
         view.browser.selected_index = 0;
         view.move_browser_selection(true, cx);
         assert!(audition.load(Ordering::Relaxed), "new selection cancels it");
         let stopped = Arc::new(AtomicBool::new(false));
-        view.browser.playback_in_flight = Some(Arc::clone(&stopped));
+        view.browser.playback_in_flight = Some(super::super::playback::PlaybackCancel::from_flag(
+            Arc::clone(&stopped),
+        ));
         view.cancel_browser_sample_playback();
         assert!(stopped.load(Ordering::Relaxed), "stop cancels it");
         view.browser.playback_in_flight = None;

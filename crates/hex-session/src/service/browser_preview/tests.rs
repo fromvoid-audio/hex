@@ -62,6 +62,7 @@ fn windowed_wav_matches_whole_preview_at_matched_and_converted_rates() {
         fs::write(&path, wav_at(source_rate, &samples)).unwrap();
         let expected = playback(&path, rate).unwrap();
         let mut source = PreviewWindowSource::open(&path, rate, &RUNNING).unwrap();
+        assert_eq!(source.source_rate(), source_rate);
         assert_eq!(source.output_rate(), rate);
         assert_eq!(source.output_frames(), expected.frames().len() as u64);
         let mut actual = Vec::new();
@@ -479,4 +480,140 @@ fn windowed_wav_refuses_replacement_with_same_length_and_time() {
         source.read_window(0, 32, &RUNNING),
         Err(PreviewFailure::SourceChanged)
     );
+}
+
+fn rf64_mono(rate: u32, samples: &[i16]) -> Vec<u8> {
+    let data: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+    let mut fmt = Vec::with_capacity(16);
+    fmt.extend_from_slice(&1_u16.to_le_bytes());
+    fmt.extend_from_slice(&1_u16.to_le_bytes());
+    fmt.extend_from_slice(&rate.to_le_bytes());
+    fmt.extend_from_slice(&(rate * 2).to_le_bytes());
+    fmt.extend_from_slice(&2_u16.to_le_bytes());
+    fmt.extend_from_slice(&16_u16.to_le_bytes());
+    let data_pad = data.len() & 1;
+    let riff_size = (4 + 8 + 28 + 8 + fmt.len() + 8 + data.len() + data_pad) as u64;
+    let mut out = Vec::new();
+    out.extend_from_slice(b"RF64");
+    out.extend_from_slice(&u32::MAX.to_le_bytes());
+    out.extend_from_slice(b"WAVE");
+    out.extend_from_slice(b"ds64");
+    out.extend_from_slice(&28_u32.to_le_bytes());
+    out.extend_from_slice(&riff_size.to_le_bytes());
+    out.extend_from_slice(&(data.len() as u64).to_le_bytes());
+    out.extend_from_slice(&0_u64.to_le_bytes());
+    out.extend_from_slice(&0_u32.to_le_bytes());
+    out.extend_from_slice(b"fmt ");
+    out.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+    out.extend_from_slice(&fmt);
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&u32::MAX.to_le_bytes());
+    out.extend_from_slice(&data);
+    if data_pad == 1 {
+        out.push(0);
+    }
+    out
+}
+
+fn aiff_mono_16bit(rate: u32, samples: &[i16]) -> Vec<u8> {
+    // 80-bit IEEE 754 extended encoding for standard integer sample rates.
+    let rate_f64 = f64::from(rate);
+    let bits = rate_f64.to_bits();
+    let exp11 = ((bits >> 52) & 0x7ff) as i32;
+    let mant52 = bits & ((1_u64 << 52) - 1);
+    let ext_exp = ((exp11 - 1023) + 16383) as u16;
+    let ext_mant = (1_u64 << 63) | (mant52 << 11);
+    let mut rate_ext = [0_u8; 10];
+    rate_ext[0..2].copy_from_slice(&ext_exp.to_be_bytes());
+    rate_ext[2..10].copy_from_slice(&ext_mant.to_be_bytes());
+
+    let audio: Vec<u8> = samples.iter().flat_map(|s| s.to_be_bytes()).collect();
+    let mut chunks = Vec::new();
+    chunks.extend_from_slice(b"COMM");
+    chunks.extend_from_slice(&18_u32.to_be_bytes());
+    chunks.extend_from_slice(&1_u16.to_be_bytes());
+    chunks.extend_from_slice(&(samples.len() as u32).to_be_bytes());
+    chunks.extend_from_slice(&16_u16.to_be_bytes());
+    chunks.extend_from_slice(&rate_ext);
+    let ssnd_len = 8 + audio.len();
+    chunks.extend_from_slice(b"SSND");
+    chunks.extend_from_slice(&(ssnd_len as u32).to_be_bytes());
+    chunks.extend_from_slice(&0_u32.to_be_bytes());
+    chunks.extend_from_slice(&0_u32.to_be_bytes());
+    chunks.extend_from_slice(&audio);
+    if ssnd_len % 2 == 1 {
+        chunks.push(0);
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(b"FORM");
+    out.extend_from_slice(&((4 + chunks.len()) as u32).to_be_bytes());
+    out.extend_from_slice(b"AIFF");
+    out.extend_from_slice(&chunks);
+    out
+}
+
+fn flac_stereo_16bit(rate: u32, samples: &[i16]) -> Vec<u8> {
+    let mut writer = hex_media::FlacStreamWriter::new(
+        std::io::Cursor::new(Vec::new()),
+        rate,
+        2,
+        16,
+        samples.len() as u64,
+    )
+    .unwrap();
+    let frames: Vec<[i32; 2]> = samples
+        .iter()
+        .map(|&s| [i32::from(s), -i32::from(s) / 2])
+        .collect();
+    writer.write_stereo_frames(&frames).unwrap();
+    let (cursor, _) = writer.finish().unwrap();
+    cursor.into_inner()
+}
+
+#[test]
+fn windowed_preview_matches_whole_preview_across_rf64_aiff_and_flac() {
+    let directory = TestDir::new();
+    let samples: Vec<i16> = (0..5_123)
+        .map(|n| ((n * 53 % 20_000) as i16) - 10_000)
+        .collect();
+    let fixtures = [
+        ("fixture.rf64", 44_100, rf64_mono(44_100, &samples)),
+        ("fixture.aiff", 44_100, aiff_mono_16bit(44_100, &samples)),
+        ("fixture.flac", 44_100, flac_stereo_16bit(44_100, &samples)),
+    ];
+    for (name, source_rate, bytes) in fixtures {
+        let path = directory.0.join(name);
+        fs::write(&path, bytes).unwrap();
+        for output_rate in [44_100, 48_000] {
+            let expected = playback(&path, output_rate).unwrap();
+            let mut source = PreviewWindowSource::open(&path, output_rate, &RUNNING).unwrap();
+            assert_eq!(source.source_rate(), source_rate, "{name}");
+            assert_eq!(source.output_rate(), output_rate, "{name}");
+            assert_eq!(
+                source.output_frames(),
+                expected.frames().len() as u64,
+                "{name} @ {output_rate}"
+            );
+            let mut actual = Vec::new();
+            let mut offset = 0_u64;
+            while offset < source.output_frames() {
+                let count =
+                    ((source.output_frames() - offset) as usize).min(BROWSER_PREVIEW_WINDOW_FRAMES);
+                actual.extend(source.read_window(offset, count, &RUNNING).unwrap());
+                offset += count as u64;
+            }
+            assert_eq!(actual.len(), expected.frames().len(), "{name}");
+            for (actual, expected) in actual
+                .iter()
+                .flatten()
+                .zip(expected.frames().iter().flatten())
+            {
+                assert_eq!(
+                    actual.to_bits(),
+                    expected.to_bits(),
+                    "{name} @ {output_rate}"
+                );
+            }
+        }
+    }
 }
