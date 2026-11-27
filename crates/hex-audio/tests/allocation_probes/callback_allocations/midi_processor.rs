@@ -659,3 +659,120 @@ fn canonical_random_midi_processor_seeded_live_edit_and_bypass_allocate_nothing_
     drop(rev_a);
     drop(table);
 }
+
+#[test]
+fn bounded_control_change_remapping_and_fm4_consumption_allocate_nothing_on_callback() {
+    use hex_lattice::conformance::midi_cc_remap::PreparedCcRemapMidiProcessor;
+    use hex_project::{MidiLaneKind, MidiLanePoint};
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "cc-probe".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected track");
+    };
+    if editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .is_some()
+    {
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+    }
+    let base = default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::fm4::device::FM4_TYPE_ID,
+    )
+    .unwrap();
+    let with_mod = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &base,
+        hex_devices::fm4::device::parameter::modulation(2, 1),
+        ParameterValue::Float(0.6),
+    )
+    .unwrap();
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: with_mod,
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat(2),
+        })
+        .unwrap()
+    else {
+        panic!("expected clip");
+    };
+    editor
+        .execute(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: beat_frac(1, 16),
+            pitch: 60,
+            channel: 0,
+            velocity: 110,
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiExpressionLane {
+            clip,
+            kind: MidiLaneKind::ControlChange(20),
+            points: vec![
+                MidiLanePoint {
+                    beat: BeatTime::ZERO,
+                    channel: 0,
+                    value: 127,
+                },
+                MidiLanePoint {
+                    beat: beat_frac(1, 64),
+                    channel: 0,
+                    value: 32,
+                },
+            ],
+        })
+        .unwrap();
+
+    let table = Arc::new(SineTable::new());
+    let rev = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+    let remap = PreparedCcRemapMidiProcessor::new(20, 74).unwrap();
+    let proc_id = NonZeroU64::new(77).unwrap();
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev)).unwrap();
+    active
+        .install_track_midi_processor_on_control(track, proc_id, &remap)
+        .unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&rev)).unwrap();
+    next.install_track_midi_processor_on_control(track, proc_id, &remap)
+        .unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        next.try_inherit_state_from(&mut active).unwrap();
+        next.render(&mut buf).unwrap();
+        next.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(next);
+    drop(active);
+    drop(rev);
+    drop(table);
+}

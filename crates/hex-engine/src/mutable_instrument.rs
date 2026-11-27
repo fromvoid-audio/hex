@@ -33,6 +33,35 @@ pub(crate) const MAX_MUTABLE_NOTE_EVENTS_PER_QUERY: usize = 256;
 pub(crate) const MAX_MUTABLE_EVENTS_PER_QUERY: usize = MAX_MUTABLE_NOTE_EVENTS_PER_QUERY + 3;
 pub(crate) const MAX_MUTABLE_SPANS_PER_QUERY: usize = 192;
 pub(crate) const MAX_MUTABLE_EXPRESSION_EVENTS_PER_QUERY: usize = 64;
+
+fn native_event_sort_key(event: NativeInstrumentEvent) -> (usize, u8, u64) {
+    let (rank, occurrence_id) = match event {
+        NativeInstrumentEvent::Expression { .. }
+        | NativeInstrumentEvent::ControlChange { .. }
+        | NativeInstrumentEvent::PitchBend { .. } => (0, 0),
+        NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
+        NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
+        NativeInstrumentEvent::NotePitchBend { occurrence_id, .. } => (3, occurrence_id.get()),
+        NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => (4, occurrence_id.get()),
+        NativeInstrumentEvent::NotePressure { occurrence_id, .. } => (5, occurrence_id.get()),
+    };
+    (event.frame_offset(), rank, occurrence_id)
+}
+
+/// Allocation-free stable insertion sort preserving arrival/wire order for
+/// equal `(frame_offset, rank, occurrence_id)` (e.g., same-offset CCs).
+pub(crate) fn stable_sort_native_events(events: &mut [NativeInstrumentEvent]) {
+    for i in 1..events.len() {
+        let current = events[i];
+        let key = native_event_sort_key(current);
+        let mut j = i;
+        while j > 0 && native_event_sort_key(events[j - 1]) > key {
+            events[j] = events[j - 1];
+            j -= 1;
+        }
+        events[j] = current;
+    }
+}
 /// The MIDI compiler admits at most 64 overlapping source intervals per
 /// instrument, including the declared release tail. This fixed proof capacity
 /// therefore covers every dispatched occurrence whose old-law tail can still
@@ -1769,23 +1798,7 @@ impl MutableInstrumentTrackRuntime {
             },
         )?;
 
-        events.sort_unstable_by_key(|event| {
-            let (rank, occurrence_id) = match *event {
-                NativeInstrumentEvent::Expression { .. }
-                | NativeInstrumentEvent::ControlChange { .. }
-                | NativeInstrumentEvent::PitchBend { .. } => (0, 0),
-                NativeInstrumentEvent::NoteOff { occurrence_id, .. } => (1, occurrence_id),
-                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => (2, occurrence_id),
-                NativeInstrumentEvent::NotePitchBend { occurrence_id, .. } => {
-                    (3, occurrence_id.get())
-                }
-                NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => (4, occurrence_id.get()),
-                NativeInstrumentEvent::NotePressure { occurrence_id, .. } => {
-                    (5, occurrence_id.get())
-                }
-            };
-            (event.frame_offset(), rank, occurrence_id)
-        });
+        stable_sort_native_events(events);
         if let Some(stage) = &mut self.midi_processor {
             stage.process_block(events, frames.len(), clock)?;
         }

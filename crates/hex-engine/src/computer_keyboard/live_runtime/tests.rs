@@ -1178,3 +1178,233 @@ fn mpe_member_and_master_pitch_bends_produce_independent_fm4_pcm_matching_exact_
     }
     assert!(silent);
 }
+
+#[test]
+fn live_control_change_events_reach_fm4_with_two_source_isolation_invalid_refusal_and_queue_pressure()
+ {
+    use crate::computer_keyboard::{LiveNoteEvent, LiveNotePublishError};
+    use hex_project::{Command, Created, Editor, Project};
+
+    let build_fm4_project = || -> (Project, hex_project::TrackId) {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "fm4-cc".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected midi track");
+        };
+        if editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+        {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+        let base = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            hex_devices::fm4::device::FM4_TYPE_ID,
+        )
+        .unwrap();
+        let with_mod = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &base,
+            hex_devices::fm4::device::parameter::modulation(2, 1),
+            hex_lattice_contract::ParameterValue::Float(0.6),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: with_mod,
+            })
+            .unwrap();
+        (editor.project().clone(), track)
+    };
+
+    let (project, track) = build_fm4_project();
+
+    // 1. Live CC74 audibly changes FM4 timbre PCM; CC121 resets it back to baseline.
+    let render_with_cc = |cc_events: &[LiveNoteEvent]| -> Vec<[f32; 2]> {
+        let src = input();
+        let mut pb = playback(&project, track, &src);
+        let live = src.live_notes().unwrap();
+        let tok = live.current_activation_on_control().unwrap();
+        for &ev in cc_events {
+            live.publish(tok, ev).unwrap();
+        }
+        live.publish(
+            tok,
+            LiveNoteEvent::NoteOn {
+                channel: 0,
+                pitch: 60,
+                velocity: 110,
+            },
+        )
+        .unwrap();
+        let mut buf = vec![[0.0_f32; 2]; 512];
+        pb.render(&mut buf).unwrap();
+        buf
+    };
+
+    let dry = render_with_cc(&[LiveNoteEvent::ControlChange {
+        channel: 0,
+        cc: 74,
+        value: 0,
+    }]);
+    let bright = render_with_cc(&[LiveNoteEvent::ControlChange {
+        channel: 0,
+        cc: 74,
+        value: 127,
+    }]);
+    let two_event_dry = render_with_cc(&[
+        LiveNoteEvent::ControlChange {
+            channel: 0,
+            cc: 74,
+            value: 0,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 0,
+            cc: 74,
+            value: 0,
+        },
+    ]);
+    let reset = render_with_cc(&[
+        LiveNoteEvent::ControlChange {
+            channel: 0,
+            cc: 74,
+            value: 127,
+        },
+        LiveNoteEvent::ControlChange {
+            channel: 0,
+            cc: 121,
+            value: 0,
+        },
+    ]);
+    assert!(dry.iter().flatten().any(|s| s.abs() > 1e-3));
+    assert_ne!(
+        dry, bright,
+        "live CC74=127 must audibly modulate FM4 native timbre vs CC74=0 at identical onset frame"
+    );
+    assert_eq!(
+        reset, two_event_dry,
+        "live CC121 must reset FM4 timbre modulation bit-identically back to dry baseline"
+    );
+
+    // 2. Two-source isolation + stale activation + invalid channel/cc/value refusal.
+    let src_a = input();
+    let src_b = input();
+    let mut pb_a = playback(&project, track, &src_a);
+    let mut pb_b = playback(&project, track, &src_b);
+    let live_a = src_a.live_notes().unwrap();
+    let live_b = src_b.live_notes().unwrap();
+    let tok_a = live_a.current_activation_on_control().unwrap();
+    let tok_b = live_b.current_activation_on_control().unwrap();
+
+    // Invalid payloads are rejected explicitly by the input contract.
+    assert_eq!(
+        live_a.publish(
+            tok_a,
+            LiveNoteEvent::ControlChange {
+                channel: 16,
+                cc: 74,
+                value: 64,
+            }
+        ),
+        Err(LiveNotePublishError::InvalidEvent)
+    );
+    // Recover activation after fault and verify stale activation and invalid cc/value also refuse.
+    let tok_a2 = live_a.begin_activation_on_control().unwrap();
+    assert_eq!(
+        live_a.publish(
+            tok_a,
+            LiveNoteEvent::ControlChange {
+                channel: 0,
+                cc: 74,
+                value: 64,
+            }
+        ),
+        Err(LiveNotePublishError::StaleActivation)
+    );
+    assert_eq!(
+        live_a.publish(
+            tok_a2,
+            LiveNoteEvent::ControlChange {
+                channel: 0,
+                cc: 128,
+                value: 64,
+            }
+        ),
+        Err(LiveNotePublishError::InvalidEvent)
+    );
+
+    // Source B receives CC74=127 while Source A remains dry -> outputs diverge without cross-bleed.
+    let tok_a3 = live_a.begin_activation_on_control().unwrap();
+    live_b
+        .publish(
+            tok_b,
+            LiveNoteEvent::ControlChange {
+                channel: 0,
+                cc: 74,
+                value: 127,
+            },
+        )
+        .unwrap();
+    for (live, tok) in [(live_a, tok_a3), (live_b, tok_b)] {
+        live.publish(
+            tok,
+            LiveNoteEvent::NoteOn {
+                channel: 0,
+                pitch: 60,
+                velocity: 110,
+            },
+        )
+        .unwrap();
+    }
+    let mut out_a = vec![[0.0_f32; 2]; 256];
+    let mut out_b = vec![[0.0_f32; 2]; 256];
+    pb_a.render(&mut out_a).unwrap();
+    pb_b.render(&mut out_b).unwrap();
+    assert_ne!(out_a, out_b);
+
+    // 3. Queue pressure / overflow cancels source B and releases terminal notes to silence.
+    for _ in 0..live_notes::LIVE_NOTE_INPUT_CAPACITY {
+        let _ = live_b.publish(
+            tok_b,
+            LiveNoteEvent::ControlChange {
+                channel: 0,
+                cc: 20,
+                value: 64,
+            },
+        );
+    }
+    assert!(
+        live_b
+            .publish(
+                tok_b,
+                LiveNoteEvent::ControlChange {
+                    channel: 0,
+                    cc: 20,
+                    value: 65,
+                }
+            )
+            .is_err()
+    );
+    assert!(live_b.is_cancelled());
+    let mut drain = [[0.0_f32; 2]; 512];
+    let mut silenced = false;
+    for _ in 0..400 {
+        pb_b.render(&mut drain).unwrap();
+        if drain.iter().flatten().all(|s| *s == 0.0) {
+            silenced = true;
+            break;
+        }
+    }
+    assert!(
+        silenced,
+        "queue overflow cancellation must release sounding voices without stuck notes"
+    );
+}

@@ -1207,3 +1207,199 @@ fn canonical_random_device_matches_seeded_pcm_oracle_across_partitions_seeds_and
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn bounded_control_change_routing_preserves_same_offset_order_remapping_pcm_and_bypass() {
+    use hex_lattice::{
+        NativeInstrumentEvent, conformance::midi_cc_remap::PreparedCcRemapMidiProcessor,
+    };
+    use hex_project::{MidiLaneKind, MidiLanePoint};
+
+    // 1. Allocation-free stable sort preserves wire order of same-offset CCs before NoteOff/NoteOn.
+    let mut batch = [
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 2,
+            pitch: 64,
+            velocity: 100,
+        },
+        NativeInstrumentEvent::ControlChange {
+            frame_offset: 0,
+            cc: 74,
+            value: 120,
+        },
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        },
+        NativeInstrumentEvent::ControlChange {
+            frame_offset: 0,
+            cc: 74,
+            value: 16,
+        },
+    ];
+    crate::mutable_instrument::stable_sort_native_events(&mut batch);
+    assert_eq!(
+        batch,
+        [
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 74,
+                value: 120,
+            },
+            NativeInstrumentEvent::ControlChange {
+                frame_offset: 0,
+                cc: 74,
+                value: 16,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 0,
+                occurrence_id: 1,
+            },
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 2,
+                pitch: 64,
+                velocity: 100,
+            },
+        ]
+    );
+
+    // 2. Real bounded consumer (FM4) + PreparedCcRemapMidiProcessor (CC20 -> CC74) matches
+    //    direct CC74 PCM oracle bit-for-bit across authored CC lane transitions!
+    let build_fm4_cc_project = |cc_lane: Option<(u8, Vec<MidiLanePoint>)>| -> (Editor, TrackId) {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "fm4-cc-proc".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+        if editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+        {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+        let base = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            hex_devices::fm4::device::FM4_TYPE_ID,
+        )
+        .unwrap();
+        let with_mod = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &base,
+            hex_devices::fm4::device::parameter::modulation(2, 1),
+            hex_lattice_contract::ParameterValue::Float(0.6),
+        )
+        .unwrap();
+        let short_release = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &with_mod,
+            hex_devices::fm4::device::parameter::RELEASE,
+            hex_lattice_contract::ParameterValue::Float(0.005),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: short_release,
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: beat(2),
+            })
+            .unwrap()
+        else {
+            panic!("expected clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat_frac(1, 16),
+                pitch: 60,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+        if let Some((cc, points)) = cc_lane {
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::ControlChange(cc),
+                    points,
+                })
+                .unwrap();
+        }
+        (editor, track)
+    };
+
+    let cc_points = vec![
+        MidiLanePoint {
+            beat: BeatTime::ZERO,
+            channel: 0,
+            value: 127,
+        },
+        MidiLanePoint {
+            beat: beat_frac(1, 32),
+            channel: 0,
+            value: 0,
+        },
+    ];
+    let (dry_editor, _) = build_fm4_cc_project(None);
+    let (oracle_editor, _) = build_fm4_cc_project(Some((74, cc_points.clone())));
+    let (remapped_editor, track) = build_fm4_cc_project(Some((20, cc_points)));
+
+    let total_frames = 2_400_usize;
+    let mut dry_pb = SessionPlayback::new(prepare_revision(dry_editor.project())).unwrap();
+    dry_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut dry_pcm = vec![[0.0_f32; 2]; total_frames];
+    dry_pb.render(&mut dry_pcm).unwrap();
+
+    let mut oracle_pb = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut oracle_pcm = vec![[0.0_f32; 2]; total_frames];
+    oracle_pb.render(&mut oracle_pcm).unwrap();
+    assert_ne!(
+        dry_pcm, oracle_pcm,
+        "CC74 must audibly change FM4 rendered PCM"
+    );
+
+    let remap = PreparedCcRemapMidiProcessor::new(20, 74).unwrap();
+    assert!(PreparedCcRemapMidiProcessor::new(128, 74).is_err());
+    assert!(PreparedCcRemapMidiProcessor::new(20, 128).is_err());
+
+    let rev = prepare_revision(remapped_editor.project());
+    let mut pb = SessionPlayback::new(Arc::clone(&rev)).unwrap();
+    pb.install_track_midi_processor_on_control(track, midi_proc_id(), &remap)
+        .unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_pcm = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_pcm.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual_pcm, oracle_pcm);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Stop + Seek(0) + Play reproduces oracle bit-for-bit with zero stuck notes.
+    pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; total_frames];
+    pb.render(&mut replay).unwrap();
+    assert_eq!(replay, oracle_pcm);
+}
