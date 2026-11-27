@@ -26,6 +26,8 @@ pub const MAX_ZONES: usize = 64;
 pub const MAX_LAYERED_ZONES_PER_KEY: usize = 8;
 pub const MAX_VOICES: usize = 64;
 pub const MAX_EVENTS_PER_BLOCK: usize = 259;
+pub const MIN_VELOCITY: u8 = 1;
+pub const MAX_VELOCITY: u8 = 127;
 pub const MIN_SAMPLE_RATE: u32 = 8_000;
 pub const MAX_SAMPLE_RATE: u32 = 192_000;
 pub const MAX_TOTAL_SOURCE_FRAMES: usize = 8 * 48_000 * 60;
@@ -102,12 +104,16 @@ impl MultisampleLimits {
     }
 }
 
-/// Authored key-zone definition binding a MIDI key span to one host resource slot.
+/// Authored key- and velocity-zone definition binding a MIDI `(key, velocity)`
+/// rectangle (`[low_key, high_key] × [low_velocity, high_velocity]`, inclusive)
+/// to one host resource slot.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct KeyZoneSpec {
     pub slot: DeviceAssetSlot,
     pub low_key: u8,
     pub high_key: u8,
+    pub low_velocity: u8,
+    pub high_velocity: u8,
     pub root_key: u8,
     pub detune_cents: f32,
     pub gain: f32,
@@ -119,6 +125,9 @@ impl KeyZoneSpec {
         if self.low_key > 127
             || self.high_key > 127
             || self.low_key > self.high_key
+            || self.low_velocity < MIN_VELOCITY
+            || self.high_velocity > MAX_VELOCITY
+            || self.low_velocity > self.high_velocity
             || self.root_key > 127
             || !self.detune_cents.is_finite()
             || !(-100.0..=100.0).contains(&self.detune_cents)
@@ -134,6 +143,14 @@ impl KeyZoneSpec {
 
     pub const fn contains_key(self, key: u8) -> bool {
         key >= self.low_key && key <= self.high_key
+    }
+
+    pub const fn contains_velocity(self, velocity: u8) -> bool {
+        velocity >= self.low_velocity && velocity <= self.high_velocity
+    }
+
+    pub const fn contains(self, key: u8, velocity: u8) -> bool {
+        self.contains_key(key) && self.contains_velocity(velocity)
     }
 }
 
@@ -181,16 +198,81 @@ struct PreparedZone {
     key_steps: [f64; 128],
 }
 
+/// Fixed-capacity deterministic zone selection for one `(key, velocity)` pair.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct KeySelection {
+pub struct SelectedZones {
     len: u8,
     zones: [u8; MAX_LAYERED_ZONES_PER_KEY],
 }
 
-impl KeySelection {
-    fn slice(&self) -> &[u8] {
+impl SelectedZones {
+    pub fn as_slice(&self) -> &[u8] {
         &self.zones[..usize::from(self.len)]
     }
+
+    pub const fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Deterministic key-plus-velocity overlap selection shared by control
+/// validation and zero-allocation callback dispatch:
+/// - `FirstMatch`: lowest matching zone index wins.
+/// - `HighestRootProximity`: matching zone whose `root_key` is closest in
+///   semitones to `key` wins; ties break to the lowest zone index.
+/// - `LayerAll`: every matching zone in ascending zone-index order, up to
+///   `MAX_LAYERED_ZONES_PER_KEY`.
+pub(crate) fn select_matching_zones(
+    policy: ZoneOverlapPolicy,
+    key: u8,
+    zone_count: usize,
+    mut matching_root_key: impl FnMut(usize) -> Option<u8>,
+) -> Result<SelectedZones, MultisampleError> {
+    let mut selection = SelectedZones::default();
+    match policy {
+        ZoneOverlapPolicy::FirstMatch => {
+            for index in 0..zone_count {
+                if matching_root_key(index).is_some() {
+                    selection.zones[0] = index as u8;
+                    selection.len = 1;
+                    break;
+                }
+            }
+        }
+        ZoneOverlapPolicy::HighestRootProximity => {
+            let mut best: Option<(usize, u8)> = None;
+            for index in 0..zone_count {
+                if let Some(root_key) = matching_root_key(index) {
+                    let dist = key.abs_diff(root_key);
+                    if best.is_none_or(|(_, best_dist)| dist < best_dist) {
+                        best = Some((index, dist));
+                    }
+                }
+            }
+            if let Some((index, _)) = best {
+                selection.zones[0] = index as u8;
+                selection.len = 1;
+            }
+        }
+        ZoneOverlapPolicy::LayerAll => {
+            let mut count = 0_usize;
+            for index in 0..zone_count {
+                if matching_root_key(index).is_some() {
+                    if count >= MAX_LAYERED_ZONES_PER_KEY {
+                        return Err(MultisampleError::OverlapLayerLimitExceeded);
+                    }
+                    selection.zones[count] = index as u8;
+                    count += 1;
+                }
+            }
+            selection.len = count as u8;
+        }
+    }
+    Ok(selection)
 }
 
 /// Control-prepared immutable multisample key-zone map. Owns no PCM buffers.
@@ -200,7 +282,7 @@ pub struct PreparedMultisampleMap {
     overlap_policy: ZoneOverlapPolicy,
     limits: MultisampleLimits,
     zones: Box<[PreparedZone]>,
-    key_map: [KeySelection; 128],
+    key_map: [SelectedZones; 128],
     unique_source_frames: usize,
     unique_source_bytes: usize,
 }
@@ -314,48 +396,32 @@ impl PreparedMultisampleMap {
             });
         }
 
-        let mut key_map = [KeySelection::default(); 128];
-        for (key, selection) in key_map.iter_mut().enumerate() {
-            let key_u8 = key as u8;
-            match overlap_policy {
-                ZoneOverlapPolicy::FirstMatch => {
-                    if let Some(index) = prepared
-                        .iter()
-                        .position(|zone| zone.spec.contains_key(key_u8))
-                    {
-                        selection.zones[0] = index as u8;
-                        selection.len = 1;
-                    }
-                }
-                ZoneOverlapPolicy::HighestRootProximity => {
-                    let mut best: Option<(usize, u8)> = None;
-                    for (index, zone) in prepared.iter().enumerate() {
-                        if zone.spec.contains_key(key_u8) {
-                            let dist = key_u8.abs_diff(zone.spec.root_key);
-                            if best.is_none_or(|(_, best_dist)| dist < best_dist) {
-                                best = Some((index, dist));
-                            }
+        // Validate per-(key, velocity) overlap ceiling for LayerAll and
+        // precompute full-velocity (127) key lookup table.
+        if overlap_policy == ZoneOverlapPolicy::LayerAll {
+            for key in 0..=127_u8 {
+                let key_matches = prepared.iter().filter(|z| z.spec.contains_key(key)).count();
+                if key_matches > MAX_LAYERED_ZONES_PER_KEY {
+                    for velocity in MIN_VELOCITY..=MAX_VELOCITY {
+                        let count = prepared
+                            .iter()
+                            .filter(|z| z.spec.contains(key, velocity))
+                            .count();
+                        if count > MAX_LAYERED_ZONES_PER_KEY {
+                            return Err(MultisampleError::OverlapLayerLimitExceeded);
                         }
                     }
-                    if let Some((index, _)) = best {
-                        selection.zones[0] = index as u8;
-                        selection.len = 1;
-                    }
-                }
-                ZoneOverlapPolicy::LayerAll => {
-                    let mut count = 0_usize;
-                    for (index, zone) in prepared.iter().enumerate() {
-                        if zone.spec.contains_key(key_u8) {
-                            if count >= MAX_LAYERED_ZONES_PER_KEY {
-                                return Err(MultisampleError::OverlapLayerLimitExceeded);
-                            }
-                            selection.zones[count] = index as u8;
-                            count += 1;
-                        }
-                    }
-                    selection.len = count as u8;
                 }
             }
+        }
+
+        let mut key_map = [SelectedZones::default(); 128];
+        for (key, selection) in key_map.iter_mut().enumerate() {
+            let key_u8 = key as u8;
+            *selection = select_matching_zones(overlap_policy, key_u8, prepared.len(), |idx| {
+                let spec = prepared[idx].spec;
+                spec.contains(key_u8, MAX_VELOCITY).then_some(spec.root_key)
+            })?;
         }
 
         Ok(Self {
@@ -393,11 +459,25 @@ impl PreparedMultisampleMap {
         self.unique_source_bytes
     }
 
-    /// Deterministic zone indices selected for MIDI key `0..=127` (empty when unmapped).
+    /// Deterministic zone indices selected for MIDI key `0..=127` at maximum
+    /// velocity `127` (empty when unmapped).
     pub fn selected_zones_for_key(&self, key: u8) -> &[u8] {
         self.key_map
             .get(usize::from(key))
-            .map_or(&[], KeySelection::slice)
+            .map_or(&[], SelectedZones::as_slice)
+    }
+
+    /// Deterministic zone indices selected for `(key, velocity)` with inclusive
+    /// bounds `key in 0..=127` and `velocity in 1..=127` (empty when unmapped).
+    pub fn selected_zones_for(&self, key: u8, velocity: u8) -> SelectedZones {
+        if key > 127 || !(MIN_VELOCITY..=MAX_VELOCITY).contains(&velocity) {
+            return SelectedZones::default();
+        }
+        select_matching_zones(self.overlap_policy, key, self.zones.len(), |idx| {
+            let spec = self.zones[idx].spec;
+            spec.contains(key, velocity).then_some(spec.root_key)
+        })
+        .unwrap_or_default()
     }
 
     /// Pitch- and rate-adjusted source frame increment for `zone_index` at `key`.
@@ -616,7 +696,8 @@ impl MultisampleRuntime {
                 {
                     return Err(MultisampleError::InvalidEventBatch);
                 }
-                let selected = map.selected_zones_for_key(pitch);
+                let selected_buf = map.selected_zones_for(pitch, velocity);
+                let selected = selected_buf.as_slice();
                 if selected.is_empty() {
                     return Ok(());
                 }
@@ -689,9 +770,9 @@ fn interpolate_linear(pcm: DeviceResourcePcm<'_>, position: f64) -> [f64; 2] {
 
 pub mod instrument;
 pub use instrument::{
-    GAIN, MULTISAMPLE_DEFINITION, MULTISAMPLE_STATE_VERSION, MULTISAMPLE_TYPE_ID,
-    MultisampleDefinition, MultisampleState, OVERLAP_POLICY, PreparedMultisampleInstrumentRuntime,
-    VOICE_LIMIT,
+    GAIN, MULTISAMPLE_DEFINITION, MULTISAMPLE_STATE_VERSION, MULTISAMPLE_STATE_VERSION_V1,
+    MULTISAMPLE_TYPE_ID, MultisampleDefinition, MultisampleState, OVERLAP_POLICY,
+    PreparedMultisampleInstrumentRuntime, VOICE_LIMIT,
 };
 
 #[cfg(test)]

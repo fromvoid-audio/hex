@@ -84,6 +84,8 @@ fn resident_multisample_zones_render_with_zero_callback_allocations_and_control_
             slot: s1,
             low_key: 36,
             high_key: 55,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 48,
             detune_cents: 0.0,
             gain: 1.0,
@@ -93,6 +95,8 @@ fn resident_multisample_zones_render_with_zero_callback_allocations_and_control_
             slot: s2,
             low_key: 52,
             high_key: 72,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 60,
             detune_cents: 0.0,
             gain: 1.0,
@@ -102,6 +106,8 @@ fn resident_multisample_zones_render_with_zero_callback_allocations_and_control_
             slot: s3,
             low_key: 76,
             high_key: 96,
+            low_velocity: 1,
+            high_velocity: 127,
             root_key: 84,
             detune_cents: 0.0,
             gain: 1.0,
@@ -269,6 +275,8 @@ fn registered_multisample_instrument_playback_zero_alloc_reclamation_and_storage
                 slot: s1,
                 low_key: 36,
                 high_key: 64,
+                low_velocity: 1,
+                high_velocity: 100,
                 root_key: 48,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -278,6 +286,8 @@ fn registered_multisample_instrument_playback_zero_alloc_reclamation_and_storage
                 slot: s2,
                 low_key: 56,
                 high_key: 84,
+                low_velocity: 60,
+                high_velocity: 127,
                 root_key: 72,
                 detune_cents: 0.0,
                 gain: 1.0,
@@ -317,11 +327,85 @@ fn registered_multisample_instrument_playback_zero_alloc_reclamation_and_storage
             clip,
             start: BeatTime::ZERO,
             duration: BeatTime::from_raw(1_u64 << 30),
-            pitch: 60, // overlaps both zones -> LayerAll
+            pitch: 60, // overlaps both zones in key AND velocity (80 in 1..=100 & 60..=127)
             channel: 0,
-            velocity: 127,
+            velocity: 80,
         })
         .unwrap();
+
+    // Also verify explicit historical v1 (HMS1) saved-project fixture migration -> v2 (HMS2):
+    let mut v1_payload = Vec::with_capacity(12 + 20);
+    v1_payload.extend_from_slice(b"HMS1");
+    v1_payload.push(0); // FirstMatch
+    v1_payload.push(16); // voice_limit
+    v1_payload.extend_from_slice(&1_u16.to_le_bytes());
+    v1_payload.extend_from_slice(&1.0_f32.to_le_bytes());
+    v1_payload.extend_from_slice(&1_u32.to_le_bytes()); // slot 1
+    v1_payload.extend_from_slice(&[36, 72, 60, 0]);
+    v1_payload.extend_from_slice(&0.0_f32.to_le_bytes());
+    v1_payload.extend_from_slice(&1.0_f32.to_le_bytes());
+    v1_payload.extend_from_slice(&0.005_f32.to_le_bytes());
+    let v1_state = hex_lattice_contract::NativeDeviceState::new(
+        MULTISAMPLE_TYPE_ID,
+        hex_devices::multisample::MULTISAMPLE_STATE_VERSION_V1,
+        v1_payload,
+    )
+    .unwrap()
+    .with_asset_references(vec![DeviceAssetReference {
+        slot: s1,
+        asset: DeviceAssetKey::new(a1.value()).unwrap(),
+    }])
+    .unwrap();
+    let mut v1_editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(v1_track) = v1_editor
+        .execute(Command::AddMidiTrack { name: "v1".into() })
+        .unwrap()
+    else {
+        panic!("v1 track");
+    };
+    let Created::Asset(v1_a) = v1_editor
+        .execute(Command::ImportDeviceAsset {
+            path: "v1.wav".into(),
+            sample_rate: 48_000,
+            frames: 64,
+        })
+        .unwrap()
+    else {
+        panic!("v1 asset");
+    };
+    let v1_state = v1_state
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: s1,
+            asset: DeviceAssetKey::new(v1_a.value()).unwrap(),
+        }])
+        .unwrap();
+    v1_editor
+        .execute(Command::InsertInstrument {
+            track: v1_track,
+            state: v1_state,
+        })
+        .unwrap();
+    let v1_saved = hex_storage::encode(v1_editor.project()).unwrap();
+    let v1_reopened = hex_storage::decode(&v1_saved).unwrap();
+    let v1_loaded_state = v1_reopened
+        .track(v1_track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .state();
+    let migrated_v2 = hex_lattice_contract::NativeDeviceMetadata::migrate_state(
+        &hex_devices::multisample::MULTISAMPLE_DEFINITION,
+        v1_loaded_state,
+    )
+    .unwrap();
+    assert_eq!(
+        migrated_v2.state_version(),
+        hex_devices::multisample::MULTISAMPLE_STATE_VERSION
+    );
+    let migrated_authored = MultisampleState::from_native(&migrated_v2).unwrap();
+    assert_eq!(migrated_authored.zones.len(), 1);
+    assert_eq!(migrated_authored.zones[0].low_velocity, 1);
+    assert_eq!(migrated_authored.zones[0].high_velocity, 127);
 
     // 2. Save and reopen via hex-storage; verify exact device type, payload, and asset references.
     let saved_bytes = hex_storage::encode(editor.project()).unwrap();
@@ -378,9 +462,10 @@ fn registered_multisample_instrument_playback_zero_alloc_reclamation_and_storage
     assert_eq!(info.bytes_total, 0, "callback bytes: {info:?}");
     assert_eq!(info.count_current, 0, "callback net count: {info:?}");
     assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    let expected_vel = (0.25 + 0.40) * (80.0 / 127.0);
     assert!(
-        (out[0][0] - 0.65).abs() < 1e-4,
-        "expected layered 0.25 + 0.40 = 0.65, got {}",
+        (out[0][0] - expected_vel).abs() < 1e-4,
+        "expected layered velocity-scaled {expected_vel}, got {}",
         out[0][0]
     );
 
