@@ -412,12 +412,14 @@ fn codec_round_trip_parameters_recursion_prohibition_and_validation() {
     // Nested rack inside a branch must refuse.
     let nested = InstrumentRackSpec {
         rack_id: id(1),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
         branches: [
             InstrumentRackBranchSpec {
                 branch_id: id(10),
                 device_id: id(100),
                 gain: 1.0,
                 bypassed: false,
+                zone: InstrumentRackZone::default(),
                 state: Some(default.clone()),
             },
             InstrumentRackBranchSpec {
@@ -425,6 +427,7 @@ fn codec_round_trip_parameters_recursion_prohibition_and_validation() {
                 device_id: id(200),
                 gain: 1.0,
                 bypassed: false,
+                zone: InstrumentRackZone::default(),
                 state: None,
             },
         ],
@@ -437,12 +440,14 @@ fn codec_round_trip_parameters_recursion_prohibition_and_validation() {
     // Duplicate branch_id or device_id must refuse.
     let dup = InstrumentRackSpec {
         rack_id: id(1),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
         branches: [
             InstrumentRackBranchSpec {
                 branch_id: id(10),
                 device_id: id(100),
                 gain: 1.0,
                 bypassed: false,
+                zone: InstrumentRackZone::default(),
                 state: None,
             },
             InstrumentRackBranchSpec {
@@ -450,6 +455,7 @@ fn codec_round_trip_parameters_recursion_prohibition_and_validation() {
                 device_id: id(200),
                 gain: 1.0,
                 bypassed: false,
+                zone: InstrumentRackZone::default(),
                 state: None,
             },
         ],
@@ -502,12 +508,14 @@ fn two_branch_asymmetric_latency_sum_matches_independent_oracle_across_partition
 
     let rack_spec = InstrumentRackSpec {
         rack_id: id(42),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
         branches: [
             InstrumentRackBranchSpec {
                 branch_id: id(1),
                 device_id: id(10),
                 gain: 0.5,
                 bypassed: false,
+                zone: InstrumentRackZone::default(),
                 state: Some(state_a.clone()),
             },
             InstrumentRackBranchSpec {
@@ -515,6 +523,7 @@ fn two_branch_asymmetric_latency_sum_matches_independent_oracle_across_partition
                 device_id: id(20),
                 gain: 0.75,
                 bypassed: false,
+                zone: InstrumentRackZone::default(),
                 state: Some(state_b.clone()),
             },
         ],
@@ -673,4 +682,262 @@ fn two_branch_asymmetric_latency_sum_matches_independent_oracle_across_partition
     assert_eq!(&ids[..n2], &[1, 2]);
     successor.reset();
     assert!(successor.committed_is_quiescent());
+}
+
+#[test]
+fn key_velocity_zone_selection_crossfade_overlap_live_edit_and_v1_migration() {
+    static VOICE_DEF: TestVoiceDef = TestVoiceDef;
+    static CHILDREN: [&dyn NativeInstrumentDefinition; 1] = [&VOICE_DEF];
+    let child_reg = NativeInstrumentRegistry::new(&CHILDREN).unwrap();
+    let rack_def = InstrumentRackDefinition::new(child_reg).unwrap();
+    let defs: [&dyn NativeInstrumentDefinition; 1] = [&rack_def];
+    let rack_reg = NativeInstrumentRegistry::new(&defs).unwrap();
+    let tuning = crate::TuningTable::default();
+    let ctx = DevicePreparationContext {
+        sample_rate: 48_000,
+        tuning: &tuning,
+        resources: &crate::EMPTY_DEVICE_RESOURCES,
+    };
+    let pulse_state = |level: f32, latency_frames: u32| {
+        encode_voice(VoiceConfig {
+            level,
+            latency_frames,
+            release_frames: 4,
+        })
+    };
+
+    // 1. Zone validation & v1 -> v2 migration.
+    let bad_zone = InstrumentRackZone {
+        key_low: 64,
+        key_fade_low: 60, // invalid: fade_low < key_low
+        key_fade_high: 72,
+        key_high: 72,
+        vel_low: 1,
+        vel_fade_low: 1,
+        vel_fade_high: 127,
+        vel_high: 127,
+    };
+    assert_eq!(
+        bad_zone.validate(),
+        Err(DeviceContractError::InvalidParameterValue)
+    );
+    let zero_vel = InstrumentRackZone::hard(0, 127, 0, 127);
+    assert_eq!(
+        zero_vel.validate(),
+        Err(DeviceContractError::InvalidParameterValue)
+    );
+
+    let v1_spec = InstrumentRackSpec {
+        rack_id: id(90),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
+        branches: [
+            InstrumentRackBranchSpec {
+                branch_id: id(1),
+                device_id: id(11),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::default(),
+                state: Some(pulse_state(0.5, 0)),
+            },
+            InstrumentRackBranchSpec {
+                branch_id: id(2),
+                device_id: id(12),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::default(),
+                state: Some(pulse_state(0.25, 0)),
+            },
+        ],
+    };
+    let v1_bytes = v1_spec.encode_v1_state().unwrap();
+    assert_eq!(v1_bytes.state_version(), INSTRUMENT_RACK_STATE_VERSION_V1);
+    assert_eq!(
+        InstrumentRackSpec::decode_and_migrate_state(&v1_bytes).unwrap(),
+        v1_spec
+    );
+    assert_eq!(
+        InstrumentRackSpec::decode_state(&v1_bytes),
+        Err(DeviceContractError::UnsupportedStateVersion)
+    );
+
+    // 2. Key + velocity boundary + soft crossfade + overlap policy oracle:
+    //   Branch 0 (amp 0.8): keys 0..=64 (fade out 60..=64), vel 1..=127
+    //     At pitch 62: key_gain = (64 - 62 + 1) / (64 - 60 + 1) = 3/5 = 0.6!
+    //   Branch 1 (amp 0.4): keys 60..=127 (fade in 60..=64), vel 64..=127
+    //     At pitch 62, vel 100: key_gain = (62 - 60 + 1) / (64 - 60 + 1) = 3/5 = 0.6!
+    let zone_a = InstrumentRackZone {
+        key_low: 0,
+        key_fade_low: 0,
+        key_fade_high: 60,
+        key_high: 64,
+        vel_low: 1,
+        vel_fade_low: 1,
+        vel_fade_high: 127,
+        vel_high: 127,
+    };
+    let zone_b = InstrumentRackZone {
+        key_low: 60,
+        key_fade_low: 64,
+        key_fade_high: 127,
+        key_high: 127,
+        vel_low: 64,
+        vel_fade_low: 64,
+        vel_fade_high: 127,
+        vel_high: 127,
+    };
+    assert!((zone_a.evaluate_gain(62, 100).unwrap() - 0.6).abs() < 1e-6);
+    assert!((zone_b.evaluate_gain(62, 100).unwrap() - 0.6).abs() < 1e-6);
+    assert_eq!(zone_b.evaluate_gain(62, 50), None); // velocity below vel_low=64
+    assert_eq!(zone_a.evaluate_gain(70, 100), None); // pitch above key_high=64
+
+    let make_zoned_spec =
+        |policy: InstrumentRackOverlapPolicy, z0: InstrumentRackZone, z1: InstrumentRackZone| {
+            InstrumentRackSpec {
+                rack_id: id(91),
+                overlap_policy: policy,
+                branches: [
+                    InstrumentRackBranchSpec {
+                        branch_id: id(1),
+                        device_id: id(11),
+                        gain: 1.0,
+                        bypassed: false,
+                        zone: z0,
+                        state: Some(pulse_state(0.8, 0)),
+                    },
+                    InstrumentRackBranchSpec {
+                        branch_id: id(2),
+                        device_id: id(12),
+                        gain: 1.0,
+                        bypassed: false,
+                        zone: z1,
+                        state: Some(pulse_state(0.4, 0)),
+                    },
+                ],
+            }
+        };
+
+    // Layer policy at pitch 62, vel 100: both branches sound with fade gain 0.6 => 0.8*0.6 + 0.4*0.6 = 0.72!
+    let layer_state = make_zoned_spec(InstrumentRackOverlapPolicy::Layer, zone_a, zone_b)
+        .encode_state()
+        .unwrap();
+    assert_eq!(
+        InstrumentRackSpec::decode_state(&layer_state)
+            .unwrap()
+            .branches[0]
+            .zone,
+        zone_a
+    );
+    let mut layer_rt = rack_reg
+        .prepare_instrument(&layer_state, &ctx)
+        .unwrap()
+        .prepare_mutable_runtime()
+        .unwrap()
+        .unwrap()
+        .create_runtime();
+    let on_overlap = [NativeInstrumentEvent::NoteOn {
+        frame_offset: 0,
+        occurrence_id: 1,
+        pitch: 62,
+        velocity: 100,
+    }];
+    let mut frames = [[0.0_f32; 2]; 16];
+    layer_rt
+        .preflight_events(&on_overlap, 16, &crate::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    layer_rt.process_block(&on_overlap, &mut frames, &crate::EMPTY_DEVICE_RESOURCES);
+    // TestVoiceDef scales sample amplitude by pitch / 100.0 (62 -> 0.62).
+    // Layer policy: (0.8 * 0.6 + 0.4 * 0.6) * 0.62 = 0.4464!
+    assert!(
+        (frames[0][0] - 0.72 * 0.62).abs() < 1e-5,
+        "got {}",
+        frames[0][0]
+    );
+
+    // ExclusiveFirstMatch at pitch 62, vel 100: ONLY branch 0 sounds => 0.8 * 0.6 = 0.48!
+    let excl_state = make_zoned_spec(
+        InstrumentRackOverlapPolicy::ExclusiveFirstMatch,
+        zone_a,
+        zone_b,
+    )
+    .encode_state()
+    .unwrap();
+    let mut excl_rt = rack_reg
+        .prepare_instrument(&excl_state, &ctx)
+        .unwrap()
+        .prepare_mutable_runtime()
+        .unwrap()
+        .unwrap()
+        .create_runtime();
+    let mut excl_frames = [[0.0_f32; 2]; 16];
+    excl_rt
+        .preflight_events(&on_overlap, 16, &crate::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    excl_rt.process_block(
+        &on_overlap,
+        &mut excl_frames,
+        &crate::EMPTY_DEVICE_RESOURCES,
+    );
+    assert!(
+        (excl_frames[0][0] - 0.48 * 0.62).abs() < 1e-5,
+        "got {}",
+        excl_frames[0][0]
+    );
+
+    // 3. Live zone edit while note 1 (pitch 62) is held:
+    //    Shrink zone_a to 0..=50 and zone_b to 80..=127 so pitch 62 matches NEITHER branch now.
+    //    Inherit live history -> NoteOff for held note 1 STILL releases BOTH branches cleanly (zero stuck notes!),
+    //    while a new note 2 at pitch 62 produces silence!
+    let shrunk_state = make_zoned_spec(
+        InstrumentRackOverlapPolicy::Layer,
+        InstrumentRackZone::hard(0, 50, 1, 127),
+        InstrumentRackZone::hard(80, 127, 1, 127),
+    )
+    .encode_state()
+    .unwrap();
+    let shrunk_factory = rack_reg
+        .prepare_instrument(&shrunk_state, &ctx)
+        .unwrap()
+        .prepare_mutable_runtime()
+        .unwrap()
+        .unwrap();
+    let mut shrunk_rt = shrunk_factory.create_runtime();
+    assert!(!shrunk_rt.can_copy_history_from(layer_rt.as_ref()));
+    let InstrumentHistoryRetargetPreparation::Prepared(proof) =
+        shrunk_factory.prepare_history_retarget_target().unwrap()
+    else {
+        panic!("expected prepared zone retarget proof");
+    };
+    assert!(shrunk_rt.can_retarget_history_from(layer_rt.as_ref(), proof.as_ref()));
+    shrunk_rt.retarget_history_from(layer_rt.as_ref(), proof.as_ref());
+
+    let release_and_new = [
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        },
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 4,
+            occurrence_id: 2,
+            pitch: 62,
+            velocity: 100,
+        },
+        NativeInstrumentEvent::NoteOff {
+            frame_offset: 8,
+            occurrence_id: 2,
+        },
+    ];
+    let mut post_frames = [[0.0_f32; 2]; 32];
+    shrunk_rt
+        .preflight_events(&release_and_new, 32, &crate::EMPTY_DEVICE_RESOURCES)
+        .unwrap();
+    shrunk_rt.process_block(
+        &release_and_new,
+        &mut post_frames,
+        &crate::EMPTY_DEVICE_RESOURCES,
+    );
+    // Out-of-zone note 2 produced silence after frame 4, and held note 1 released to full quiescence!
+    assert_eq!(post_frames[4], [0.0, 0.0]);
+    let mut drain = [[0.0_f32; 2]; 64];
+    shrunk_rt.process_block(&[], &mut drain, &crate::EMPTY_DEVICE_RESOURCES);
+    assert!(shrunk_rt.is_quiescent());
 }

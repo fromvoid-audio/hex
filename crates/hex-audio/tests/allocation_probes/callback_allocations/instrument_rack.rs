@@ -54,12 +54,14 @@ fn two_branch_shared_source_instrument_rack_allocates_nothing_on_callback() {
 
     let rack_state = InstrumentRackSpec {
         rack_id: id(10),
+        overlap_policy: hex_lattice::InstrumentRackOverlapPolicy::Layer,
         branches: [
             InstrumentRackBranchSpec {
                 branch_id: id(1),
                 device_id: id(101),
                 gain: 0.6,
                 bypassed: false,
+                zone: hex_lattice::InstrumentRackZone::default(),
                 state: Some(sub),
             },
             InstrumentRackBranchSpec {
@@ -67,6 +69,7 @@ fn two_branch_shared_source_instrument_rack_allocates_nothing_on_callback() {
                 device_id: id(102),
                 gain: 0.4,
                 bypassed: false,
+                zone: hex_lattice::InstrumentRackZone::default(),
                 state: Some(fm4),
             },
         ],
@@ -219,5 +222,203 @@ fn two_branch_shared_source_instrument_rack_allocates_nothing_on_callback() {
     drop(candidate);
     drop(active);
     drop(revision);
+    drop(table);
+}
+
+#[test]
+fn zoned_crossfade_instrument_rack_and_live_zone_edit_allocate_nothing_on_callback() {
+    use hex_lattice::{InstrumentRackOverlapPolicy, InstrumentRackZone};
+
+    let sub_base = default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::subtractive::SUBTRACTIVE_TYPE_ID,
+    )
+    .unwrap();
+    let sub_attack = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &sub_base,
+        hex_devices::subtractive::parameter::ATTACK,
+        ParameterValue::Float(0.001),
+    )
+    .unwrap();
+    let sub = patch_native_device_parameter_for_class(
+        NativeDeviceClass::Instrument,
+        &sub_attack,
+        hex_devices::subtractive::parameter::RELEASE,
+        ParameterValue::Float(0.005),
+    )
+    .unwrap();
+    let fm4 = default_native_device_state_for_class(
+        NativeDeviceClass::Instrument,
+        hex_devices::fm4::device::FM4_TYPE_ID,
+    )
+    .unwrap();
+
+    let zone_fade_a = InstrumentRackZone {
+        key_low: 0,
+        key_fade_low: 0,
+        key_fade_high: 60,
+        key_high: 68,
+        vel_low: 1,
+        vel_fade_low: 1,
+        vel_fade_high: 127,
+        vel_high: 127,
+    };
+    let zone_fade_b = InstrumentRackZone {
+        key_low: 56,
+        key_fade_low: 64,
+        key_fade_high: 127,
+        key_high: 127,
+        vel_low: 50,
+        vel_fade_low: 70,
+        vel_fade_high: 127,
+        vel_high: 127,
+    };
+    let spec_a = InstrumentRackSpec {
+        rack_id: id(20),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
+        branches: [
+            InstrumentRackBranchSpec {
+                branch_id: id(1),
+                device_id: id(101),
+                gain: 0.6,
+                bypassed: false,
+                zone: zone_fade_a,
+                state: Some(sub),
+            },
+            InstrumentRackBranchSpec {
+                branch_id: id(2),
+                device_id: id(102),
+                gain: 0.4,
+                bypassed: false,
+                zone: zone_fade_b,
+                state: Some(fm4),
+            },
+        ],
+    };
+    let mut spec_b = spec_a.clone();
+    spec_b.overlap_policy = InstrumentRackOverlapPolicy::ExclusiveFirstMatch;
+    spec_b.branches[1].zone = InstrumentRackZone::hard(64, 127, 100, 127);
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+    let Created::NativeSource(source) = editor
+        .execute(Command::CreateNativeSource {
+            name: "zoned-rack-probe".into(),
+            devices: vec![spec_a.encode_state().unwrap()],
+            instrument_index: 0,
+        })
+        .unwrap()
+    else {
+        panic!("expected source");
+    };
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "track".into(),
+        })
+        .unwrap()
+    else {
+        panic!("expected track");
+    };
+    if editor
+        .project()
+        .track(track)
+        .unwrap()
+        .instrument()
+        .is_some()
+    {
+        editor.execute(Command::RemoveInstrument { track }).unwrap();
+    }
+    editor
+        .execute(Command::BindTrackSource {
+            track,
+            source: Some(source),
+        })
+        .unwrap();
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: beat(2),
+        })
+        .unwrap()
+    else {
+        panic!("clip");
+    };
+    for (pitch, start, vel) in [(60, BeatTime::ZERO, 110), (67, beat_frac(1, 64), 95)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start,
+                duration: beat_frac(1, 32),
+                pitch,
+                channel: 0,
+                velocity: vel,
+            })
+            .unwrap();
+    }
+
+    let builtin = hex_devices::native_instrument_registry().unwrap();
+    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
+    let rack_def = InstrumentRackDefinition::new(builtin).unwrap();
+    defs.push(&rack_def);
+    let combined = NativeInstrumentRegistry::new(&defs).unwrap();
+    let table = Arc::new(SineTable::new());
+    let rev_a = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &combined,
+        )
+        .unwrap(),
+    );
+    let inst_id = editor
+        .project()
+        .native_source(source)
+        .unwrap()
+        .instrument()
+        .id();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: inst_id,
+            state: spec_b.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare_with_instrument_registry(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::clone(&table),
+            None,
+            &combined,
+        )
+        .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    let mut edited = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        edited.try_inherit_state_from(&mut active).unwrap();
+        edited.render(&mut buf).unwrap();
+        edited.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(
+        info.count_total, 0,
+        "zoned rack callback allocated: {info:?}"
+    );
+    assert_eq!(info.bytes_total, 0, "zoned rack callback bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "zoned rack net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "zoned rack net bytes: {info:?}");
+
+    drop(edited);
+    drop(active);
+    drop(rev_b);
+    drop(rev_a);
     drop(table);
 }

@@ -175,12 +175,14 @@ fn two_branch_shared_source_rack_matches_exact_summed_pcm_bypass_removal_history
 
     let rack_spec = InstrumentRackSpec {
         rack_id: id(10),
+        overlap_policy: hex_lattice::InstrumentRackOverlapPolicy::Layer,
         branches: [
             InstrumentRackBranchSpec {
                 branch_id: id(1),
                 device_id: id(101),
                 gain: 0.6,
                 bypassed: false,
+                zone: hex_lattice::InstrumentRackZone::default(),
                 state: Some(sub.clone()),
             },
             InstrumentRackBranchSpec {
@@ -188,6 +190,7 @@ fn two_branch_shared_source_rack_matches_exact_summed_pcm_bypass_removal_history
                 device_id: id(102),
                 gain: 0.4,
                 bypassed: false,
+                zone: hex_lattice::InstrumentRackZone::default(),
                 state: Some(fm4.clone()),
             },
         ],
@@ -335,4 +338,167 @@ fn two_branch_shared_source_rack_matches_exact_summed_pcm_bypass_removal_history
     );
     let (bad_editor, _, _, _) = build_shared_source_project(bad_spec.encode_state().unwrap());
     assert!(prepare_with_rack(bad_editor.project()).is_err());
+}
+
+#[test]
+fn instrument_rack_key_velocity_zones_crossfade_overlap_live_edit_and_migration_pcm_oracles() {
+    use hex_lattice::{InstrumentRackOverlapPolicy, InstrumentRackZone};
+
+    let sub = subtractive_state();
+    let fm4 = fm4_state();
+
+    // Shared-source project has:
+    //   Contributor A: pitch 60, vel 110 at beat 0
+    //   Contributor B: pitch 67, vel 95 at beat 1/64
+    // Split zones:
+    //   Branch 0 (Subtractive): keys 0..=63 (captures ONLY pitch 60!)
+    //   Branch 1 (FM4):         keys 64..=127 (captures ONLY pitch 67!)
+    let split_spec = InstrumentRackSpec {
+        rack_id: id(20),
+        overlap_policy: InstrumentRackOverlapPolicy::Layer,
+        branches: [
+            InstrumentRackBranchSpec {
+                branch_id: id(1),
+                device_id: id(101),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::hard(0, 63, 1, 127),
+                state: Some(sub.clone()),
+            },
+            InstrumentRackBranchSpec {
+                branch_id: id(2),
+                device_id: id(102),
+                gain: 1.0,
+                bypassed: false,
+                zone: InstrumentRackZone::hard(64, 127, 1, 127),
+                state: Some(fm4.clone()),
+            },
+        ],
+    };
+
+    // Independent single-instrument reference projects:
+    //   sub_only plays ONLY pitch 60; fm4_only plays ONLY pitch 67!
+    let make_single_note_project =
+        |inst: NativeDeviceState, pitch: u8, start: BeatTime, vel: u8| {
+            let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::AddMidiTrack { name: "ref".into() })
+                .unwrap()
+            else {
+                panic!("track");
+            };
+            editor
+                .execute(Command::InsertInstrument { track, state: inst })
+                .unwrap();
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: beat(2),
+                })
+                .unwrap()
+            else {
+                panic!("clip");
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration: beat_frac(1, 32),
+                    pitch,
+                    channel: 0,
+                    velocity: vel,
+                })
+                .unwrap();
+            editor
+        };
+
+    let sub_ref_editor = make_single_note_project(sub.clone(), 60, BeatTime::ZERO, 110);
+    let fm4_ref_editor = make_single_note_project(fm4.clone(), 67, beat_frac(1, 64), 95);
+    let (mut rack_editor, source_id, _, _) =
+        build_shared_source_project(split_spec.encode_state().unwrap());
+
+    let total_frames = 2_048_usize;
+    let mut sub_out = vec![[0.0_f32; 2]; total_frames];
+    let mut fm4_out = vec![[0.0_f32; 2]; total_frames];
+    let mut rack_out = vec![[0.0_f32; 2]; total_frames];
+
+    let mut sub_pb =
+        SessionPlayback::new(prepare_with_rack(sub_ref_editor.project()).unwrap()).unwrap();
+    sub_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    sub_pb.render(&mut sub_out).unwrap();
+
+    let mut fm4_pb =
+        SessionPlayback::new(prepare_with_rack(fm4_ref_editor.project()).unwrap()).unwrap();
+    fm4_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    fm4_pb.render(&mut fm4_out).unwrap();
+
+    let expected_split: Vec<[f32; 2]> = sub_out
+        .iter()
+        .zip(&fm4_out)
+        .map(|(a, b)| [a[0] + b[0], a[1] + b[1]])
+        .collect();
+
+    let rack_rev_split = prepare_with_rack(rack_editor.project()).unwrap();
+    let mut rack_pb = SessionPlayback::new(Arc::clone(&rack_rev_split)).unwrap();
+    rack_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    for chunk in rack_out.chunks_mut(128) {
+        rack_pb.render(chunk).unwrap();
+    }
+    for (idx, (actual, expected)) in rack_out.iter().zip(&expected_split).enumerate() {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-5 && (actual[1] - expected[1]).abs() < 1e-5,
+            "zoned split PCM mismatch at frame {idx}: actual={actual:?} expected={expected:?}"
+        );
+    }
+
+    // Live zone edit while pitch 60 is held (at frame 256, BEFORE pitch 67 arrives at frame 375!):
+    // Shrink Branch 1's velocity zone to 100..=127 so pitch 67 (vel 95) is filtered out while
+    // already-held pitch 60 on Branch 0 releases cleanly with zero stuck notes!
+    let mut edited_spec = split_spec.clone();
+    edited_spec.branches[1].zone = InstrumentRackZone::hard(64, 127, 100, 127);
+    let rack_device_id = rack_editor
+        .project()
+        .native_source(source_id)
+        .unwrap()
+        .instrument()
+        .id();
+    rack_editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_device_id,
+            state: edited_spec.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rack_rev_edited = prepare_with_rack(rack_editor.project()).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rack_rev_split)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut live_out = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut live_out[..256]).unwrap();
+
+    let mut live_b = SessionPlayback::new(rack_rev_edited).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut live_out[256..]).unwrap();
+
+    // Since pitch 67 (vel 95) arrived AFTER the live velocity-zone edit, live_out MUST match sub_out ONLY!
+    for (idx, (actual, expected)) in live_out.iter().zip(&sub_out).enumerate() {
+        assert!(
+            (actual[0] - expected[0]).abs() < 1e-5 && (actual[1] - expected[1]).abs() < 1e-5,
+            "live zone edit PCM mismatch at frame {idx}: actual={actual:?} expected={expected:?}"
+        );
+    }
+    live_b.apply(SessionPlaybackCommand::Stop).unwrap();
+
+    // Undo/Redo + snapshot roundtrip preserve exact zoned rack state!
+    rack_editor.undo();
+    let reopened = Project::from_snapshot(rack_editor.project().snapshot()).unwrap();
+    let reopened_state = reopened
+        .native_source(source_id)
+        .unwrap()
+        .instrument()
+        .state();
+    assert_eq!(
+        InstrumentRackSpec::decode_state(reopened_state).unwrap(),
+        split_spec
+    );
 }
