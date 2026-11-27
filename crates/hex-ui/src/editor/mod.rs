@@ -556,6 +556,7 @@ fn bind_editor_keys(cx: &mut App) {
     clip_name::bind_keys(cx);
     track_name::bind_keys(cx);
     console_returns::bind_keys(cx);
+    device_panel::bind_modulator_keys(cx);
     cx.bind_keys([
         KeyBinding::new("cmd-,", OpenSettings, None),
         KeyBinding::new("escape", ThemeSettingsEscape, Some("hex_theme_settings")),

@@ -63,8 +63,10 @@ pub(in crate::editor) fn apply(
             {
                 return Err(Invalid("this modulator requires instrument note events"));
             }
+            let color = hex_project::ElementColor::TRACK_CHOICES
+                [sources.len() % hex_project::ElementColor::TRACK_CHOICES.len()];
             sources.push(Modulator {
-                color: Default::default(),
+                color,
                 id: ModulationSourceId::new(project.next_identity()).map_err(unsupported)?,
                 enabled: true,
                 state: kind

@@ -53,7 +53,7 @@ pub(super) fn nested_parent(view: &EditorView, owner: DevicePanelOwner) -> Optio
 }
 
 /// Resolve a chain-sibling `before` anchor for tests and callers expecting chain insertion.
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn before(view: &EditorView, owner: DevicePanelOwner) -> Option<Option<DeviceId>> {
     match destination(view, owner)? {
         Destination::Chain { before } => Some(before),

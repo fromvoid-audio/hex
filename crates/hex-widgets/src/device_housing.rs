@@ -117,6 +117,8 @@ pub struct HostSlotItem {
     pub value: SharedString,
     pub accent_color: u32,
     pub enabled: bool,
+    pub armed: bool,
+    pub unsupported: bool,
     pub preview: HostSlotPreview,
     pub modulation_ring: Option<HostSlotModulationRing>,
     pub interactive: Option<AnyElement>,
@@ -269,7 +271,10 @@ fn render_slot(slot: HostSlotItem, layout: HostSlotGridLayout, style: ControlSty
     let size = layout.slot_size;
     let slot_id = slot.id.clone();
     let ring_id = slot.id.clone();
-    let border_color = if slot.enabled {
+    let armed_id = slot.id.clone();
+    let unsupported_id = slot.id.clone();
+    let active = slot.enabled && !slot.unsupported;
+    let border_color = if (slot.armed && !slot.unsupported) || active {
         slot.accent_color
     } else {
         style.border
@@ -280,9 +285,13 @@ fn render_slot(slot: HostSlotItem, layout: HostSlotGridLayout, style: ControlSty
     let value_height = if layout.rows >= 4 { 9.0 } else { 11.0 };
     let graphic_size = (size - label_height - value_height - 8.0).clamp(12.0, 42.0);
     let preview = slot.preview;
-    let ring = slot.modulation_ring;
+    let ring = if slot.unsupported {
+        None
+    } else {
+        slot.modulation_ring
+    };
     let accent = slot.accent_color;
-    let enabled = slot.enabled;
+    let enabled = active;
 
     let graphic = div()
         .debug_selector(move || format!("host-slot-ring-{}", ring_id.as_ref()))
@@ -301,6 +310,7 @@ fn render_slot(slot: HostSlotItem, layout: HostSlotGridLayout, style: ControlSty
 
     let mut card = div()
         .debug_selector(move || format!("host-slot-{}", slot_id.as_ref()))
+        .relative()
         .w(px(size))
         .h(px(size))
         .flex()
@@ -313,7 +323,11 @@ fn render_slot(slot: HostSlotItem, layout: HostSlotGridLayout, style: ControlSty
         .rounded(px(DEVICE_CORNER_RADIUS - 1.0))
         .border_1()
         .border_color(rgb(border_color))
-        .bg(rgb(style.surface))
+        .bg(rgb(if slot.armed && !slot.unsupported {
+            style.raised
+        } else {
+            style.surface
+        }))
         .overflow_hidden()
         .child(
             div()
@@ -324,7 +338,7 @@ fn render_slot(slot: HostSlotItem, layout: HostSlotGridLayout, style: ControlSty
                 .justify_center()
                 .overflow_hidden()
                 .text_size(px(label_size))
-                .text_color(rgb(if enabled { style.text } else { style.muted }))
+                .text_color(rgb(if active { style.text } else { style.muted }))
                 .child(style.text_case.present(slot.label.as_ref())),
         )
         .child(graphic)
@@ -337,11 +351,37 @@ fn render_slot(slot: HostSlotItem, layout: HostSlotGridLayout, style: ControlSty
                 .justify_center()
                 .overflow_hidden()
                 .text_size(px(value_size))
-                .text_color(rgb(if enabled { style.text } else { style.muted }))
+                .text_color(rgb(if active { style.text } else { style.muted }))
                 .child(style.text_case.present(slot.value.as_ref())),
         );
+    if slot.armed && !slot.unsupported {
+        card = card.child(
+            div()
+                .debug_selector(move || format!("host-slot-armed-{}", armed_id.as_ref()))
+                .absolute()
+                .top(px(2.0))
+                .right(px(2.0))
+                .size(px(4.0))
+                .rounded_full()
+                .bg(rgb(accent)),
+        );
+    }
+    if slot.unsupported {
+        card = card.child(
+            div()
+                .debug_selector(move || {
+                    format!("host-slot-unsupported-{}", unsupported_id.as_ref())
+                })
+                .absolute()
+                .top(px(2.0))
+                .right(px(2.0))
+                .size(px(4.0))
+                .rounded_full()
+                .bg(rgb(style.muted)),
+        );
+    }
     if let Some(interactive) = slot.interactive {
-        card = card.relative().child(interactive);
+        card = card.child(div().absolute().inset_0().child(interactive));
     }
     card
 }

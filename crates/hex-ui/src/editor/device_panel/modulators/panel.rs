@@ -147,6 +147,226 @@ fn source_ring(
     Some(hex_widgets::HostSlotModulationRing { base, delta, color })
 }
 
+fn is_macro_kind(kind: SourceKind) -> bool {
+    matches!(
+        kind,
+        SourceKind::Macro | SourceKind::MacroFour | SourceKind::Button | SourceKind::Buttons
+    )
+}
+
+fn resolve_host_gain_stages(
+    view: &mut EditorView,
+    id: DeviceId,
+    generation: u64,
+    revision: u64,
+    needed: bool,
+) -> HostGainStages {
+    if !needed {
+        return HostGainStages::default();
+    }
+    let Some(state) = view.state.as_ref() else {
+        return HostGainStages::default();
+    };
+    let cache = &mut view.device_panel.host_gain_mapping_availability;
+    if let Some(cached) = cache.as_ref().filter(|entry| {
+        entry.device == id && entry.generation == generation && entry.revision == revision
+    }) {
+        return cached.stages;
+    }
+    let effect = hex_engine::project_device_host_gain_modulation_supported(&state.project, id);
+    let stages = HostGainStages {
+        input: effect,
+        output: effect
+            || hex_engine::project_device_instrument_output_modulation_supported(
+                &state.project,
+                id,
+            ),
+    };
+    *cache = Some(HostGainMappingAvailability {
+        device: id,
+        generation,
+        revision,
+        stages,
+    });
+    stages
+}
+
+fn effective_macro_slot_value(bank: &DeviceModulation, source: &hex_project::Modulator) -> f32 {
+    let base = manual::Settings::decode(&source.state).map_or(0.0, |s| s.value.clamp(0.0, 1.0));
+    let mut delta = 0.0_f64;
+    for route in bank.routes() {
+        if !route.enabled {
+            continue;
+        }
+        let targets_this = matches!(
+            route.destination,
+            ModulationDestination::Modulator {
+                source: target,
+                module_type: manual::TYPE_ID,
+                parameter: manual::VALUE_PARAMETER,
+            } if target == source.id
+        );
+        if !targets_this {
+            continue;
+        }
+        let Some(upstream) = bank.sources().iter().find(|s| s.id == route.source) else {
+            continue;
+        };
+        if !upstream.enabled {
+            continue;
+        }
+        if let Some(contribution) = route_static_contribution(upstream, route) {
+            delta += f64::from(contribution);
+        }
+    }
+    (f64::from(base) + delta).clamp(0.0, 1.0) as f32
+}
+
+struct SlotOverlaySpec<'a> {
+    device: DeviceId,
+    source_id: ModulationSourceId,
+    kind: SourceKind,
+    slot_id: &'a str,
+    armed: bool,
+    generation: u64,
+    revision: u64,
+}
+
+fn slot_interactive_overlay(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    spec: SlotOverlaySpec<'_>,
+) -> AnyElement {
+    let SlotOverlaySpec {
+        device,
+        source_id,
+        kind,
+        slot_id,
+        armed,
+        generation,
+        revision,
+    } = spec;
+    let focus = view
+        .device_panel
+        .modulator_slot_focus
+        .entry((device, source_id))
+        .or_insert_with(|| cx.focus_handle().tab_stop(true).tab_index(0))
+        .clone();
+    let click_focus = focus.clone();
+    let selector = format!("host-slot-action-{slot_id}");
+    let focus_marker = theme::device_style(theme::DeviceStyleRole::Control).focus_marker;
+    let output = MappingOutput::main(source_id);
+    div()
+        .id(ElementId::Name(selector.clone().into()))
+        .debug_selector(move || selector.clone())
+        .key_context("hex_modulator_slot")
+        .size_full()
+        .rounded(px(hex_widgets::DEVICE_CORNER_RADIUS - 1.0))
+        .border_1()
+        .border_color(gpui::transparent_black())
+        .track_focus(&focus)
+        .focus(move |slot| slot.border_color(rgb(focus_marker)))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(cx.listener(move |view, _, window, cx| {
+            cx.stop_propagation();
+            click_focus.focus(window);
+            if view.project_generation != generation {
+                return;
+            }
+            view.device_panel.mapping_source = (!armed).then_some((device, output));
+            cx.notify();
+        }))
+        .on_action(cx.listener(move |view, _: &SlotArmToggle, _, cx| {
+            cx.stop_propagation();
+            if view.project_generation == generation {
+                let currently_armed = view.device_panel.mapping_source == Some((device, output));
+                view.device_panel.mapping_source = (!currently_armed).then_some((device, output));
+                cx.notify();
+            }
+        }))
+        .on_action(cx.listener(move |view, _: &SlotExitModMode, _, cx| {
+            if view.device_panel.mapping_source.take().is_some() {
+                cx.notify();
+                cx.stop_propagation();
+            }
+        }))
+        .on_action(cx.listener(move |view, _: &SlotStepUp, _, cx| match kind {
+            SourceKind::Macro => {
+                cx.stop_propagation();
+                submit(
+                    view,
+                    generation,
+                    revision,
+                    device,
+                    Edit::MacroValue(source_id, 0.05),
+                );
+                cx.notify();
+            }
+            SourceKind::Button => {
+                cx.stop_propagation();
+                submit(
+                    view,
+                    generation,
+                    revision,
+                    device,
+                    Edit::ToggleButton(source_id),
+                );
+                cx.notify();
+            }
+            _ => {}
+        }))
+        .on_action(
+            cx.listener(move |view, _: &SlotStepDown, _, cx| match kind {
+                SourceKind::Macro => {
+                    cx.stop_propagation();
+                    submit(
+                        view,
+                        generation,
+                        revision,
+                        device,
+                        Edit::MacroValue(source_id, -0.05),
+                    );
+                    cx.notify();
+                }
+                SourceKind::Button => {
+                    cx.stop_propagation();
+                    submit(
+                        view,
+                        generation,
+                        revision,
+                        device,
+                        Edit::ToggleButton(source_id),
+                    );
+                    cx.notify();
+                }
+                _ => {}
+            }),
+        )
+        .on_action(cx.listener(move |view, _: &SlotRemove, _, cx| {
+            cx.stop_propagation();
+            submit(
+                view,
+                generation,
+                revision,
+                device,
+                Edit::RemoveSource(source_id),
+            );
+            cx.notify();
+        }))
+        .on_key_down(move |event, window, cx| {
+            let mods = event.keystroke.modifiers;
+            if event.keystroke.key == "tab" && !mods.control && !mods.alt && !mods.platform {
+                if mods.shift {
+                    window.focus_prev();
+                } else {
+                    window.focus_next();
+                }
+                cx.stop_propagation();
+            }
+        })
+        .into_any_element()
+}
+
 fn macro_panel_with_targets(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
@@ -174,50 +394,108 @@ fn macro_panel_with_targets(
             })
         },
     );
+    let selected = view
+        .device_panel
+        .mapping_source
+        .filter(|(device, source)| {
+            *device == id && bank.sources().iter().any(|slot| source.valid_for(slot))
+        })
+        .map(|(_, source)| source);
+    let host_gains = resolve_host_gain_stages(
+        view,
+        id,
+        generation,
+        revision,
+        !has_target && bank.is_empty(),
+    );
+    let host_gain_available = host_gains.input || host_gains.output;
+    if !has_target && !host_gain_available && bank.is_empty() {
+        return None;
+    }
     let mut cfg = hex_widgets::HostSlotPanelConfig::new(
         "device-macro-slots",
         "macros",
         "no macros",
         theme::device_style(theme::DeviceStyleRole::Control),
     );
-    if (has_target || !bank.is_empty())
+    let armed_macro = selected.is_some_and(|output| {
+        bank.sources().iter().any(|source| {
+            source.id == output.source && slot_source_kind(source).is_some_and(is_macro_kind)
+        })
+    });
+    let can_add_macro = (has_target || host_gain_available || !bank.is_empty())
         && bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE
-        && hex_engine::device_available_modulation_outputs(device) > 0
-    {
-        cfg.header_action = Some(
-            action(format!("add-macro-{}", id.value()), theme::text("+"))
+        && hex_engine::device_available_modulation_outputs(device) > 0;
+    if armed_macro || can_add_macro {
+        let mut header_actions = div().flex().items_center().gap(px(2.0));
+        if armed_macro {
+            let control = action(format!("macro-done-{}", id.value()), theme::text("done"))
                 .on_click(cx.listener(move |view, _, _, cx| {
+                    cx.stop_propagation();
+                    view.device_panel.mapping_source = None;
+                    cx.notify();
+                }));
+            header_actions = header_actions.child(control);
+        }
+        if can_add_macro {
+            let control = action(format!("add-macro-{}", id.value()), theme::text("+")).on_click(
+                cx.listener(move |view, _, _, cx| {
                     cx.stop_propagation();
                     submit(view, generation, revision, id, Edit::Add(SourceKind::Macro));
                     cx.notify();
-                }))
-                .into_any_element(),
-        );
+                }),
+            );
+            header_actions = header_actions.child(control);
+        }
+        cfg.header_action = Some(header_actions.into_any_element());
     }
     let mut macro_index = 0usize;
     for source in bank.sources() {
         let Some(kind) = slot_source_kind(source) else {
             continue;
         };
-        if !matches!(
-            kind,
-            SourceKind::Macro | SourceKind::MacroFour | SourceKind::Button | SourceKind::Buttons
-        ) {
+        if !is_macro_kind(kind) {
             continue;
         }
         macro_index += 1;
         let color = theme::element_colors(source.color).accent;
-        let (preview, value, base) = slot_preview_and_value(source, kind);
+        let (preview, value, base) = if matches!(kind, SourceKind::Macro) {
+            let eff = effective_macro_slot_value(bank, source);
+            (
+                hex_widgets::HostSlotPreview::MacroDial(eff),
+                format!("{:.0}%", eff * 100.0),
+                eff,
+            )
+        } else {
+            slot_preview_and_value(source, kind)
+        };
         let ring = source_ring(bank, source.id, base, color);
+        let slot_id = format!("macro-{}", source.id.value());
+        let armed = selected.is_some_and(|output| output.source == source.id);
+        let interactive = slot_interactive_overlay(
+            view,
+            cx,
+            SlotOverlaySpec {
+                device: id,
+                source_id: source.id,
+                kind,
+                slot_id: &slot_id,
+                armed,
+                generation,
+                revision,
+            },
+        );
         cfg.slots.push(hex_widgets::HostSlotItem {
-            id: format!("macro-{}", source.id.value()).into(),
+            id: slot_id.into(),
             label: format!("m{macro_index}").into(),
             value: value.into(),
             accent_color: color,
             enabled: source.enabled,
+            armed,
+            unsupported: false,
             preview,
             modulation_ring: ring,
-            interactive: None,
+            interactive: Some(interactive),
         });
     }
     Some(hex_widgets::host_slot_panel(cfg).into_any_element())
@@ -252,6 +530,8 @@ pub(in crate::editor) fn panel_with_targets(
     let id = device.id();
     let revision = state.revision;
     let generation = view.project_generation;
+    let can_add_note_pressure =
+        hex_engine::project_device_can_add_note_pressure(&state.project, id);
     let bank = device.modulation();
     if !is_effect && bank.is_empty() && !hex_engine::instrument_modulation_supported(device.state())
     {
@@ -275,34 +555,13 @@ pub(in crate::editor) fn panel_with_targets(
             *device == id && bank.sources().iter().any(|slot| source.valid_for(slot))
         })
         .map(|(_, source)| source);
-    let host_gains = if selected.is_some() || (!has_target && bank.is_empty()) {
-        let cache = &mut view.device_panel.host_gain_mapping_availability;
-        if let Some(cached) = cache.as_ref().filter(|entry| {
-            entry.device == id && entry.generation == generation && entry.revision == revision
-        }) {
-            cached.stages
-        } else {
-            let effect =
-                hex_engine::project_device_host_gain_modulation_supported(&state.project, id);
-            let stages = HostGainStages {
-                input: effect,
-                output: effect
-                    || hex_engine::project_device_instrument_output_modulation_supported(
-                        &state.project,
-                        id,
-                    ),
-            };
-            *cache = Some(HostGainMappingAvailability {
-                device: id,
-                generation,
-                revision,
-                stages,
-            });
-            stages
-        }
-    } else {
-        HostGainStages::default()
-    };
+    let host_gains = resolve_host_gain_stages(
+        view,
+        id,
+        generation,
+        revision,
+        selected.is_some() || (!has_target && bank.is_empty()),
+    );
     let host_gain_available = host_gains.input || host_gains.output;
     if !has_target && !host_gain_available && bank.is_empty() {
         return None;
@@ -316,8 +575,7 @@ pub(in crate::editor) fn panel_with_targets(
     };
     let mut body = div().flex().flex_col().flex_shrink_0().gap(px(3.0));
     if bank.sources().len() < hex_project::MAX_MODULATORS_PER_DEVICE
-        && (hex_engine::device_available_modulation_outputs(device) > 0
-            || hex_engine::project_device_can_add_note_pressure(&state.project, id))
+        && (hex_engine::device_available_modulation_outputs(device) > 0 || can_add_note_pressure)
     {
         let target = AddModulatorTarget {
             generation,
@@ -1317,22 +1575,76 @@ pub(in crate::editor) fn panel_with_targets(
         "no modulators",
         theme::device_style(theme::DeviceStyleRole::Control),
     );
-    for (slot_index, source) in bank.sources().iter().enumerate() {
+    let armed_modulator = selected.is_some_and(|output| {
+        bank.sources().iter().any(|source| {
+            source.id == output.source && !slot_source_kind(source).is_some_and(is_macro_kind)
+        })
+    });
+    if armed_modulator {
+        slot_cfg.header_action = Some(
+            action(
+                format!("modulator-done-{}", id.value()),
+                theme::text("done"),
+            )
+            .on_click(cx.listener(move |view, _, _, cx| {
+                cx.stop_propagation();
+                view.device_panel.mapping_source = None;
+                cx.notify();
+            }))
+            .into_any_element(),
+        );
+    }
+    let mut modulator_index = 0usize;
+    for source in bank.sources() {
         let Some(kind) = slot_source_kind(source) else {
+            modulator_index += 1;
+            slot_cfg.slots.push(hex_widgets::HostSlotItem {
+                id: format!("mod-{}", source.id.value()).into(),
+                label: format!("unsupported {modulator_index}").into(),
+                value: "unsupported".into(),
+                accent_color: theme::color(theme::PaletteRole::Border),
+                enabled: false,
+                armed: false,
+                unsupported: true,
+                preview: hex_widgets::HostSlotPreview::Level(0.0),
+                modulation_ring: None,
+                interactive: None,
+            });
             continue;
         };
+        if is_macro_kind(kind) {
+            continue;
+        }
+        modulator_index += 1;
         let color = theme::element_colors(source.color).accent;
         let (preview, value, base) = slot_preview_and_value(source, kind);
         let ring = source_ring(bank, source.id, base, color);
+        let slot_id = format!("mod-{}", source.id.value());
+        let armed = selected.is_some_and(|output| output.source == source.id);
+        let interactive = slot_interactive_overlay(
+            view,
+            cx,
+            SlotOverlaySpec {
+                device: id,
+                source_id: source.id,
+                kind,
+                slot_id: &slot_id,
+                armed,
+                generation,
+                revision,
+            },
+        );
         slot_cfg.slots.push(hex_widgets::HostSlotItem {
-            id: format!("mod-{}", source.id.value()).into(),
-            label: format!("{} {}", kind.label(), slot_index + 1).into(),
+            id: slot_id.into(),
+            label: format!("{} {modulator_index}", kind.label()).into(),
             value: value.into(),
             accent_color: color,
             enabled: source.enabled,
+            armed,
+            unsupported: false,
             preview,
             modulation_ring: ring,
-            interactive: None,
+            interactive: Some(interactive),
         });
     }
     slot_cfg.detail = Some(

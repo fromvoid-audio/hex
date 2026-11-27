@@ -543,6 +543,15 @@ pub(in crate::editor) fn render_track(
         view.device_panel
             .operator_section_focus
             .retain(|(device, _), _| view.device_panel.operator_pages.contains_key(device));
+        view.device_panel
+            .modulator_slot_focus
+            .retain(|(device, source), _| {
+                alive.contains(device)
+                    && state
+                        .project
+                        .device(*device)
+                        .is_some_and(|d| d.modulation().sources().iter().any(|s| s.id == *source))
+            });
         let alive_operator: HashSet<_> = identities
             .iter()
             .filter_map(|(device, identity)| {

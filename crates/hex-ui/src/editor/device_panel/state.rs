@@ -61,6 +61,8 @@ pub(in crate::editor) struct DevicePanelState {
     pub(in crate::editor) mapping_source: Option<(DeviceId, modulators::MappingOutput)>,
     pub(super) modulation_target_drag: modulators::TargetDragState,
     pub(super) host_gain_mapping_availability: Option<modulators::HostGainMappingAvailability>,
+    pub(super) modulator_slot_focus:
+        HashMap<(DeviceId, hex_project::ModulationSourceId), gpui::FocusHandle>,
     pub(super) vst3_parameters: vst3_parameters::State,
     pub(in crate::editor) navigation: navigation::Navigation,
     pub(super) generation: u64,
@@ -722,6 +724,7 @@ pub(in crate::editor) fn clear_owner_state(
     view.device_panel.operator_pages.clear();
     view.device_panel.operator_navigation_focus.clear();
     view.device_panel.operator_section_focus.clear();
+    view.device_panel.modulator_slot_focus.clear();
     view.device_panel.eq8_panels.clear();
     view.device_panel.eq_panels.clear();
     view.device_panel.eq8_audition_toggles.clear();

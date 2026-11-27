@@ -478,11 +478,38 @@ mod source_card;
 
 use apply::*;
 use overlays::*;
-pub(super) use overlays::{target_overlay, vst3_destination, vst3_target_overlay};
+pub(super) use overlays::{
+    modulation_feedback_overlay, target_overlay, vst3_destination, vst3_target_overlay,
+};
 pub(super) use panel::{macro_panel, panel, vst3_macro_panel, vst3_panel};
-#[cfg(test)]
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(super) use source_card::source_utility_gain_available;
 pub(super) use source_card::{SOURCE_EFFECT_CARD_WIDTH, source_effect_card};
+
+gpui::actions!(
+    hex_modulator_slot,
+    [
+        SlotStepUp,
+        SlotStepDown,
+        SlotArmToggle,
+        SlotExitModMode,
+        SlotRemove
+    ]
+);
+
+pub(in crate::editor) fn bind_keys(cx: &mut gpui::App) {
+    cx.bind_keys([
+        gpui::KeyBinding::new("up", SlotStepUp, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("right", SlotStepUp, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("down", SlotStepDown, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("left", SlotStepDown, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("enter", SlotArmToggle, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("space", SlotArmToggle, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("escape", SlotExitModMode, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("backspace", SlotRemove, Some("hex_modulator_slot")),
+        gpui::KeyBinding::new("delete", SlotRemove, Some("hex_modulator_slot")),
+    ]);
+}
 
 #[cfg(all(test, not(feature = "ui-test-support")))]
 mod tests;

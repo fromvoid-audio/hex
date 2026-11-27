@@ -375,8 +375,10 @@ pub(in crate::editor) fn parameter_control_with_label(
             compact_toggle_width,
         },
     );
-    if let Some(element) = modulators::target_overlay(view, cx, device, parameter) {
-        control.relative().child(element)
+    let feedback = modulators::modulation_feedback_overlay(view, device, parameter);
+    let overlay = modulators::target_overlay(view, cx, device, parameter);
+    if feedback.is_some() || overlay.is_some() {
+        control.relative().children(feedback).children(overlay)
     } else {
         control
     }
