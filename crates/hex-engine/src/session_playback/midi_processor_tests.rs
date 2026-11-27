@@ -2241,3 +2241,301 @@ fn canonical_two_branch_midi_rack_matches_pcm_oracle_across_parallel_pitch_bypas
     stop_pb.render(&mut replay).unwrap();
     assert_eq!(replay, expected_both);
 }
+
+#[test]
+fn canonical_nested_two_level_midi_rack_matches_pcm_oracle_across_overlaps_inner_bypass_removal_loop_and_undo()
+ {
+    use hex_devices::midi_pitch::PitchSettings;
+    use hex_lattice::{MidiRackBranchSpec, MidiRackSpec};
+
+    // Depth-2 nested MIDI Rack:
+    //   Outer branch 0 -> Inner MIDI Rack:
+    //     Inner branch 0: Pitch(+4)
+    //     Inner branch 1: Pitch(+7)
+    //   Outer branch 1 -> Pitch(+12)
+    let authored = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 105),
+    ];
+    let make_nested_spec = |inner_b1_bypass: bool| MidiRackSpec {
+        rack_id: NonZeroU64::new(1).unwrap(),
+        branches: [
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(10).unwrap(),
+                device_id: NonZeroU64::new(100).unwrap(),
+                bypassed: false,
+                state: Some(
+                    MidiRackSpec {
+                        rack_id: NonZeroU64::new(2).unwrap(),
+                        branches: [
+                            MidiRackBranchSpec {
+                                branch_id: NonZeroU64::new(21).unwrap(),
+                                device_id: NonZeroU64::new(201).unwrap(),
+                                bypassed: false,
+                                state: Some(
+                                    PitchSettings {
+                                        semitones: 4,
+                                        ..Default::default()
+                                    }
+                                    .encode()
+                                    .unwrap(),
+                                ),
+                            },
+                            MidiRackBranchSpec {
+                                branch_id: NonZeroU64::new(22).unwrap(),
+                                device_id: NonZeroU64::new(202).unwrap(),
+                                bypassed: inner_b1_bypass,
+                                state: Some(
+                                    PitchSettings {
+                                        semitones: 7,
+                                        ..Default::default()
+                                    }
+                                    .encode()
+                                    .unwrap(),
+                                ),
+                            },
+                        ],
+                    }
+                    .encode_state()
+                    .unwrap(),
+                ),
+            },
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(20).unwrap(),
+                device_id: NonZeroU64::new(200).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 12,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+        ],
+    };
+
+    let nested_spec = make_nested_spec(false);
+    let (mut editor, track) = build_subtractive_project(&authored);
+    let Created::Device(rack_dev_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: nested_spec.encode_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected nested midi rack device id");
+    };
+
+    let oracle_all = [
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 72, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 68, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 71, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 76, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 105),
+        (beat_frac(1, 16), beat_frac(1, 32), 72, 105),
+    ];
+    let (oracle_editor, _) = build_subtractive_project(&oracle_all);
+    let rev_all = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_all = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_all).unwrap();
+    assert!(expected_all.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Chunked render matches 3-voice depth-2 PCM oracle bit-for-bit!
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_all)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual, expected_all);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live mid-note inner branch bypass: held notes 1 & 2 release all 6 active voices cleanly;
+    // note 3 emits only Pitch(+4) + Pitch(+12) = 64, 72!
+    let inner_bypass_spec = make_nested_spec(true);
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_dev_id,
+            state: inner_bypass_spec.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_inner_bypass = prepare_revision(editor.project());
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 72, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 68, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 71, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 76, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+        (beat_frac(1, 16), beat_frac(1, 32), 72, 105),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_all)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_inner_bypass).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Mid-note source replacement (replacing nested inner rack with flat Pitch(+2) leaf)
+    // flushes held nested voices cleanly without stuck notes.
+    let replaced_spec = MidiRackSpec {
+        rack_id: NonZeroU64::new(1).unwrap(),
+        branches: [
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(10).unwrap(),
+                device_id: NonZeroU64::new(100).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 2,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(20).unwrap(),
+                device_id: NonZeroU64::new(200).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 12,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+        ],
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_dev_id,
+            state: replaced_spec.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_replaced = prepare_revision(editor.project());
+    let mut rep_a = SessionPlayback::new(Arc::clone(&rev_all)).unwrap();
+    rep_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut rep_buf = vec![[0.0_f32; 2]; total_frames];
+    rep_a.render(&mut rep_buf[..500]).unwrap();
+    let mut rep_b = SessionPlayback::new(rev_replaced).unwrap();
+    // Structural replacement mid-note refuses live inheritance without corrupting active nested playback!
+    assert_eq!(
+        rep_b.try_inherit_state_from(&mut rep_a),
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
+    );
+    rep_a.render(&mut rep_buf[500..]).unwrap();
+    assert_eq!(rep_buf, expected_all);
+    assert!(
+        rep_a.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    // Once active nested playback is quiescent, replacement hands off cleanly with zero stuck notes.
+    rep_b.try_inherit_state_from(&mut rep_a).unwrap();
+    rep_b.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    rep_b.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut post_replace = vec![[0.0_f32; 2]; total_frames];
+    rep_b.render(&mut post_replace).unwrap();
+    assert!(post_replace.iter().flatten().any(|s| s.abs() > 1e-3));
+    assert!(
+        rep_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Undo restores inner bypass then full nested rack; snapshot roundtrip preserves exact depth-2 tree.
+    editor.undo();
+    editor.undo();
+    let undone_state = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&undone_state).unwrap(),
+        nested_spec
+    );
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    let reopened_state = reopened
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&reopened_state).unwrap(),
+        nested_spec
+    );
+
+    // Loop wrap + Stop + Seek(0) + Play leave zero stuck notes.
+    editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 1_024,
+            enabled: true,
+        })
+        .unwrap();
+    let rev_loop = prepare_revision(editor.project());
+    let mut loop_pb = SessionPlayback::new(rev_loop).unwrap();
+    loop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut loop_buf = vec![[0.0_f32; 2]; 2_400];
+    for chunk in loop_buf.chunks_mut(128) {
+        loop_pb.render(chunk).unwrap();
+    }
+    loop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        loop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    loop_pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    loop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; 512];
+    loop_pb.render(&mut replay).unwrap();
+    loop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        loop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}

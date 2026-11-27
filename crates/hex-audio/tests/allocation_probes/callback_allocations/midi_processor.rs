@@ -1231,3 +1231,133 @@ fn canonical_two_branch_midi_rack_fanout_live_edit_and_bypass_allocate_nothing_o
     drop(rev_a);
     drop(table);
 }
+
+#[test]
+fn canonical_nested_two_level_midi_rack_fanout_live_edit_and_bypass_allocate_nothing_on_callback() {
+    use hex_devices::midi_pitch::PitchSettings;
+    use hex_lattice::{MidiRackBranchSpec, MidiRackSpec};
+
+    let (mut editor, track, _session_clip) = build_project();
+    let make_nested_spec = |inner_b1_bypass: bool| MidiRackSpec {
+        rack_id: NonZeroU64::new(1).unwrap(),
+        branches: [
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(10).unwrap(),
+                device_id: NonZeroU64::new(100).unwrap(),
+                bypassed: false,
+                state: Some(
+                    MidiRackSpec {
+                        rack_id: NonZeroU64::new(2).unwrap(),
+                        branches: [
+                            MidiRackBranchSpec {
+                                branch_id: NonZeroU64::new(21).unwrap(),
+                                device_id: NonZeroU64::new(201).unwrap(),
+                                bypassed: false,
+                                state: Some(
+                                    PitchSettings {
+                                        semitones: 4,
+                                        ..Default::default()
+                                    }
+                                    .encode()
+                                    .unwrap(),
+                                ),
+                            },
+                            MidiRackBranchSpec {
+                                branch_id: NonZeroU64::new(22).unwrap(),
+                                device_id: NonZeroU64::new(202).unwrap(),
+                                bypassed: inner_b1_bypass,
+                                state: Some(
+                                    PitchSettings {
+                                        semitones: 7,
+                                        ..Default::default()
+                                    }
+                                    .encode()
+                                    .unwrap(),
+                                ),
+                            },
+                        ],
+                    }
+                    .encode_state()
+                    .unwrap(),
+                ),
+            },
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(20).unwrap(),
+                device_id: NonZeroU64::new(200).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 12,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+        ],
+    };
+    let Created::Device(rack_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: make_nested_spec(false).encode_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected nested midi rack device");
+    };
+
+    let table = Arc::new(SineTable::new());
+    let rev_a = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_id,
+            state: make_nested_spec(true).encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: rack_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    let mut inner_muted = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    let mut bypassed = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        inner_muted.try_inherit_state_from(&mut active).unwrap();
+        inner_muted.render(&mut buf).unwrap();
+        bypassed.try_inherit_state_from(&mut inner_muted).unwrap();
+        bypassed.render(&mut buf).unwrap();
+        bypassed.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(bypassed);
+    drop(inner_muted);
+    drop(active);
+    drop(rev_bypassed);
+    drop(rev_b);
+    drop(rev_a);
+    drop(table);
+}
