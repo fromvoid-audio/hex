@@ -776,3 +776,109 @@ fn bounded_control_change_remapping_and_fm4_consumption_allocate_nothing_on_call
     drop(rev);
     drop(table);
 }
+
+#[test]
+fn canonical_cc_control_midi_processor_live_edit_slew_and_bypass_allocate_nothing_on_callback() {
+    use hex_devices::midi_cc_control::{CcControlSettings, CcLaneSettings};
+
+    let (mut editor, track, _session_clip) = build_project();
+    let state_a = CcControlSettings {
+        slew: 24,
+        lanes: [
+            CcLaneSettings {
+                enabled: true,
+                cc: 74,
+                value: 127,
+                min: 0,
+                max: 127,
+            },
+            CcControlSettings::default().lanes[1],
+        ],
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    let Created::Device(cc_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: state_a,
+        })
+        .unwrap()
+    else {
+        panic!("expected cc control processor id");
+    };
+
+    let table = Arc::new(SineTable::new());
+    let rev_a = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let state_b = CcControlSettings {
+        slew: 24,
+        lanes: [
+            CcLaneSettings {
+                enabled: true,
+                cc: 74,
+                value: 0,
+                min: 0,
+                max: 127,
+            },
+            CcControlSettings::default().lanes[1],
+        ],
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: cc_id,
+            state: state_b,
+        })
+        .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: cc_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    let mut slewed = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    let mut bypassed = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        slewed.try_inherit_state_from(&mut active).unwrap();
+        slewed.render(&mut buf).unwrap();
+        slewed.render(&mut buf).unwrap();
+        bypassed.try_inherit_state_from(&mut slewed).unwrap();
+        bypassed.render(&mut buf).unwrap();
+        bypassed.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(bypassed);
+    drop(slewed);
+    drop(active);
+    drop(rev_bypassed);
+    drop(rev_b);
+    drop(rev_a);
+    drop(table);
+}

@@ -1403,3 +1403,196 @@ fn bounded_control_change_routing_preserves_same_offset_order_remapping_pcm_and_
     pb.render(&mut replay).unwrap();
     assert_eq!(replay, oracle_pcm);
 }
+
+#[test]
+fn canonical_cc_control_device_matches_fm4_pcm_oracle_across_live_edits_override_and_bypass() {
+    use hex_devices::midi_cc_control::{CcConflictPolicy, CcControlSettings, CcLaneSettings};
+    use hex_project::{MidiLaneKind, MidiLanePoint};
+
+    let build_fm4_track = |cc74_lane: Option<u8>| -> (Editor, TrackId) {
+        let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "cc-control-test".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+        if editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .is_some()
+        {
+            editor.execute(Command::RemoveInstrument { track }).unwrap();
+        }
+        let base = crate::default_native_device_state_for_class(
+            crate::NativeDeviceClass::Instrument,
+            hex_devices::fm4::device::FM4_TYPE_ID,
+        )
+        .unwrap();
+        let with_mod = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &base,
+            hex_devices::fm4::device::parameter::modulation(2, 1),
+            hex_lattice_contract::ParameterValue::Float(0.6),
+        )
+        .unwrap();
+        let short_release = crate::patch_native_device_parameter_for_class(
+            crate::NativeDeviceClass::Instrument,
+            &with_mod,
+            hex_devices::fm4::device::parameter::RELEASE,
+            hex_lattice_contract::ParameterValue::Float(0.005),
+        )
+        .unwrap();
+        editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: short_release,
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: beat(2),
+            })
+            .unwrap()
+        else {
+            panic!("expected clip");
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: beat_frac(1, 16),
+                pitch: 60,
+                channel: 0,
+                velocity: 110,
+            })
+            .unwrap();
+        if let Some(val) = cc74_lane {
+            editor
+                .execute(Command::SetMidiExpressionLane {
+                    clip,
+                    kind: MidiLaneKind::ControlChange(74),
+                    points: vec![MidiLanePoint {
+                        beat: BeatTime::ZERO,
+                        channel: 0,
+                        value: i16::from(val),
+                    }],
+                })
+                .unwrap();
+        }
+        (editor, track)
+    };
+
+    // 1. Canonical hex.midi.cc_control emitting CC74=127 (while overriding conflicting upstream CC74=10)
+    //    matches direct CC74=127 FM4 PCM oracle bit-for-bit!
+    let (oracle_editor, _) = build_fm4_track(Some(127));
+    let (dry_editor, _) = build_fm4_track(Some(10));
+    let (mut editor, track) = build_fm4_track(Some(10));
+
+    let cc_high = CcControlSettings {
+        conflict: CcConflictPolicy::Override,
+        lanes: [
+            CcLaneSettings {
+                enabled: true,
+                cc: 74,
+                value: 127,
+                min: 0,
+                max: 127,
+            },
+            CcControlSettings::default().lanes[1],
+        ],
+        ..CcControlSettings::default()
+    };
+    let Created::Device(cc_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: cc_high.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected cc control processor id");
+    };
+
+    let total_frames = 2_400_usize;
+    let mut oracle_pb = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_high = vec![[0.0_f32; 2]; total_frames];
+    oracle_pb.render(&mut expected_high).unwrap();
+
+    let mut dry_pb = SessionPlayback::new(prepare_revision(dry_editor.project())).unwrap();
+    dry_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_low = vec![[0.0_f32; 2]; total_frames];
+    dry_pb.render(&mut expected_low).unwrap();
+    assert_ne!(expected_high, expected_low);
+
+    let rev_high = prepare_revision(editor.project());
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_high)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_high = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_high.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual_high, expected_high);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Bypass restores upstream CC74=10 bit-identically!
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: cc_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let mut bypassed_pb = SessionPlayback::new(prepare_revision(editor.project())).unwrap();
+    bypassed_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_bypassed = vec![[0.0_f32; 2]; total_frames];
+    bypassed_pb.render(&mut actual_bypassed).unwrap();
+    assert_eq!(actual_bypassed, expected_low);
+
+    // 3. Live mid-note value edit (127 -> 0) transitions cleanly with zero stuck notes.
+    editor.undo();
+    let cc_zero = CcControlSettings {
+        lanes: [
+            CcLaneSettings {
+                enabled: true,
+                cc: 74,
+                value: 0,
+                min: 0,
+                max: 127,
+            },
+            CcControlSettings::default().lanes[1],
+        ],
+        ..cc_high
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: cc_id,
+            state: cc_zero.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_zero = prepare_revision(editor.project());
+    let mut live_a = SessionPlayback::new(rev_high).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut live_pcm = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut live_pcm[..512]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_zero).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut live_pcm[512..]).unwrap();
+    assert_ne!(live_pcm, expected_high);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
