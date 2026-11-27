@@ -2666,6 +2666,9 @@ impl SessionPlayback {
                 .routes
                 .get(old_index)
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
+            if faded_instrument_track == Some(old_route.id) {
+                continue;
+            }
             if old_track_tail_slots
                 .get(old_index)
                 .copied()

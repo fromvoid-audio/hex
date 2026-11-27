@@ -332,6 +332,9 @@ impl SessionPlayback {
                 return_tail_plan.transfer_bus_history(new_index, candidate, old);
             }
         }
+        let faded_instrument_track = self
+            .native_removal
+            .and_then(|pending| pending.faded_instrument_track(previous));
         for (old_index, _) in previous.routes.iter().enumerate() {
             // These staged cuts end the predecessor DSP. Keep its history
             // with the old graph for control-side retirement.
@@ -339,6 +342,9 @@ impl SessionPlayback {
                 continue;
             }
             let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            if faded_instrument_track == Some(old_route.id) {
+                continue;
+            }
             if let Some(new_index) = self
                 .routes
                 .iter()
