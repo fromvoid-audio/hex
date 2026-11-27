@@ -102,6 +102,7 @@ impl_inline_owned_factory!(
     crate::channel_eq::PreparedChannelEq,
     crate::compressor::PreparedCompressor,
     crate::eq_three::PreparedEqThree,
+    crate::erosion::PreparedErosion,
     crate::filter::PreparedFilter,
     crate::gate::PreparedGate,
     crate::overdrive::PreparedOverdrive,

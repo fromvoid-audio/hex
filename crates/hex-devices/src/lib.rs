@@ -34,6 +34,7 @@ pub mod delay;
 pub mod eq8;
 pub use eq8::flexible as eq;
 pub mod eq_three;
+pub mod erosion;
 pub mod filter;
 pub mod fm4;
 pub mod gate;
@@ -82,7 +83,7 @@ use hex_lattice_contract::{
 };
 use std::sync::OnceLock;
 
-static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 18] = [
+static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 19] = [
     &utility::UTILITY_DEFINITION,
     &eq8::EQ8_DEFINITION,
     &eq::EQ_DEFINITION,
@@ -100,6 +101,7 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 18] = 
     &delay::DEFINITION,
     &rattle::RATTLE_DEFINITION,
     &redux::REDUX_DEFINITION,
+    &erosion::EROSION_DEFINITION,
     &shifter::SHIFTER_DEFINITION,
 ];
 static BUILTIN_LEAF_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 7] = [
