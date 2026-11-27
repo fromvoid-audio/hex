@@ -340,9 +340,15 @@ fn verified_export_never_overwrites_its_original_source_even_with_export_overwri
     let original = fs::read(&source).unwrap();
     let service = offline(48000, crate::streamed_export::render);
     run(&service, Request::Import(source.clone()));
-    let alias = files.0.join("alias.wav");
-    std::os::unix::fs::symlink(&source, &alias).unwrap();
-    for destination in [source.clone(), alias] {
+    #[cfg(unix)]
+    let destinations = {
+        let alias = files.0.join("alias.wav");
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        vec![source.clone(), alias]
+    };
+    #[cfg(not(unix))]
+    let destinations = vec![source.clone()];
+    for destination in destinations {
         run(
             &service,
             Request::ExportRange {

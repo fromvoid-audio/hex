@@ -109,6 +109,7 @@ impl VerifiedStreamingHost {
         ) {
             self.preview = None;
         }
+        self.clip_control.clear_preview();
         if let Some(insert) = self.edit.take() {
             insert
                 .attempt
@@ -142,6 +143,7 @@ impl VerifiedStreamingHost {
             && self.preparation.is_none()
             && self.edit.is_none()
             && self.preview.is_none()
+            && self.clip_control.preview().is_none()
             && self.submitted.iter().all(Option::is_none)
             && self
                 .domains
@@ -196,6 +198,13 @@ impl NativeAudioSink {
             .as_ref()
             .map(|edit| VerifiedSource::Canonical(Arc::clone(edit.attempt.source())))
             .or_else(|| self.verified.preview.clone())
+            .or_else(|| {
+                self.verified
+                    .clip_control
+                    .preview()
+                    .cloned()
+                    .map(VerifiedSource::ClipMove)
+            })
             .or_else(|| {
                 self.desired
                     .as_ref()
@@ -757,6 +766,12 @@ impl NativeAudioSink {
                             audio_revision: revision,
                         }
                     }
+                    VerifiedSource::ClipMove(source) => {
+                        EditorPublicationState::VerifiedClipMoveSubmitted {
+                            audio_revision: revision,
+                            identity: source.identity(),
+                        }
+                    }
                     snapshot => match snapshot.preview_identity() {
                         Some(identity) => EditorPublicationState::VerifiedPreviewSubmitted {
                             audio_revision: revision,
@@ -857,6 +872,10 @@ impl NativeAudioSink {
             VerifiedSource::ArrangementPlayStart(_) => {
                 self.verified.preview = None;
                 EditorPublicationState::VerifiedArrangementPlayStartRefused(error)
+            }
+            VerifiedSource::ClipMove(_) => {
+                self.verified.clip_control.clear_preview();
+                EditorPublicationState::VerifiedClipMoveRefused(error)
             }
             _ => {
                 self.blocked = Some(context);

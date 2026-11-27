@@ -82,6 +82,7 @@ impl EventCoalescer {
             | EditorPublicationState::VerifiedPreviewSubmitted { audio_revision, .. }
             | EditorPublicationState::VerifiedArrangementGainSubmitted { audio_revision }
             | EditorPublicationState::VerifiedArrangementPlayStartSubmitted { audio_revision }
+            | EditorPublicationState::VerifiedClipMoveSubmitted { audio_revision, .. }
             | EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
                 Some(*audio_revision)
             }

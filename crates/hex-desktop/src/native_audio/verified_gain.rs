@@ -4,9 +4,10 @@ use super::*;
 use hex_session::{
     device_gesture::GestureKey,
     service::{
-        DevicePreviewIdentity, VerifiedArrangementGainSource, VerifiedArrangementGainUpdate,
-        VerifiedArrangementPlayStartSource, VerifiedArrangementPlayStartUpdate,
-        VerifiedDeviceParameterSource, VerifiedTrackGainSource,
+        ClipMovePreviewIdentity, DevicePreviewIdentity, VerifiedArrangementGainSource,
+        VerifiedArrangementGainUpdate, VerifiedArrangementPlayStartSource,
+        VerifiedArrangementPlayStartUpdate, VerifiedClipMoveSource, VerifiedDeviceParameterSource,
+        VerifiedTrackGainSource,
     },
 };
 
@@ -20,6 +21,7 @@ enum VerifiedPreviewKey {
     Device(DevicePreviewIdentity),
     ArrangementGain(u64),
     ArrangementPlayStart(u64),
+    ClipMove(ClipMovePreviewIdentity),
 }
 impl VerifiedKey {
     pub(super) fn canonical(context: AudioSourceContext) -> Self {
@@ -36,6 +38,7 @@ pub(crate) enum VerifiedSource {
     Device(Arc<VerifiedDeviceParameterSource>),
     ArrangementGain(Arc<VerifiedArrangementGainSource>),
     ArrangementPlayStart(Arc<VerifiedArrangementPlayStartSource>),
+    ClipMove(Arc<VerifiedClipMoveSource>),
 }
 impl VerifiedSource {
     pub(super) fn canonical(&self) -> &CanonicalAudioSourceSnapshot {
@@ -48,6 +51,7 @@ impl VerifiedSource {
             Self::Device(source) => source.canonical(),
             Self::ArrangementGain(source) => source.canonical(),
             Self::ArrangementPlayStart(source) => source.canonical(),
+            Self::ClipMove(source) => source.canonical(),
         }
     }
     pub(super) fn context(&self) -> AudioSourceContext {
@@ -55,21 +59,30 @@ impl VerifiedSource {
     }
     pub(super) fn preview_identity(&self) -> Option<DevicePreviewIdentity> {
         match self {
-            Self::Canonical(_) | Self::ArrangementGain(_) | Self::ArrangementPlayStart(_) => None,
+            Self::Canonical(_)
+            | Self::ArrangementGain(_)
+            | Self::ArrangementPlayStart(_)
+            | Self::ClipMove(_) => None,
             Self::Gain(source) => source.preview_identity(),
             Self::Device(source) => source.preview_identity(),
         }
     }
     fn terminal_key(&self) -> Option<GestureKey> {
         match self {
-            Self::Canonical(_) | Self::ArrangementGain(_) | Self::ArrangementPlayStart(_) => None,
+            Self::Canonical(_)
+            | Self::ArrangementGain(_)
+            | Self::ArrangementPlayStart(_)
+            | Self::ClipMove(_) => None,
             Self::Gain(source) => source.terminal_key(),
             Self::Device(source) => source.terminal_key(),
         }
     }
     fn terminal_sequence(&self) -> Option<u64> {
         match self {
-            Self::Canonical(_) | Self::ArrangementGain(_) | Self::ArrangementPlayStart(_) => None,
+            Self::Canonical(_)
+            | Self::ArrangementGain(_)
+            | Self::ArrangementPlayStart(_)
+            | Self::ClipMove(_) => None,
             Self::Gain(source) => source.terminal_sequence(),
             Self::Device(source) => source.terminal_sequence(),
         }
@@ -84,6 +97,7 @@ impl VerifiedSource {
                 Self::ArrangementPlayStart(source) => {
                     Some(VerifiedPreviewKey::ArrangementPlayStart(source.sequence()))
                 }
+                Self::ClipMove(source) => Some(VerifiedPreviewKey::ClipMove(source.identity())),
                 _ => self.preview_identity().map(VerifiedPreviewKey::Device),
             },
         }
@@ -98,6 +112,7 @@ impl VerifiedSource {
             Self::Device(source) => source.candidate_reservation_quote(),
             Self::ArrangementGain(source) => source.reservation_quote(None),
             Self::ArrangementPlayStart(source) => source.reservation_quote(None),
+            Self::ClipMove(source) => source.candidate_reservation_quote(),
         };
         match plain {
             Ok(quote) => Ok((quote, false)),
@@ -131,6 +146,7 @@ impl VerifiedSource {
             Self::ArrangementPlayStart(source) => {
                 source.prepare_on_control(catalog, destination, None)
             }
+            Self::ClipMove(source) => source.prepare_candidate_on_control(catalog, destination),
         }
     }
     pub(super) fn quote_with_effects(
@@ -143,6 +159,7 @@ impl VerifiedSource {
             Self::Device(source) => source.reservation_quote_with_effects(effects),
             Self::ArrangementGain(source) => source.reservation_quote(Some(effects)),
             Self::ArrangementPlayStart(source) => source.reservation_quote(Some(effects)),
+            Self::ClipMove(source) => source.reservation_quote_with_effects(effects),
         }
     }
 
@@ -167,6 +184,9 @@ impl VerifiedSource {
             }
             Self::ArrangementPlayStart(source) => {
                 source.prepare_on_control(catalog, destination, Some(effects))
+            }
+            Self::ClipMove(source) => {
+                source.prepare_candidate_with_effects_on_control(catalog, destination, effects)
             }
         }
     }
