@@ -37,6 +37,15 @@ pub enum InstrumentAssetOwner {
     Source(crate::SourceId),
 }
 
+/// Optional original audio asset imported atomically when updating a Drum Rack pad.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DrumRackPadAssetImport {
+    pub expected_asset: AssetId,
+    pub path: PathBuf,
+    pub sample_rate: u32,
+    pub frames: u64,
+}
+
 impl InstrumentLoadPlacement {
     pub fn replacement(self) -> Option<DeviceId> {
         match self {
@@ -957,6 +966,16 @@ pub enum Command {
         frames: u64,
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
+    /// Atomically update a Drum Rack's canonical instrument state (whether
+    /// track-owned or a shared retained native source), verifying the captured
+    /// `expected_state` and optionally importing one original device asset
+    /// bound into `state` inside the same history transaction.
+    UpdateDrumRackDevice {
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        state: hex_lattice_contract::NativeDeviceState,
+        import_asset: Option<DrumRackPadAssetImport>,
     },
     RemoveAsset(AssetId),
     /// Point offline assets at found files as one history step, bringing them

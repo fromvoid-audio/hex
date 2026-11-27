@@ -227,6 +227,62 @@ impl Project {
                 self.apply(Command::ReplaceDeviceState { device, state })?;
                 Ok(Created::Asset(asset))
             }
+            Command::UpdateDrumRackDevice {
+                device,
+                expected_state,
+                state,
+                import_asset,
+            } => {
+                const DRUM_RACK: hex_lattice_contract::DeviceTypeId =
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.rack.drum");
+                let location = self
+                    .device_location(device)
+                    .ok_or(Invalid("drum rack target no longer exists"))?;
+                if location.class != crate::DeviceUnitClass::Instrument
+                    || location.device.state().type_id() != DRUM_RACK
+                    || location.device.state() != &expected_state
+                {
+                    return Err(Invalid("drum rack target changed"));
+                }
+                if state.type_id() != DRUM_RACK
+                    || state.input_gain_millidb() != expected_state.input_gain_millidb()
+                    || state.output_gain_millidb() != expected_state.output_gain_millidb()
+                {
+                    return Err(Invalid(
+                        "drum rack update must preserve provider and host metadata",
+                    ));
+                }
+                if let Some(import) = import_asset {
+                    if !state
+                        .asset_references()
+                        .iter()
+                        .any(|r| r.asset.value() == import.expected_asset.value())
+                    {
+                        return Err(Invalid(
+                            "drum rack update state does not reference imported sample",
+                        ));
+                    }
+                    let playback =
+                        converted_frame_count(import.frames, import.sample_rate, self.sample_rate)?;
+                    let conversion =
+                        crate::import_conversion_version(import.sample_rate, self.sample_rate);
+                    let asset = self.add_prepared_asset(
+                        import.path,
+                        import.sample_rate,
+                        import.frames,
+                        playback,
+                        conversion,
+                    )?;
+                    if asset != import.expected_asset {
+                        return Err(Invalid("drum rack sample asset identity is stale"));
+                    }
+                    self.apply(Command::ReplaceDeviceState { device, state })?;
+                    Ok(Created::Asset(asset))
+                } else {
+                    self.apply(Command::ReplaceDeviceState { device, state })?;
+                    Ok(Created::Device(device))
+                }
+            }
             Command::RemoveDevices { owner, selected } => {
                 crate::device_clipboard::remove(self, owner, &selected)
             }
@@ -254,5 +310,158 @@ mod tests {
                 .is_err()
         );
         assert_eq!(project, before);
+    }
+
+    #[test]
+    fn update_drum_rack_device_handles_shared_source_import_undo_redo_and_stale_refusal() {
+        use hex_lattice_contract::{
+            DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
+        };
+        let rack_type = DeviceTypeId::from_static("hex.rack.drum");
+        let initial_state = NativeDeviceState::new(rack_type, 1, vec![1, 2, 3])
+            .unwrap()
+            .with_input_gain_millidb(-100)
+            .unwrap()
+            .with_output_gain_millidb(200)
+            .unwrap();
+
+        let mut editor = crate::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::NativeSource(source) = editor
+            .execute(Command::CreateNativeSource {
+                name: "drums".into(),
+                devices: vec![initial_state.clone()],
+                instrument_index: 0,
+            })
+            .unwrap()
+        else {
+            panic!("expected native source");
+        };
+        let Created::Track(track_a) = editor
+            .execute(Command::AddMidiTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track a");
+        };
+        let Created::Track(track_b) = editor
+            .execute(Command::AddMidiTrack { name: "b".into() })
+            .unwrap()
+        else {
+            panic!("track b");
+        };
+        editor
+            .execute(Command::BindTrackSource {
+                track: track_a,
+                source: Some(source),
+            })
+            .unwrap();
+        editor
+            .execute(Command::BindTrackSource {
+                track: track_b,
+                source: Some(source),
+            })
+            .unwrap();
+        let device = editor
+            .project()
+            .native_source(source)
+            .unwrap()
+            .instrument()
+            .id();
+
+        let next_asset = editor.project().peek_next_asset_id().unwrap();
+        let with_sample = NativeDeviceState::new(rack_type, 1, vec![4, 5, 6])
+            .unwrap()
+            .with_input_gain_millidb(-100)
+            .unwrap()
+            .with_output_gain_millidb(200)
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(next_asset.value()).unwrap(),
+            }])
+            .unwrap();
+        let created = editor
+            .execute(Command::UpdateDrumRackDevice {
+                device,
+                expected_state: initial_state.clone(),
+                state: with_sample.clone(),
+                import_asset: Some(crate::DrumRackPadAssetImport {
+                    expected_asset: next_asset,
+                    path: std::path::PathBuf::from("/tmp/kick.wav"),
+                    sample_rate: 48_000,
+                    frames: 256,
+                }),
+            })
+            .unwrap();
+        assert_eq!(created, Created::Asset(next_asset));
+        assert!(editor.project().asset(next_asset).is_some());
+        assert_eq!(
+            editor
+                .project()
+                .track(track_a)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .state(),
+            &with_sample
+        );
+        assert_eq!(
+            editor
+                .project()
+                .track(track_b)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .state(),
+            &with_sample
+        );
+
+        let before_refusal = editor.project().clone();
+        assert!(
+            editor
+                .execute(Command::UpdateDrumRackDevice {
+                    device,
+                    expected_state: initial_state.clone(),
+                    state: with_sample.clone(),
+                    import_asset: None,
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before_refusal);
+
+        let wrong_gain = NativeDeviceState::new(rack_type, 1, vec![7, 8, 9]).unwrap();
+        assert!(
+            editor
+                .execute(Command::UpdateDrumRackDevice {
+                    device,
+                    expected_state: with_sample.clone(),
+                    state: wrong_gain,
+                    import_asset: None,
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before_refusal);
+
+        assert!(editor.undo());
+        assert!(editor.project().asset(next_asset).is_none());
+        assert_eq!(
+            editor
+                .project()
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .state(),
+            &initial_state
+        );
+        assert!(editor.redo());
+        assert!(editor.project().asset(next_asset).is_some());
+        assert_eq!(
+            editor
+                .project()
+                .native_source(source)
+                .unwrap()
+                .instrument()
+                .state(),
+            &with_sample
+        );
     }
 }

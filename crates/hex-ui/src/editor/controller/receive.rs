@@ -99,6 +99,7 @@ impl EditorView {
             .observe(self.project_generation, &event);
         self.track_reorder_complete(&event);
         self.sample_drop_complete(&event);
+        self.drum_rack_drop_complete(&event);
         let midi_edit_audition = self.midi_drag_request_complete(&event);
         self.advance_midi_origin_view(&event);
         self.fade_request_complete(&event);
@@ -132,6 +133,7 @@ impl EditorView {
             self.device_panel.failed_plugin_proposal.take();
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
+            self.cancel_drum_rack_drop();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
             let next_generation = self.project_generation.saturating_add(1);

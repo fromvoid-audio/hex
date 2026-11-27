@@ -139,6 +139,36 @@ impl EditorView {
     }
 }
 
+#[cfg(all(test, feature = "ui-test-support"))]
+impl BrowserState {
+    pub(in crate::editor) fn set_test_sample_listing(
+        &mut self,
+        directory: PathBuf,
+        entries: Vec<LibraryEntry>,
+    ) {
+        self.open = true;
+        self.auto_audition = false;
+        self.scans.generation += 1;
+        self.places = vec![directory.clone()];
+        self.directory = directory.clone();
+        self.section = BrowserSection::Place(directory.clone());
+        self.loading = false;
+        self.error = None;
+        self.listing = Some(DirectoryListing {
+            directory,
+            enumerated_entries: entries.len(),
+            entries,
+            truncated: false,
+        });
+    }
+
+    pub(in crate::editor) fn set_test_instruments_section(&mut self) {
+        self.open = true;
+        self.auto_audition = false;
+        self.section = BrowserSection::Instruments;
+    }
+}
+
 #[path = "browser/geometry.rs"]
 mod geometry;
 pub(super) use geometry::MIN_WORKSPACE_WIDTH;

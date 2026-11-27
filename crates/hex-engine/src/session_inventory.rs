@@ -83,14 +83,22 @@ fn resource_retarget_inline_bytes(
     let Some(proof) = entry.history_retarget_target.as_deref() else {
         return Ok(0);
     };
-    if !entry
+    let raw_bytes = if entry
         .factory
         .as_any()
         .is::<hex_devices::sampler::PreparedSamplerRuntime>()
     {
-        return Err(crate::AudioStorageError::UnknownStorage);
-    }
-    hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bytes(proof)
+        hex_devices::sampler::PreparedSamplerRuntime::history_retarget_inline_bytes(proof)
+    } else if entry
+        .factory
+        .as_any()
+        .is::<hex_lattice::PreparedDrumRackRuntime>()
+    {
+        hex_lattice::PreparedDrumRackRuntime::history_retarget_inline_bytes(proof)
+    } else {
+        None
+    };
+    raw_bytes
         .filter(|bytes| {
             *bytes > 0 && *bytes <= crate::mutable_instrument::MAX_INSTRUMENT_RETARGET_PROOF_BYTES
         })

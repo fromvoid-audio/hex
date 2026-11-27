@@ -9,10 +9,7 @@ use hex_engine::{
     },
     patch_native_device_parameter_for_class,
 };
-use hex_lattice::{
-    DrumRackDefinition, DrumRackPadSpec, DrumRackSpec, NativeInstrumentDefinition,
-    NativeInstrumentRegistry,
-};
+use hex_lattice::{DrumRackPadSpec, DrumRackSpec};
 use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{
@@ -240,11 +237,7 @@ fn two_pad_sampler_and_subtractive_drum_rack_allocates_nothing_on_callback() {
 
     let prepare = |project: &Project| {
         let effects = hex_devices::native_registry().unwrap();
-        let builtin = hex_devices::native_instrument_registry().unwrap();
-        let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
-        let drum_def = DrumRackDefinition::new(&builtin).unwrap();
-        defs.push(&drum_def);
-        let instruments = NativeInstrumentRegistry::new(&defs).unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
         let resources = PreparedDeviceResources::prepare_on_control_with_registry(
             &store,
             project,

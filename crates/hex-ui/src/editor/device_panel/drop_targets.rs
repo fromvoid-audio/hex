@@ -53,6 +53,7 @@ pub(in crate::editor) fn device_card_width(
         (NativeDeviceClass::Instrument, Some("hex.instrument.sampler")) => {
             crate::device_composition::SAMPLER_FRAME_WIDTH
         }
+        (NativeDeviceClass::Instrument, Some("hex.rack.drum")) => drum_rack_grid::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,

@@ -242,8 +242,9 @@ pub use session::{
 };
 pub mod timebase;
 pub use edit::{
-    Command, Created, InstrumentAssetOwner, InstrumentLoadDestination, InstrumentLoadPlacement,
-    MidiExpressiveNoteInsert, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+    Command, Created, DrumRackPadAssetImport, InstrumentAssetOwner, InstrumentLoadDestination,
+    InstrumentLoadPlacement, MidiExpressiveNoteInsert, MidiNoteInsert, MidiNoteUpdate,
+    TrackDeviceSlot,
 };
 pub use history::{Editor, SampleRateHistoryAction, StagedProjectEdit, StagedProjectHistory};
 mod import_existing;
@@ -1197,6 +1198,19 @@ impl Project {
     /// with a compare-and-replace command, never by mutating this cursor.
     pub fn next_identity(&self) -> u64 {
         self.next_id
+    }
+
+    /// Preview the next `AssetId` that `add_prepared_asset` would allocate without
+    /// mutating the project. Commands using this reservation still re-verify equality
+    /// atomically at apply time.
+    pub fn peek_next_asset_id(&self) -> Result<AssetId, Invalid> {
+        if self.assets.len() >= MAX_ASSETS {
+            return Err(Invalid("asset limit reached"));
+        }
+        if self.next_id == u64::MAX {
+            return Err(Invalid("project id limit reached"));
+        }
+        Ok(AssetId(self.next_id))
     }
 
     pub(crate) fn allocate_id(&mut self) -> Result<u64, Invalid> {

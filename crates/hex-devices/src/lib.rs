@@ -94,7 +94,7 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 14] = 
     &delay::DEFINITION,
     &rattle::RATTLE_DEFINITION,
 ];
-static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 6] = [
+static BUILTIN_LEAF_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 6] = [
     &SINE_INSTRUMENT,
     &sampler::catalog::DEFINITION,
     &multisample::MULTISAMPLE_DEFINITION,
@@ -102,6 +102,12 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 6] = [
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
 ];
+static BUILTIN_DRUM_RACK_CHILDREN: OnceLock<hex_lattice::NativeInstrumentRegistry<'static>> =
+    OnceLock::new();
+static BUILTIN_DRUM_RACK_DEFINITION: OnceLock<hex_lattice::DrumRackDefinition<'static>> =
+    OnceLock::new();
+static BUILTIN_NATIVE_INSTRUMENTS: OnceLock<[&'static dyn NativeInstrumentDefinition; 7]> =
+    OnceLock::new();
 static BUILTIN_LEAF_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 8] = [
     &midi_pitch::PITCH_DEFINITION,
     &midi_chord::CHORD_DEFINITION,
@@ -133,10 +139,46 @@ pub fn native_registry()
     hex_lattice::NativeDeviceRegistry::new(&BUILTIN_NATIVE_DEVICES)
 }
 
-/// The immutable catalog of original analytic native instruments.
+/// The immutable catalog of built-in leaf native instruments (non-rack children).
+pub fn native_leaf_instrument_registry()
+-> Result<hex_lattice::NativeInstrumentRegistry<'static>, DeviceContractError> {
+    hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_LEAF_NATIVE_INSTRUMENTS)
+}
+
+/// The immutable catalog of built-in native instruments, including the bounded
+/// Drum Rack (`hex.rack.drum`) backed by leaf instruments.
 pub fn native_instrument_registry()
 -> Result<hex_lattice::NativeInstrumentRegistry<'static>, DeviceContractError> {
-    hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_NATIVE_INSTRUMENTS)
+    let rack_def = if let Some(existing) = BUILTIN_DRUM_RACK_DEFINITION.get() {
+        existing
+    } else {
+        let leaf = if let Some(existing) = BUILTIN_DRUM_RACK_CHILDREN.get() {
+            existing
+        } else {
+            let created = native_leaf_instrument_registry()?;
+            let _ = BUILTIN_DRUM_RACK_CHILDREN.set(created);
+            BUILTIN_DRUM_RACK_CHILDREN
+                .get()
+                .ok_or(DeviceContractError::InvalidDescriptor)?
+        };
+        let created = hex_lattice::DrumRackDefinition::new(leaf)?;
+        let _ = BUILTIN_DRUM_RACK_DEFINITION.set(created);
+        BUILTIN_DRUM_RACK_DEFINITION
+            .get()
+            .ok_or(DeviceContractError::InvalidDescriptor)?
+    };
+    let all = BUILTIN_NATIVE_INSTRUMENTS.get_or_init(|| {
+        [
+            BUILTIN_LEAF_NATIVE_INSTRUMENTS[0],
+            BUILTIN_LEAF_NATIVE_INSTRUMENTS[1],
+            BUILTIN_LEAF_NATIVE_INSTRUMENTS[2],
+            BUILTIN_LEAF_NATIVE_INSTRUMENTS[3],
+            BUILTIN_LEAF_NATIVE_INSTRUMENTS[4],
+            BUILTIN_LEAF_NATIVE_INSTRUMENTS[5],
+            rack_def,
+        ]
+    });
+    hex_lattice::NativeInstrumentRegistry::new(all)
 }
 
 /// The immutable catalog of original bounded native MIDI processors, including

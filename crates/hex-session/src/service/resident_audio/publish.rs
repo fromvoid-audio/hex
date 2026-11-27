@@ -558,6 +558,29 @@ pub(in crate::service) fn execute_command_with_originals(
     resident: &mut Option<Snapshot>,
     admission: sampler_export::Admission<'_>,
 ) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    let cancel = AtomicBool::new(false);
+    execute_command_with_originals_cancellable(
+        session, command, originals, &cancel, previous, context, events, resident, admission,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::service) fn execute_command_with_originals_cancellable(
+    session: &mut Session,
+    command: Command,
+    originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
+    cancel: &AtomicBool,
+    previous: Option<&PreparedRevision>,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    if cancel.load(Ordering::Acquire) {
+        return Err(SessionError::NativeResource(
+            hex_engine::native_device_resources::ResourcePreparationError::Cancelled,
+        ));
+    }
     if originals.is_empty() {
         return execute_command(
             session, command, previous, context, events, resident, admission,
@@ -566,9 +589,10 @@ pub(in crate::service) fn execute_command_with_originals(
     if (session.uses_ordinary_worker_publication_for_command(&command) || resident.is_some())
         && let Some(sink) = events.resident_audio()
     {
-        let (created, snapshot) = session.execute_resident_command_with_originals(
+        let (created, snapshot) = session.execute_resident_command_with_originals_cancellable(
             command,
             originals,
+            cancel,
             ResidentSinkContext {
                 context,
                 sink,
@@ -580,7 +604,9 @@ pub(in crate::service) fn execute_command_with_originals(
         *resident = Some(snapshot);
         Ok((created, prepared))
     } else {
-        session.command_prepared_revision_with_native_originals(command, originals, previous)
+        session.command_prepared_revision_with_native_originals_cancellable(
+            command, originals, cancel, previous,
+        )
     }
 }
 /// `execute_command` that reports resident transition phases when measured.

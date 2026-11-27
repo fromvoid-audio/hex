@@ -8,8 +8,9 @@ pub(crate) use clip::{
     interval_valid, preview_edge_trim, retained_audio_fragment, split_clip_at, split_clip_at_tempo,
 };
 pub use command::{
-    Command, Created, InstrumentAssetOwner, InstrumentLoadDestination, InstrumentLoadPlacement,
-    MidiExpressiveNoteInsert, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot,
+    Command, Created, DrumRackPadAssetImport, InstrumentAssetOwner, InstrumentLoadDestination,
+    InstrumentLoadPlacement, MidiExpressiveNoteInsert, MidiNoteInsert, MidiNoteUpdate,
+    TrackDeviceSlot,
 };
 pub(crate) use track::{insert_track_before, insert_track_before_with_gain, name_valid, new_track};
 
@@ -291,6 +292,7 @@ impl Project {
             | Command::ImportDeviceAsset { .. }
             | Command::ImportDeviceAssetIntoNewInstrument { .. }
             | Command::ImportDeviceAssetReplacingInstrument { .. }
+            | Command::UpdateDrumRackDevice { .. }
             | Command::RemoveDevices { .. }
             | Command::PasteDevices { .. }) => self.apply_device_command(device_command),
         }

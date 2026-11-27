@@ -76,7 +76,8 @@ pub(in crate::editor) fn view(
                         definition.instrument().state().type_id().as_str(),
                         Ok("hex.instrument.fm4"
                             | "hex.instrument.operator"
-                            | "hex.instrument.sampler")
+                            | "hex.instrument.sampler"
+                            | "hex.rack.drum")
                     )
                 })
             || state
@@ -273,6 +274,18 @@ pub(in crate::editor) fn render_source(
                         ),
                 )
         }
+    } else if metadata.type_id == hex_engine::DRUM_RACK_TYPE_ID {
+        let body = drum_rack_grid::render_body(view, cx, device)
+            .w(px(drum_rack_grid::FRAME_WIDTH))
+            .flex_shrink_0();
+        div()
+            .id("source-drum-rack-scroll")
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .overflow_x_scroll()
+            .overflow_y_hidden()
+            .child(body)
     } else if metadata.type_id.as_str() == Ok("hex.instrument.operator") {
         let body = operator_panel::render_body(view, cx, device.id(), &metadata);
         let width = operator_panel::frame_width(
@@ -1672,6 +1685,7 @@ pub(in crate::editor) fn render_instrument(
     );
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
+    let is_drum_rack = device.state().type_id() == hex_engine::DRUM_RACK_TYPE_ID;
     let leading = bypass_action(view, device, NativeDeviceClass::Instrument, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
     let rendered = if view.device_panel.collapsed.contains(&device_id) {
@@ -1715,6 +1729,24 @@ pub(in crate::editor) fn render_instrument(
                 .child(theme::text(
                     "empty sampler · choose a wav in the sample browser and load into sampler",
                 )),
+        )
+    } else if is_drum_rack {
+        let body = drum_rack_grid::render_body(view, cx, device);
+        let title = device_view
+            .as_ref()
+            .map_or_else(|_| "drum rack".to_owned(), |v| v.name.clone());
+        device_frame(
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text(title),
+            ),
+            theme::device_frame_style(selected),
+            leading,
+            header_actions,
+            body,
         )
     } else if is_sampler {
         let name = view

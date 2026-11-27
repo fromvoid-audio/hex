@@ -2,10 +2,7 @@ use super::*;
 use crate::native_device_resources::{
     PreparedDeviceResources, ResidentDeviceAssets, ResourcePreparationError,
 };
-use hex_lattice::{
-    DrumRackDefinition, DrumRackPadSpec, DrumRackSpec, NativeInstrumentDefinition,
-    NativeInstrumentRegistry,
-};
+use hex_lattice::{DrumRackPadSpec, DrumRackSpec};
 use hex_lattice_contract::{
     DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, NativeDeviceState, ParameterValue,
 };
@@ -114,11 +111,7 @@ fn prepare_with_drum_rack(
 ) -> Result<(Arc<PreparedRevision>, PreparedDeviceResources), crate::Invalid> {
     let cancel = AtomicBool::new(false);
     let effects = hex_devices::native_registry().unwrap();
-    let builtin = hex_devices::native_instrument_registry().unwrap();
-    let mut defs: Vec<&dyn NativeInstrumentDefinition> = builtin.definitions().to_vec();
-    let drum_def = DrumRackDefinition::new(&builtin).unwrap();
-    defs.push(&drum_def);
-    let instruments = NativeInstrumentRegistry::new(&defs).unwrap();
+    let instruments = hex_devices::native_instrument_registry().unwrap();
     let resources = PreparedDeviceResources::prepare_on_control_with_registry(
         store,
         project,

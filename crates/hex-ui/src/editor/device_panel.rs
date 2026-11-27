@@ -32,6 +32,7 @@ mod bindings;
 mod bypass;
 mod chorus_panel;
 mod delay_panel;
+mod drum_rack_grid;
 mod overdrive_panel;
 mod rattle_panel;
 use bindings::{

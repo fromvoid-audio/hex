@@ -154,6 +154,8 @@ mod conversion_selection_tests;
 mod correlated_save_tests;
 mod device_defaults;
 #[cfg(test)]
+mod drum_rack_drop_tests;
+#[cfg(test)]
 mod format_upgrade_tests;
 #[cfg(test)]
 mod import_reuse_tests;
@@ -218,12 +220,13 @@ pub use protocol::{
     AudioBatchMemberFailure, AudioClipWaveform, AudioEventOccurrenceWaveforms,
     AudioEventSourceWaveform, AudioEventSourceWaveforms, AudioMusicalWaveform,
     AudioPreviewWaveform, BusyReason, DeviceClipboardAction, DeviceInsertCompletion,
-    DeviceInsertOutcome, DevicePreview, DevicePreviewIdentity, EffectBusDestination, Event,
-    ExportEvent, GainLaneEdit, MidiTakeCompletion, NativeDeviceDropSource, Request,
-    SamplerHistoryEdit, SamplerLoadCompletion, SamplerLoadSlot, SamplerLoadTarget, SamplerMidiEdit,
-    SamplerParameterEdit, SamplerParameterOwner, SamplerReplacementEdit, SaveCorrelation,
-    ServiceError, SourceUtilityMove, SubmitError, TrackCatalogPlacement, TrackClipboardAction,
-    TrackSwitchState, TrackSwitchViewObservation, TuningPreview, TuningPreviewIdentity, ViewState,
+    DeviceInsertOutcome, DevicePreview, DevicePreviewIdentity, DrumRackPadDropPayload,
+    EffectBusDestination, Event, ExportEvent, GainLaneEdit, MidiTakeCompletion,
+    NativeDeviceDropSource, Request, SamplerHistoryEdit, SamplerLoadCompletion, SamplerLoadSlot,
+    SamplerLoadTarget, SamplerMidiEdit, SamplerParameterEdit, SamplerParameterOwner,
+    SamplerReplacementEdit, SaveCorrelation, ServiceError, SourceUtilityMove, SubmitError,
+    TrackCatalogPlacement, TrackClipboardAction, TrackSwitchState, TrackSwitchViewObservation,
+    TuningPreview, TuningPreviewIdentity, ViewState,
 };
 use protocol::{
     ControlledExport, EVENT_CAPACITY, EXPORT_EVENT_CAPACITY, REQUEST_CAPACITY,

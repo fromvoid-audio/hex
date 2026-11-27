@@ -169,6 +169,7 @@ impl WorkerLoop {
                 Request::AssignSampler { .. }
                     | Request::InsertProjectSample { .. }
                     | Request::LoadFirstSampler { .. }
+                    | Request::DropDrumRackPad { .. }
                     | Request::Edit(_)
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
@@ -220,6 +221,7 @@ impl WorkerLoop {
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
+                    | Request::DropDrumRackPad { .. }
                     | Request::Edit(_)
                     | Request::CommitMidiTake { .. }
                     | Request::EditArrangementSection { .. }
@@ -505,6 +507,7 @@ impl WorkerLoop {
                 | Request::DeviceClipboard { .. }
                 | Request::DeviceGesture(..)
                 | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::DropDrumRackPad { .. }
                 | Request::DropNativeDevice { .. }
                 | Request::ImportDeviceAsset { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }

@@ -161,6 +161,7 @@ pub(in crate::editor) struct DevicePanelState {
         Option<super::super::plugin_effect::FailedPluginProposal>,
     pub(in crate::editor) proposed_plugin_action_focus: Option<gpui::FocusHandle>,
     pub(in crate::editor) sampler_load: super::super::sampler_load::State,
+    pub(in crate::editor) drum_rack_drop: drum_rack_grid::State,
     pub(in crate::editor) sampler_parameter: super::super::sampler_parameter::State,
     // Streamed documents replace their sampler output stopped; this frame
     // resumes playback once that edit settles (Pulse #3784).

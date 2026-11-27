@@ -168,6 +168,8 @@ pub(in crate::service) fn prepare_document_replacement(
         |admission: sampler_export::Admission<'_>| -> Result<PreparedDocumentReplacement, String> {
             let snapshot = if hex_engine::native_device_resources::requires_private_sampler_sources(
                 candidate.project(),
+            ) || crate::native_assets::project_has_registered_device_assets(
+                candidate.project(),
             ) {
                 candidate
                     .prepare_service_snapshot_against(old, candidate.project(), admission)

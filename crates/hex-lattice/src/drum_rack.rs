@@ -865,7 +865,8 @@ impl PreparedNativeInstrument for PreparedDrumRack {
     }
 }
 
-struct PreparedDrumRackRuntime {
+/// Control-prepared Drum Rack mutable runtime factory.
+pub struct PreparedDrumRackRuntime {
     rack_id: NonZeroU64,
     gain: f32,
     sample_rate: u32,
@@ -878,6 +879,19 @@ struct PreparedDrumRackRuntime {
     supports_active_occurrence_ids: bool,
     steals_releasing_voices: bool,
     pads: Arc<Vec<PreparedPadFactory>>,
+}
+
+impl PreparedDrumRackRuntime {
+    /// Exact inline storage of the scalar Drum Rack history-retarget proof.
+    pub fn history_retarget_inline_bytes(
+        proof: &dyn PreparedInstrumentHistoryRetarget,
+    ) -> Option<usize> {
+        proof
+            .as_any()
+            .is::<DrumRackRetargetProof>()
+            .then_some(std::mem::size_of::<DrumRackRetargetProof>())
+            .filter(|&bytes| bytes == proof.declared_fixed_storage_bytes())
+    }
 }
 
 struct DrumRackRetargetProof {

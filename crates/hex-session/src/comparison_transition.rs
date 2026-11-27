@@ -45,26 +45,25 @@ impl Session {
         // Split the existing editor out only as a borrow; never replace its history.
         let media = self.media_bank();
         let table = self.sine_table();
+        let native_assets = &self.native_assets;
+        let native_reservation = self.native_reservation;
+        let shutdown = &self.shutdown;
         self.editor
             .execute_prepared_transition(command, |source, target| {
                 prepare_comparison(source, target, previous, || {
-                    let prepared = prepare_with_waveforms(
+                    let prepared = prepare_headless_transition(
+                        source,
                         target,
+                        previous.map(AsRef::as_ref),
                         &media,
                         table,
-                        previous.map(|old| old.session().as_ref()),
                         &self.audio_transforms,
                         &self.audio_clip_waveforms,
-                    )
-                    .and_then(|prepared| {
-                        tuning_prepared_transition(
-                            prepared,
-                            source,
-                            target,
-                            previous.map(AsRef::as_ref),
-                        )
-                    })
-                    .map(Arc::new)?;
+                        native_assets,
+                        native_reservation,
+                        shutdown,
+                    )?
+                    .into();
                     Ok((prepared, ()))
                 })
             })
@@ -82,6 +81,9 @@ impl Session {
     ) -> Result<Option<ComparisonTransition<T>>, SessionError> {
         let media = self.media_bank();
         let table = self.sine_table();
+        let native_assets = &self.native_assets;
+        let native_reservation = self.native_reservation;
+        let shutdown = &self.shutdown;
         let prepare = |source: &Project, target: &Project| {
             if let Some(previous) = previous
                 && device_comparison::metadata_pair(source, target)?
@@ -92,18 +94,19 @@ impl Session {
                     metadata_only: true,
                 });
             }
-            let prepared = prepare_with_waveforms(
+            let prepared = prepare_headless_transition(
+                source,
                 target,
+                previous.map(AsRef::as_ref),
                 &media,
                 table,
-                previous.map(|old| old.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
-            )
-            .and_then(|prepared| {
-                tuning_prepared_transition(prepared, source, target, previous.map(AsRef::as_ref))
-            })
-            .map(Arc::new)?;
+                native_assets,
+                native_reservation,
+                shutdown,
+            )?
+            .into();
             let completed = finish(source, target, &prepared)?;
             Ok(ComparisonTransition {
                 prepared,

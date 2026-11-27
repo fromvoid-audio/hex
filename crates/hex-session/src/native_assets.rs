@@ -443,22 +443,50 @@ impl Session {
 
     /// Headless variant of [`Self::execute_command_with_native_originals_prepared`]
     /// when no live resident audio sink is attached.
-    pub(crate) fn command_prepared_revision_with_native_originals(
+    pub(crate) fn command_prepared_revision_with_native_originals_cancellable(
         &mut self,
         command: Command,
         originals: Vec<(AssetId, DecodedAudio)>,
+        cancel: &AtomicBool,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
         self.validate_prepared_command(&command)?;
-        let cancel = AtomicBool::new(false);
+        let limits = self.native_reservation;
         self.execute_command_with_native_originals_prepared(
             command,
             originals,
-            &cancel,
-            |source, candidate, media, table, transforms, waveforms, _stage, _media_assets| {
-                let prepared = prepare_transition_with_waveforms(
-                    source, candidate, previous, media, table, transforms, waveforms,
-                )
+            cancel,
+            |source, candidate, media, table, transforms, waveforms, stage, _media_assets| {
+                let prepared = if project_has_registered_device_assets(candidate) {
+                    let reservation = limits.ok_or(SessionError::Invalid(
+                        "registered device assets require an explicit resident reservation",
+                    ))?;
+                    let resources =
+                        hex_engine::native_device_resources::PreparedDeviceResources::prepare_staged_on_control(
+                            stage,
+                            candidate,
+                            reservation.storage.max_retained_bytes,
+                            cancel,
+                        )?;
+                    prepare_with_waveforms_using(candidate, media, transforms, waveforms, || {
+                        media.prepare_with_device_resources_and_catalog(
+                            candidate,
+                            table,
+                            previous.map(|p| p.session().as_ref()),
+                            transforms,
+                            &resources,
+                            reservation.max_scan_frames,
+                            cancel,
+                            None,
+                            None,
+                            None,
+                        )
+                    })
+                } else {
+                    prepare_transition_with_waveforms(
+                        source, candidate, previous, media, table, transforms, waveforms,
+                    )
+                }
                 .and_then(|prepared| {
                     tuning_prepared_transition(prepared, source, candidate, previous)
                 })
@@ -469,6 +497,21 @@ impl Session {
             |_, _, _| Ok(()),
         )
     }
+}
+
+/// Whether `project` has any receiving track instrument with ordinary registered
+/// device asset references (e.g. a Drum Rack holding Sampler pads) rather than
+/// the obsolete private single-sampler path.
+pub(crate) fn project_has_registered_device_assets(project: &Project) -> bool {
+    project.tracks().iter().any(|track| {
+        track.receives_source_audio()
+            && track.instrument().is_some_and(|device| {
+                !device.state().asset_references().is_empty()
+                    && !hex_engine::native_device_resources::requires_private_sampler_state(
+                        device.state(),
+                    )
+            })
+    })
 }
 
 #[cfg(test)]

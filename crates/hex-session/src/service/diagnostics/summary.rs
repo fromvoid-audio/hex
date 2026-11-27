@@ -998,6 +998,14 @@ pub(super) fn command(value: &Command) -> Description {
         } => {
             describe!("import_device_asset_replacing_instrument"; ["owner" => owner, "device" => device.value(), "expected_state_type" => expected_state.type_id().as_str(), "expected_state_state_version" => expected_state.state_version(), "expected_state_payload_bytes" => expected_state.payload().len(), "path_redacted_bytes" => path.as_os_str().len(), "sample_rate" => sample_rate, "frames" => frames, "state_type" => state.type_id().as_str(), "state_state_version" => state.state_version(), "state_payload_bytes" => state.payload().len()]; omitted="source_slot")
         }
+        Command::UpdateDrumRackDevice {
+            device,
+            expected_state,
+            state,
+            import_asset,
+        } => {
+            describe!("update_drum_rack_device"; ["device" => device.value(), "expected_state_payload_bytes" => expected_state.payload().len(), "state_payload_bytes" => state.payload().len(), "has_import_asset" => import_asset.is_some()]; omitted="")
+        }
         Command::RelinkAssets(relinks) => {
             describe!("relink_assets"; ["count" => relinks.len()]; omitted="paths")
         }
@@ -1954,6 +1962,21 @@ pub(super) fn request(value: &Request) -> Description {
             let mut description = describe!("drop_native_device"; ["project_generation" => project_generation, "revision" => revision, "track" => track.value(), "before" => before.map(|id| id.value()), "replace" => replace.map(|id| id.value())]; omitted="");
             description.nested("source", self::device_drop_source(source));
             description
+        }
+        Request::DropDrumRackPad {
+            request_id,
+            project_generation,
+            revision,
+            device,
+            pad_id,
+            payload,
+            ..
+        } => {
+            let kind = match payload {
+                crate::service::DrumRackPadDropPayload::Instrument { .. } => "instrument",
+                crate::service::DrumRackPadDropPayload::Sample { .. } => "sample",
+            };
+            describe!("drop_drum_rack_pad"; ["request_id" => request_id, "project_generation" => project_generation, "revision" => revision, "device" => device.value(), "pad_id" => pad_id.get(), "kind" => kind]; omitted="cancel,path")
         }
         Request::AddNativeDevice {
             track,

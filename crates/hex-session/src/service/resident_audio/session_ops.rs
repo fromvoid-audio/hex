@@ -129,10 +129,11 @@ impl Session {
     /// Execute one canonical command while staging a verified batch of preset
     /// or default original-rate audio files into `self.native_assets` and
     /// publishing the resulting resident snapshot atomically.
-    pub(in crate::service) fn execute_resident_command_with_originals(
+    pub(in crate::service) fn execute_resident_command_with_originals_cancellable(
         &mut self,
         command: Command,
         originals: Vec<(hex_project::AssetId, hex_media::DecodedAudio)>,
+        cancel: &AtomicBool,
         resident: ResidentSinkContext<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
@@ -167,7 +168,6 @@ impl Session {
         ))?;
         let max_frames = self.max_resident_frames;
         let shutdown = Arc::clone(&self.shutdown);
-        let cancel = AtomicBool::new(false);
         let legacy = self
             .media
             .values()
@@ -179,7 +179,7 @@ impl Session {
         let result = self.execute_command_with_native_originals_prepared(
             command,
             originals,
-            &cancel,
+            cancel,
             |source, project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
                     native_parameter_input: None,
@@ -197,7 +197,7 @@ impl Session {
                     limits,
                     max_frames,
                     shutdown: &shutdown,
-                    cancel: None,
+                    cancel: Some(cancel),
                     admission,
                     current,
                     legacy: legacy_refs.clone(),
@@ -238,7 +238,7 @@ impl Session {
                     limits,
                     max_frames,
                     shutdown: &shutdown,
-                    cancel: None,
+                    cancel: Some(cancel),
                     admission,
                     current,
                     legacy: legacy_refs.clone(),

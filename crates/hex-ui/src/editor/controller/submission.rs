@@ -54,6 +54,7 @@ pub(super) struct PendingKinds {
     time_copy: bool,
     time_duplicate: bool,
     sample_drop: bool,
+    drum_rack_drop: bool,
     browser_insertion: bool,
     project_rate: bool,
 }
@@ -130,6 +131,7 @@ impl EditorView {
                 time_copy: self.pending_time_copy_matches(request),
                 time_duplicate: self.pending_time_duplicate_matches(request),
                 sample_drop: self.pending_sample_drop_matches(request),
+                drum_rack_drop: self.pending_drum_rack_drop_matches(request),
                 browser_insertion: self
                     .browser
                     .insertion_flight
@@ -176,6 +178,9 @@ impl EditorView {
         }
         if kinds.sample_drop {
             self.sample_drop_submitted();
+        }
+        if kinds.drum_rack_drop {
+            self.drum_rack_drop_submitted();
         }
         if kinds.browser_insertion
             && let Some(flight) = &mut self.browser.insertion_flight
@@ -330,6 +335,9 @@ impl EditorView {
         }
         if kinds.sample_drop {
             visible |= self.browser.pending_sample_drop.take().is_some();
+        }
+        if kinds.drum_rack_drop {
+            visible |= self.retire_drum_rack_drop();
         }
         self.midi_take_not_submitted(request);
         self.gain_take_not_submitted(request);

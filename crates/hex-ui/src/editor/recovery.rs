@@ -119,6 +119,7 @@ pub(super) fn is_graph_republishing_edit(request: &Request) -> bool {
         | Request::RelinkMedia(_)
         | Request::ImportDeviceAsset { .. }
         | Request::LoadFirstSampler { .. }
+        | Request::DropDrumRackPad { .. }
         | Request::AssignSampler { .. }
         | Request::ImportAudioBatch { .. }
         | Request::ImportToTrack { .. }

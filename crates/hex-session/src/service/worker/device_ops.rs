@@ -146,6 +146,7 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
         | Request::ContinuePluginStateRestore => plugin_ops::handle(ctx, request),
 
         Request::LoadFirstSampler { .. }
+        | Request::DropDrumRackPad { .. }
         | Request::AssignSampler { .. }
         | Request::ImportDeviceAsset { .. }
         | Request::SamplerEdit(_)

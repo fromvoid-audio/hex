@@ -149,6 +149,7 @@ pub use sparse_audio::SparseFrameMap;
 
 mod device_automation;
 mod device_modulation;
+mod drum_rack_control;
 pub use device_modulation::foreign_modulation_target as project_vst3_modulation_target;
 pub use device_modulation::foreign_modulation_targets as project_vst3_modulation_targets;
 pub use device_modulation::{
@@ -158,6 +159,12 @@ pub use device_modulation::{
     project_device_instrument_output_modulation_supported,
     project_device_modulation_target_supported, project_has_operator_quality_upgrade,
     project_source_utility_matrix_edit_supported, project_source_utility_mute_edit_supported,
+};
+pub use drum_rack_control::{
+    DRUM_RACK_BASE_NOTE, DRUM_RACK_DEFAULT_PLAY_NOTE, DrumRackPadView,
+    drum_rack_child_instrument_admitted, drum_rack_note_label, drum_rack_pad_label_for_path,
+    drum_rack_pad_views_on_control, patch_drum_rack_pad_instrument_on_control,
+    patch_drum_rack_pad_sample_on_control,
 };
 /// The authored aggregate note-gate ADSR settings.
 pub use hex_devices::modulation::adsr as adsr_modulator;
@@ -190,6 +197,7 @@ pub use hex_devices::modulation::ramp as ramp_modulator;
 pub use hex_devices::modulation::random_hold as random_modulator;
 /// Authored step pattern and free-running timing.
 pub use hex_devices::modulation::steps as steps_modulator;
+pub use hex_lattice::{DRUM_RACK_MAX_PADS, DRUM_RACK_TYPE_ID};
 
 mod native_parameter_input;
 pub use device_automation::{

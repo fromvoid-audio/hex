@@ -41,6 +41,7 @@ pub(in crate::service) fn defers_behind_resident_publication(request: &Request) 
         | Request::InsertNestedCatalogDevice { .. }
         | Request::InsertBrowserInstrumentTrack { .. }
         | Request::DropBrowserDeviceOnArrangement { .. }
+        | Request::DropDrumRackPad { .. }
         | Request::DropNativeDevice { .. }
         | Request::ReplaceNativeDevice { .. }
         | Request::MoveTrackDevices { .. }

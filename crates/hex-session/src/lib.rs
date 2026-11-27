@@ -939,9 +939,12 @@ impl Session {
         self.validate_prepared_command(&command)?;
         let media = self.media_bank();
         let sine_table = self.sine_table();
+        let native_assets = &self.native_assets;
+        let native_reservation = self.native_reservation;
+        let shutdown = &self.shutdown;
         self.editor
             .execute_prepared_transition(command, |source, candidate| {
-                let prepared = prepare_transition_with_waveforms(
+                let prepared = prepare_headless_transition(
                     source,
                     candidate,
                     previous,
@@ -949,12 +952,11 @@ impl Session {
                     Arc::clone(&sine_table),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
-                )
-                .and_then(|prepared| {
-                    tuning_prepared_transition(prepared, source, candidate, previous)
-                })
-                .map(Arc::new)
-                .map_err(SessionError::from)?;
+                    native_assets,
+                    native_reservation,
+                    shutdown,
+                )?
+                .into();
                 let completed = finish(source, candidate, &prepared)?;
                 Ok((prepared, completed))
             })
@@ -1806,8 +1808,11 @@ impl Session {
     ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
         let media = self.media_bank();
         let sine_table = self.sine_table();
+        let native_assets = &self.native_assets;
+        let native_reservation = self.native_reservation;
+        let shutdown = &self.shutdown;
         self.editor.undo_prepared_transition(|source, candidate| {
-            let prepared = prepare_transition_with_waveforms(
+            let prepared = prepare_headless_transition(
                 source,
                 candidate,
                 previous,
@@ -1815,10 +1820,11 @@ impl Session {
                 Arc::clone(&sine_table),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
-            )
-            .and_then(|prepared| tuning_prepared_transition(prepared, source, candidate, previous))
-            .map(Arc::new)
-            .map_err(SessionError::from)?;
+                native_assets,
+                native_reservation,
+                shutdown,
+            )?
+            .into();
             let completed = finish(source, candidate, &prepared)?;
             Ok((prepared, completed))
         })
@@ -1863,8 +1869,11 @@ impl Session {
     ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
         let media = self.media_bank();
         let sine_table = self.sine_table();
+        let native_assets = &self.native_assets;
+        let native_reservation = self.native_reservation;
+        let shutdown = &self.shutdown;
         self.editor.redo_prepared_transition(|source, candidate| {
-            let prepared = prepare_transition_with_waveforms(
+            let prepared = prepare_headless_transition(
                 source,
                 candidate,
                 previous,
@@ -1872,10 +1881,11 @@ impl Session {
                 Arc::clone(&sine_table),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
-            )
-            .and_then(|prepared| tuning_prepared_transition(prepared, source, candidate, previous))
-            .map(Arc::new)
-            .map_err(SessionError::from)?;
+                native_assets,
+                native_reservation,
+                shutdown,
+            )?
+            .into();
             let completed = finish(source, candidate, &prepared)?;
             Ok((prepared, completed))
         })
@@ -1977,9 +1987,42 @@ impl Session {
         &self,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        let media = self.media_bank();
+        if native_assets::project_has_registered_device_assets(self.project()) {
+            let reservation = self.native_reservation.ok_or(SessionError::Invalid(
+                "registered device assets require an explicit resident reservation",
+            ))?;
+            let resources =
+                hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+                    &self.native_assets,
+                    self.project(),
+                    reservation.storage.max_retained_bytes,
+                    &self.shutdown,
+                )?;
+            return Ok(Arc::new(prepare_with_waveforms_using(
+                self.project(),
+                &media,
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+                || {
+                    media.prepare_with_device_resources_and_catalog(
+                        self.project(),
+                        self.sine_table(),
+                        previous.map(|artifact| artifact.session().as_ref()),
+                        &self.audio_transforms,
+                        &resources,
+                        reservation.max_scan_frames,
+                        &self.shutdown,
+                        None,
+                        None,
+                        None,
+                    )
+                },
+            )?));
+        }
         Ok(Arc::new(prepare_with_waveforms(
             self.project(),
-            &self.media_bank(),
+            &media,
             self.sine_table(),
             previous.map(|artifact| artifact.session().as_ref()),
             &self.audio_transforms,
@@ -2003,6 +2046,52 @@ impl Session {
             verified: self.verified_sources.clone(),
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_headless_transition(
+    source: &Project,
+    candidate: &Project,
+    previous: Option<&hex_engine::PreparedRevision>,
+    media: &MediaBank,
+    table: Arc<hex_engine::SineTable>,
+    transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+    native_assets: &hex_engine::native_device_resources::ResidentDeviceAssets,
+    native_reservation: Option<ResidentNativeReservation>,
+    shutdown: &std::sync::atomic::AtomicBool,
+) -> Result<hex_engine::PreparedRevision, SessionError> {
+    let prepared = if native_assets::project_has_registered_device_assets(candidate) {
+        let reservation = native_reservation.ok_or(SessionError::Invalid(
+            "registered device assets require an explicit resident reservation",
+        ))?;
+        let resources =
+            hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+                native_assets,
+                candidate,
+                reservation.storage.max_retained_bytes,
+                shutdown,
+            )?;
+        prepare_with_waveforms_using(candidate, media, transforms, retained, || {
+            media.prepare_with_device_resources_and_catalog(
+                candidate,
+                table,
+                previous.map(|artifact| artifact.session().as_ref()),
+                transforms,
+                &resources,
+                reservation.max_scan_frames,
+                shutdown,
+                None,
+                None,
+                None,
+            )
+        })?
+    } else {
+        prepare_transition_with_waveforms(
+            source, candidate, previous, media, table, transforms, retained,
+        )?
+    };
+    tuning_prepared_transition(prepared, source, candidate, previous).map_err(SessionError::from)
 }
 
 /// Fast-path trivial mixer, Arrangement MIDI note, and single-chain native effect

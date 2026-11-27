@@ -335,14 +335,48 @@ impl Session {
         admission: Admission<'_>,
     ) -> Result<ServiceExportSnapshot, SessionError> {
         if !resources::requires_private_sampler_sources(project) {
-            let prepared = Arc::new(crate::prepare_with_waveforms(
-                project,
-                &self.media_bank(),
-                self.sine_table(),
-                None,
-                &self.audio_transforms,
-                &self.audio_clip_waveforms,
-            )?);
+            let media = self.media_bank();
+            let prepared = if crate::native_assets::project_has_registered_device_assets(project) {
+                let limits = self.native_reservation.ok_or(SessionError::Invalid(
+                    "registered device assets require an explicit resident reservation",
+                ))?;
+                let resources =
+                    hex_engine::native_device_resources::PreparedDeviceResources::prepare_on_control(
+                        &self.native_assets,
+                        project,
+                        limits.storage.max_retained_bytes,
+                        &self.shutdown,
+                    )?;
+                Arc::new(crate::prepare_with_waveforms_using(
+                    project,
+                    &media,
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                    || {
+                        media.prepare_with_device_resources_and_catalog(
+                            project,
+                            self.sine_table(),
+                            None,
+                            &self.audio_transforms,
+                            &resources,
+                            limits.max_scan_frames,
+                            &self.shutdown,
+                            None,
+                            None,
+                            None,
+                        )
+                    },
+                )?)
+            } else {
+                Arc::new(crate::prepare_with_waveforms(
+                    project,
+                    &media,
+                    self.sine_table(),
+                    None,
+                    &self.audio_transforms,
+                    &self.audio_clip_waveforms,
+                )?)
+            };
             let result = ServiceExportSnapshot {
                 prepared,
                 sources: None,

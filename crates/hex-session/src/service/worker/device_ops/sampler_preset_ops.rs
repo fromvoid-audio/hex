@@ -146,6 +146,158 @@ pub(super) fn handle(ctx: &mut WorkerDispatch<'_>, request: Request) -> ControlF
             }
         }
 
+        Request::DropDrumRackPad {
+            request_id: _,
+            project_generation: target_generation,
+            revision: target_revision,
+            device,
+            pad_id,
+            payload,
+            cancel,
+        } => {
+            let result = (|| -> Result<(Created, Arc<hex_engine::PreparedRevision>, &'static str), SessionError> {
+                if target_generation != ctx.worker.project_generation
+                    || super::reconcile_barrier_revision(
+                        target_revision,
+                        ctx.outcome.revision_before_request,
+                        ctx.worker.revision,
+                    ) != ctx.worker.revision
+                {
+                    return Err(SessionError::Invalid(
+                        "drum rack pad drop canceled · project changed",
+                    ));
+                }
+                if cancel.load(Ordering::Acquire) {
+                    return Err(SessionError::Invalid("drum rack pad drop cancelled"));
+                }
+                let location = ctx
+                    .worker
+                    .session
+                    .project()
+                    .device_location(device)
+                    .ok_or(SessionError::Invalid(
+                        "drum rack pad drop target no longer exists",
+                    ))?;
+                if location.class != hex_project::DeviceUnitClass::Instrument
+                    || location.device.state().type_id() != hex_engine::DRUM_RACK_TYPE_ID
+                {
+                    return Err(SessionError::Invalid(
+                        "drum rack pad drop target is not a drum rack",
+                    ));
+                }
+                let expected_state = location.device.state().clone();
+                let (command, originals, label) = match payload {
+                    DrumRackPadDropPayload::Instrument { type_id } => {
+                        let next_state = hex_engine::patch_drum_rack_pad_instrument_on_control(
+                            &expected_state,
+                            pad_id,
+                            type_id,
+                        )?;
+                        (
+                            Command::UpdateDrumRackDevice {
+                                device,
+                                expected_state,
+                                state: next_state,
+                                import_asset: None,
+                            },
+                            Vec::new(),
+                            "instrument loaded onto drum rack pad",
+                        )
+                    }
+                    DrumRackPadDropPayload::Sample { path } => {
+                        if ctx.worker.session.native_reservation.is_none() {
+                            return Err(SessionError::Invalid(
+                                "drum rack sample drop requires explicit native document admission",
+                            ));
+                        }
+                        if cancel.load(Ordering::Acquire) {
+                            return Err(SessionError::Invalid("drum rack pad drop cancelled"));
+                        }
+                        let decoded = decode_wav_file(
+                            &path,
+                            Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+                        )?;
+                        if cancel.load(Ordering::Acquire) {
+                            return Err(SessionError::Invalid("drum rack pad drop cancelled"));
+                        }
+                        let next_asset = ctx.worker.session.project().peek_next_asset_id()?;
+                        let frames = decoded.frames();
+                        let sample_rate = decoded.sample_rate();
+                        let frames_u64 = u64::try_from(frames).map_err(|_| {
+                            SessionError::Invalid("source frame count exceeds project range")
+                        })?;
+                        let pad_label = hex_engine::drum_rack_pad_label_for_path(&path);
+                        let next_state = hex_engine::patch_drum_rack_pad_sample_on_control(
+                            &expected_state,
+                            pad_id,
+                            &pad_label,
+                            frames,
+                            next_asset,
+                        )?;
+                        (
+                            Command::UpdateDrumRackDevice {
+                                device,
+                                expected_state,
+                                state: next_state,
+                                import_asset: Some(hex_project::DrumRackPadAssetImport {
+                                    expected_asset: next_asset,
+                                    path,
+                                    sample_rate,
+                                    frames: frames_u64,
+                                }),
+                            },
+                            vec![(next_asset, decoded)],
+                            "sample loaded onto drum rack pad",
+                        )
+                    }
+                };
+                if cancel.load(Ordering::Acquire) {
+                    return Err(SessionError::Invalid("drum rack pad drop cancelled"));
+                }
+                let admission = ctx.worker.export_lane.admission_with_resident_owners(
+                    ctx.worker.compiled.as_ref().map(|(_, prepared)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: ctx.worker.current_sources.as_ref(),
+                            prepared: Some(prepared),
+                        }
+                    }),
+                    ctx.worker.resident_seek.as_ref(),
+                    ctx.worker.resident_preview.as_ref(),
+                );
+                let (created, prepared) = resident_audio::execute_command_with_originals_cancellable(
+                    &mut ctx.worker.session,
+                    command,
+                    originals,
+                    &cancel,
+                    ctx.worker
+                        .compiled
+                        .as_ref()
+                        .map(|(_, artifact)| artifact.as_ref()),
+                    hex_engine::AudioSourceContext {
+                        project_generation: ctx.worker.project_generation,
+                        editor_revision: ctx.worker.revision.saturating_add(1),
+                    },
+                    &mut ctx.worker.events,
+                    &mut ctx.worker.resident_snapshot,
+                    admission,
+                )?;
+                Ok((created, prepared, label))
+            })();
+            match result {
+                Ok((created, prepared, status)) => {
+                    ctx.outcome.created = Some(created);
+                    ctx.worker.unsaved = true;
+                    ctx.outcome.replacement_revision = Some(prepared);
+                    ctx.outcome.status = Some(status.into());
+                }
+                Err(reason) => {
+                    ctx.outcome.error = Some(hex_storage::text::lowercase_outside_verbatim(
+                        &reason.to_string(),
+                    ));
+                }
+            }
+        }
+
         Request::AssignSampler { track, asset } => {
             let current = ctx.worker.compiled.as_ref().map(|(_, p)| {
                 hex_engine::native_device_resources::ControlSamplerSelection {

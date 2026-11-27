@@ -235,6 +235,19 @@ pub(super) fn new_sampler_load_destination(
     )
 }
 
+/// Captured payload for dropping a built-in native leaf instrument or audio
+/// sample file onto one Drum Rack pad.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DrumRackPadDropPayload {
+    /// Drop a built-in leaf native instrument onto the target pad.
+    Instrument {
+        type_id: hex_lattice_contract::DeviceTypeId,
+    },
+    /// Drop a supported audio file onto the target pad, importing it into
+    /// retained native originals and binding a normal Sampler.
+    Sample { path: PathBuf },
+}
+
 /// Captured owner of a sampler parameter edit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SamplerParameterOwner {
@@ -1092,6 +1105,18 @@ pub enum Request {
         revision: u64,
         target: SamplerLoadTarget,
         path: PathBuf,
+        cancel: Arc<AtomicBool>,
+    },
+    /// Drop a built-in leaf native instrument or audio sample file onto one
+    /// Drum Rack pad. Control validates generation/revision/target, performs
+    /// any sample decode/admission, and commits atomically via `UpdateDrumRackDevice`.
+    DropDrumRackPad {
+        request_id: u64,
+        project_generation: u64,
+        revision: u64,
+        device: hex_project::DeviceId,
+        pad_id: std::num::NonZeroU64,
+        payload: DrumRackPadDropPayload,
         cancel: Arc<AtomicBool>,
     },
     /// Assign an existing admitted original source through the selected consumer transaction.
