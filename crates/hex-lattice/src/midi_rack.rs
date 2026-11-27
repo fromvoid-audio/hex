@@ -1,4 +1,5 @@
-//! Bounded two-branch native MIDI Rack before one instrument.
+//! Bounded two-branch native MIDI Rack before one instrument, supporting up to
+//! depth 2 nesting (`MIDI_RACK_MAX_DEPTH == 2`).
 //!
 //! Fans a single host event stream (`NativeInstrumentEvent` with stable
 //! `occurrence_id`s, paired note-offs, MPE, and shared controller events) to
@@ -7,16 +8,19 @@
 //! scheduler) and merges their outputs deterministically before the track's
 //! instrument.
 //!
-//! Each branch translates its emitted downstream occurrences into a disjoint
-//! rack-owned `occurrence_id` namespace (`>= GENERATED_OCCURRENCE_ID_BASE`) so
-//! simultaneous overlapping notes, transformed pitches, and duplicate pitch
-//! outputs from both branches stay independent and release cleanly with zero
-//! stuck notes.
+//! Each rack level translates its emitted downstream occurrences into a
+//! disjoint rack-owned `occurrence_id` namespace (`>= GENERATED_OCCURRENCE_ID_BASE`)
+//! so simultaneous overlapping notes, transformed pitches, and duplicate pitch
+//! outputs across nested branches stay independent and release cleanly with
+//! zero stuck notes.
 //!
-//! At depth 1 (`MIDI_RACK_MAX_DEPTH == 1`), nesting `MIDI_RACK_TYPE_ID` inside
-//! a branch is explicitly refused on control before touching active state. All
-//! child runtimes and scratch storage are allocated on control; callback
-//! processing performs zero allocations, locks, I/O, or final drops.
+//! Nesting is explicitly bounded at `MIDI_RACK_MAX_DEPTH == 2`: an outer MIDI
+//! Rack branch may host one nested MIDI Rack whose branches contain flat leaf
+//! MIDI processors. Deeper nesting (`depth > 2`), duplicate rack/branch/device
+//! identities across levels (cycles/self-references), and capacity overflows
+//! are explicitly refused on control before touching active state. All child
+//! runtimes and scratch storage are allocated on control; callback processing
+//! performs zero allocations, locks, I/O, or final drops.
 
 use crate::{
     GENERATED_OCCURRENCE_ID_BASE, MidiProcessorOutput, MutableMidiProcessorRuntime,
@@ -35,8 +39,9 @@ pub const MIDI_RACK_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.rack.
 pub const MIDI_RACK_STATE_VERSION: u32 = 1;
 pub const MIDI_RACK_RUNTIME_VERSION: u32 = 1;
 pub const MIDI_RACK_BRANCH_COUNT: usize = 2;
-/// Explicit nesting ceiling for this slice: branches contain flat MIDI processors only.
-pub const MIDI_RACK_MAX_DEPTH: usize = 1;
+/// Explicit nesting ceiling: outer MIDI Rack (depth 1) may host nested MIDI
+/// Racks (depth 2) whose branches contain leaf MIDI processors only.
+pub const MIDI_RACK_MAX_DEPTH: usize = 2;
 pub const MIDI_RACK_MAX_INPUT_EVENTS: usize = 259;
 pub const MIDI_RACK_MAX_OUTPUT_EVENTS: usize = 259;
 pub const MIDI_RACK_MAX_ACTIVE_OCCURRENCES: usize = 64;
@@ -111,22 +116,90 @@ impl Default for MidiRackSpec {
 
 impl MidiRackSpec {
     pub fn validate(&self) -> Result<(), DeviceContractError> {
-        if self.branches[0].branch_id == self.branches[1].branch_id
-            || self.branches[0].device_id == self.branches[1].device_id
-        {
+        let mut seen_racks = [0_u64; 3];
+        let mut seen_racks_len = 0_usize;
+        let mut seen_branches = [0_u64; 6];
+        let mut seen_branches_len = 0_usize;
+        let mut seen_devices = [0_u64; 6];
+        let mut seen_devices_len = 0_usize;
+        self.validate_at_depth(
+            1,
+            &mut seen_racks,
+            &mut seen_racks_len,
+            &mut seen_branches,
+            &mut seen_branches_len,
+            &mut seen_devices,
+            &mut seen_devices_len,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_at_depth(
+        &self,
+        depth: usize,
+        seen_racks: &mut [u64; 3],
+        seen_racks_len: &mut usize,
+        seen_branches: &mut [u64; 6],
+        seen_branches_len: &mut usize,
+        seen_devices: &mut [u64; 6],
+        seen_devices_len: &mut usize,
+    ) -> Result<(), DeviceContractError> {
+        if depth == 0 || depth > MIDI_RACK_MAX_DEPTH {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let rack_raw = self.rack_id.get();
+        if seen_racks[..*seen_racks_len].contains(&rack_raw) {
             return Err(DeviceContractError::InvalidId);
         }
+        if *seen_racks_len >= seen_racks.len() {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        seen_racks[*seen_racks_len] = rack_raw;
+        *seen_racks_len += 1;
+
         for branch in &self.branches {
+            let b_raw = branch.branch_id.get();
+            if seen_branches[..*seen_branches_len].contains(&b_raw) {
+                return Err(DeviceContractError::InvalidId);
+            }
+            if *seen_branches_len >= seen_branches.len() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
+            seen_branches[*seen_branches_len] = b_raw;
+            *seen_branches_len += 1;
+
+            let d_raw = branch.device_id.get();
+            if seen_devices[..*seen_devices_len].contains(&d_raw) {
+                return Err(DeviceContractError::InvalidId);
+            }
+            if *seen_devices_len >= seen_devices.len() {
+                return Err(DeviceContractError::UnsupportedProcessingClass);
+            }
+            seen_devices[*seen_devices_len] = d_raw;
+            *seen_devices_len += 1;
+
             if let Some(state) = &branch.state {
-                if state.type_id() == MIDI_RACK_TYPE_ID {
-                    return Err(DeviceContractError::UnsupportedProcessingClass);
-                }
                 state.type_id().validate()?;
                 if state.state_version() == 0 {
                     return Err(DeviceContractError::InvalidStateVersion);
                 }
                 if !state.asset_references().is_empty() {
                     return Err(DeviceContractError::AssetResourcesUnavailable);
+                }
+                if state.type_id() == MIDI_RACK_TYPE_ID {
+                    if depth >= MIDI_RACK_MAX_DEPTH {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                    let nested = Self::decode_state_raw(state)?;
+                    nested.validate_at_depth(
+                        depth + 1,
+                        seen_racks,
+                        seen_racks_len,
+                        seen_branches,
+                        seen_branches_len,
+                        seen_devices,
+                        seen_devices_len,
+                    )?;
                 }
             }
         }
@@ -169,8 +242,15 @@ impl MidiRackSpec {
         NativeDeviceState::new(MIDI_RACK_TYPE_ID, MIDI_RACK_STATE_VERSION, bytes)
     }
 
-    /// Strictly decode and validate a v1 MIDI Rack `NativeDeviceState`.
+    /// Strictly decode and validate a v1 MIDI Rack `NativeDeviceState` (up to
+    /// `MIDI_RACK_MAX_DEPTH == 2`).
     pub fn decode_state(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
+        let spec = Self::decode_state_raw(state)?;
+        spec.validate()?;
+        Ok(spec)
+    }
+
+    fn decode_state_raw(state: &NativeDeviceState) -> Result<Self, DeviceContractError> {
         if state.type_id() != MIDI_RACK_TYPE_ID {
             return Err(DeviceContractError::WrongDeviceType);
         }
@@ -278,9 +358,7 @@ impl MidiRackSpec {
         let branches: [MidiRackBranchSpec; MIDI_RACK_BRANCH_COUNT] = branches
             .try_into()
             .map_err(|_| DeviceContractError::MalformedState)?;
-        let spec = Self { rack_id, branches };
-        spec.validate()?;
-        Ok(spec)
+        Ok(Self { rack_id, branches })
     }
 }
 
@@ -296,6 +374,77 @@ impl<'a> MidiRackDefinition<'a> {
             return Err(DeviceContractError::UnsupportedProcessingClass);
         }
         Ok(Self { children })
+    }
+
+    fn migrate_spec_at_depth(
+        &self,
+        spec: &mut MidiRackSpec,
+        depth: usize,
+    ) -> Result<(), DeviceContractError> {
+        if depth == 0 || depth > MIDI_RACK_MAX_DEPTH {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        for branch in &mut spec.branches {
+            if let Some(child) = &branch.state {
+                if child.type_id() == MIDI_RACK_TYPE_ID {
+                    if depth >= MIDI_RACK_MAX_DEPTH {
+                        return Err(DeviceContractError::UnsupportedProcessingClass);
+                    }
+                    let mut nested = MidiRackSpec::decode_state_raw(child)?;
+                    self.migrate_spec_at_depth(&mut nested, depth + 1)?;
+                    branch.state = Some(nested.encode_state()?.with_host_metadata_from(child)?);
+                } else {
+                    branch.state = Some(self.children.migrate_state(child)?);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn prepare_spec_at_depth(
+        &self,
+        spec: &MidiRackSpec,
+        sample_rate: u32,
+        depth: usize,
+        max_active_occurrences: usize,
+    ) -> Result<PreparedMidiRack, DeviceContractError> {
+        if depth == 0 || depth > MIDI_RACK_MAX_DEPTH {
+            return Err(DeviceContractError::UnsupportedProcessingClass);
+        }
+        let branch_active_cap = max_active_occurrences / MIDI_RACK_BRANCH_COUNT;
+        let mut prepared_branches: [Option<Box<dyn PreparedNativeMidiProcessor>>;
+            MIDI_RACK_BRANCH_COUNT] = [None, None];
+        for (i, branch) in spec.branches.iter().enumerate() {
+            if let Some(child_state) = &branch.state {
+                let child: Box<dyn PreparedNativeMidiProcessor> =
+                    if child_state.type_id() == MIDI_RACK_TYPE_ID {
+                        if depth >= MIDI_RACK_MAX_DEPTH {
+                            return Err(DeviceContractError::UnsupportedProcessingClass);
+                        }
+                        let nested = MidiRackSpec::decode_state_raw(child_state)?;
+                        Box::new(self.prepare_spec_at_depth(
+                            &nested,
+                            sample_rate,
+                            depth + 1,
+                            branch_active_cap,
+                        )?)
+                    } else {
+                        self.children
+                            .prepare_midi_processor(child_state, sample_rate)?
+                    };
+                prepared_branches[i] = Some(child);
+            }
+        }
+        PreparedMidiRack::with_caps(
+            spec.rack_id,
+            [spec.branches[0].branch_id, spec.branches[1].branch_id],
+            [spec.branches[0].bypassed, spec.branches[1].bypassed],
+            prepared_branches,
+            MIDI_RACK_MAX_INPUT_EVENTS,
+            MIDI_RACK_MAX_OUTPUT_EVENTS,
+            max_active_occurrences,
+            MIDI_RACK_MAX_WORK_UNITS,
+        )
     }
 }
 
@@ -325,11 +474,7 @@ impl NativeDeviceMetadata for MidiRackDefinition<'_> {
         state: &NativeDeviceState,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut spec = MidiRackSpec::decode_state(state)?;
-        for branch in &mut spec.branches {
-            if let Some(child) = &branch.state {
-                branch.state = Some(self.children.migrate_state(child)?);
-            }
-        }
+        self.migrate_spec_at_depth(&mut spec, 1)?;
         spec.encode_state()?.with_host_metadata_from(state)
     }
 
@@ -379,22 +524,8 @@ impl NativeMidiProcessorDefinition for MidiRackDefinition<'_> {
             return Err(DeviceContractError::InvalidParameterValue);
         }
         let spec = MidiRackSpec::decode_state(state)?;
-        let mut prepared_branches: [Option<Box<dyn PreparedNativeMidiProcessor>>;
-            MIDI_RACK_BRANCH_COUNT] = [None, None];
-        for (i, branch) in spec.branches.iter().enumerate() {
-            if let Some(child_state) = &branch.state {
-                let child = self
-                    .children
-                    .prepare_midi_processor(child_state, sample_rate)?;
-                prepared_branches[i] = Some(child);
-            }
-        }
-        let prepared = PreparedMidiRack::new(
-            spec.rack_id,
-            [spec.branches[0].branch_id, spec.branches[1].branch_id],
-            [spec.branches[0].bypassed, spec.branches[1].bypassed],
-            prepared_branches,
-        )?;
+        let prepared =
+            self.prepare_spec_at_depth(&spec, sample_rate, 1, MIDI_RACK_MAX_ACTIVE_OCCURRENCES)?;
         Ok(Box::new(prepared))
     }
 }
@@ -859,21 +990,23 @@ impl MutableMidiProcessorRuntime for MidiRackRuntime {
                         pitch,
                         velocity,
                     } => {
-                        let rack_id = self.next_rack_id;
-                        self.next_rack_id =
-                            rack_id.wrapping_add(1).max(GENERATED_OCCURRENCE_ID_BASE);
                         if let Some(free) = Self::find_free_map(&self.branch_out_map[b][..b_cap]) {
+                            let rack_id = self.next_rack_id;
+                            self.next_rack_id =
+                                rack_id.wrapping_add(1).max(GENERATED_OCCURRENCE_ID_BASE);
                             self.branch_out_map[b][free] = Some(BranchOccurrenceMapping {
                                 branch_id: occurrence_id,
                                 rack_id,
                             });
+                            Some(NativeInstrumentEvent::NoteOn {
+                                frame_offset,
+                                occurrence_id: rack_id,
+                                pitch,
+                                velocity,
+                            })
+                        } else {
+                            None
                         }
-                        Some(NativeInstrumentEvent::NoteOn {
-                            frame_offset,
-                            occurrence_id: rack_id,
-                            pitch,
-                            velocity,
-                        })
                     }
                     NativeInstrumentEvent::NoteOff {
                         frame_offset,
@@ -1094,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn midi_rack_codec_validation_and_depth_1_recursion_refusal() {
+    fn midi_rack_codec_validation_depth_2_admission_depth_3_and_cycle_refusal() {
         let default = MidiRackSpec::default();
         let encoded = default.encode_state().unwrap();
         assert_eq!(MidiRackSpec::decode_state(&encoded).unwrap(), default);
@@ -1111,13 +1244,93 @@ mod tests {
         dup_dev.branches[1].device_id = dup_dev.branches[0].device_id;
         assert_eq!(dup_dev.encode_state(), Err(DeviceContractError::InvalidId));
 
-        // Nested MIDI Rack at depth 1 refuses explicitly.
-        let mut nested = default.clone();
-        nested.branches[0].state = Some(encoded.clone());
+        // Depth-2 nested MIDI Rack with distinct IDs round-trips cleanly.
+        let inner = MidiRackSpec {
+            rack_id: NonZeroU64::new(2).unwrap(),
+            branches: [
+                MidiRackBranchSpec {
+                    branch_id: NonZeroU64::new(21).unwrap(),
+                    device_id: NonZeroU64::new(201).unwrap(),
+                    bypassed: false,
+                    state: None,
+                },
+                MidiRackBranchSpec {
+                    branch_id: NonZeroU64::new(22).unwrap(),
+                    device_id: NonZeroU64::new(202).unwrap(),
+                    bypassed: false,
+                    state: None,
+                },
+            ],
+        };
+        let inner_encoded = inner.encode_state().unwrap();
+        let mut outer = default.clone();
+        outer.branches[0].state = Some(inner_encoded.clone());
+        let outer_encoded = outer.encode_state().unwrap();
+        assert_eq!(MidiRackSpec::decode_state(&outer_encoded).unwrap(), outer);
+
+        // Self-reference / cycle (duplicate rack_id, branch_id, or device_id across levels) refuses.
+        let mut cycle_rack = outer.clone();
+        cycle_rack.rack_id = inner.rack_id;
         assert_eq!(
-            nested.encode_state(),
+            cycle_rack.encode_state(),
+            Err(DeviceContractError::InvalidId)
+        );
+        let mut dup_nested_branch = outer.clone();
+        dup_nested_branch.branches[1].branch_id = inner.branches[0].branch_id;
+        assert_eq!(
+            dup_nested_branch.encode_state(),
+            Err(DeviceContractError::InvalidId)
+        );
+        let mut dup_nested_dev = outer.clone();
+        dup_nested_dev.branches[1].device_id = inner.branches[1].device_id;
+        assert_eq!(
+            dup_nested_dev.encode_state(),
+            Err(DeviceContractError::InvalidId)
+        );
+
+        // Depth-3 nesting exceeds MIDI_RACK_MAX_DEPTH == 2 and refuses explicitly.
+        let mut depth3 = MidiRackSpec {
+            rack_id: NonZeroU64::new(9).unwrap(),
+            branches: [
+                MidiRackBranchSpec {
+                    branch_id: NonZeroU64::new(91).unwrap(),
+                    device_id: NonZeroU64::new(901).unwrap(),
+                    bypassed: false,
+                    state: Some(outer_encoded),
+                },
+                MidiRackBranchSpec {
+                    branch_id: NonZeroU64::new(92).unwrap(),
+                    device_id: NonZeroU64::new(902).unwrap(),
+                    bypassed: false,
+                    state: None,
+                },
+            ],
+        };
+        assert_eq!(
+            depth3.encode_state(),
             Err(DeviceContractError::UnsupportedProcessingClass)
         );
+        // Ensure a valid sibling nested rack in both outer branches (still depth 2) is admitted.
+        let inner_b = MidiRackSpec {
+            rack_id: NonZeroU64::new(3).unwrap(),
+            branches: [
+                MidiRackBranchSpec {
+                    branch_id: NonZeroU64::new(31).unwrap(),
+                    device_id: NonZeroU64::new(301).unwrap(),
+                    bypassed: false,
+                    state: None,
+                },
+                MidiRackBranchSpec {
+                    branch_id: NonZeroU64::new(32).unwrap(),
+                    device_id: NonZeroU64::new(302).unwrap(),
+                    bypassed: false,
+                    state: None,
+                },
+            ],
+        };
+        depth3.branches[0].state = Some(inner_encoded);
+        depth3.branches[1].state = Some(inner_b.encode_state().unwrap());
+        assert!(depth3.encode_state().is_ok());
 
         // Malformed payload refuses explicitly.
         let bad = NativeDeviceState::new(MIDI_RACK_TYPE_ID, 1, vec![0, 1, 2]).unwrap();
@@ -1125,6 +1338,172 @@ mod tests {
             MidiRackSpec::decode_state(&bad),
             Err(DeviceContractError::MalformedState)
         );
+    }
+
+    #[test]
+    fn nested_two_level_midi_rack_preserves_ids_same_offset_order_bypass_saturation_and_budget() {
+        // Outer rack hosts TWO nested inner racks (4 parallel leaf transposes total):
+        //   Inner A: +4 st, +7 st
+        //   Inner B: +7 st (duplicate pitch!), +12 st
+        let build_two_level = |inner_a_b1_bypass: bool| {
+            let inner_a = PreparedMidiRack::with_caps(
+                NonZeroU64::new(2).unwrap(),
+                [NonZeroU64::new(21).unwrap(), NonZeroU64::new(22).unwrap()],
+                [false, inner_a_b1_bypass],
+                [
+                    Some(Box::new(
+                        PreparedTransposeMidiProcessor::new(4, TransposeOutOfRangePolicy::Refuse)
+                            .unwrap(),
+                    )),
+                    Some(Box::new(
+                        PreparedTransposeMidiProcessor::new(7, TransposeOutOfRangePolicy::Refuse)
+                            .unwrap(),
+                    )),
+                ],
+                MIDI_RACK_MAX_INPUT_EVENTS,
+                MIDI_RACK_MAX_OUTPUT_EVENTS,
+                MIDI_RACK_MAX_BRANCH_ACTIVE_OCCURRENCES,
+                MIDI_RACK_MAX_WORK_UNITS,
+            )
+            .unwrap();
+            let inner_b = PreparedMidiRack::with_caps(
+                NonZeroU64::new(3).unwrap(),
+                [NonZeroU64::new(31).unwrap(), NonZeroU64::new(32).unwrap()],
+                [false, false],
+                [
+                    Some(Box::new(
+                        PreparedTransposeMidiProcessor::new(7, TransposeOutOfRangePolicy::Refuse)
+                            .unwrap(),
+                    )),
+                    Some(Box::new(
+                        PreparedTransposeMidiProcessor::new(12, TransposeOutOfRangePolicy::Refuse)
+                            .unwrap(),
+                    )),
+                ],
+                MIDI_RACK_MAX_INPUT_EVENTS,
+                MIDI_RACK_MAX_OUTPUT_EVENTS,
+                MIDI_RACK_MAX_BRANCH_ACTIVE_OCCURRENCES,
+                MIDI_RACK_MAX_WORK_UNITS,
+            )
+            .unwrap();
+            PreparedMidiRack::new(
+                NonZeroU64::new(1).unwrap(),
+                [NonZeroU64::new(10).unwrap(), NonZeroU64::new(20).unwrap()],
+                [false, false],
+                [Some(Box::new(inner_a)), Some(Box::new(inner_b))],
+            )
+            .unwrap()
+        };
+
+        let outer = build_two_level(false);
+        // Full 2-level rack (3 racks + 4 leaves per twin) fits within 256 KiB pair budget!
+        let mut pair = NativeMidiProcessorRuntimePair::new(&outer, test_limits()).unwrap();
+        let mut out_buf = [NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        }; 64];
+
+        // Simultaneous NoteOn at frame 0 -> 4 distinct NoteOns in deterministic branch order:
+        // 64 (inner A b0), 67 (inner A b1), 67 (inner B b0), 72 (inner B b1).
+        let on = [NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 100,
+        }];
+        pair.begin_block();
+        let n = pair.process_block(&on, 64, &mut out_buf, None).unwrap();
+        pair.commit_block();
+        assert_eq!(n, 4);
+        let pitches: Vec<u8> = out_buf[..n]
+            .iter()
+            .filter_map(|e| match *e {
+                NativeInstrumentEvent::NoteOn { pitch, .. } => Some(pitch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pitches, vec![64, 67, 67, 72]);
+        let mut ids: Vec<u64> = out_buf[..n]
+            .iter()
+            .filter_map(|e| match *e {
+                NativeInstrumentEvent::NoteOn { occurrence_id, .. } => Some(occurrence_id),
+                _ => None,
+            })
+            .collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), 4);
+
+        // Saturated terminal delivery: output slice too small for 4 active NoteOffs refuses cleanly
+        // without mutating committed active state; full flush afterwards leaves zero stuck notes!
+        let mut tiny_buf = [NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        }; 2];
+        pair.begin_block();
+        assert_eq!(
+            pair.flush_active_note_offs(0, 64, &mut tiny_buf),
+            Err(NativeMidiProcessorError::OutputEventCapacityExceeded)
+        );
+        pair.rollback_block();
+        assert_eq!(pair.committed_active_occurrences(), 4);
+
+        // Mid-note inner branch bypass via live history inheritance:
+        // held note releases all 4 voices; next note emits only 3 (64, 67, 72).
+        let outer_inner_bypass = build_two_level(true);
+        let mut pair_bypass =
+            NativeMidiProcessorRuntimePair::new(&outer_inner_bypass, test_limits()).unwrap();
+        pair_bypass.inherit_from(&pair).unwrap();
+        let rel_and_new = [
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 4,
+                occurrence_id: 1,
+            },
+            NativeInstrumentEvent::NoteOn {
+                frame_offset: 4,
+                occurrence_id: 2,
+                pitch: 60,
+                velocity: 95,
+            },
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 20,
+                occurrence_id: 2,
+            },
+        ];
+        pair_bypass.begin_block();
+        let n2 = pair_bypass
+            .process_block(&rel_and_new, 64, &mut out_buf, None)
+            .unwrap();
+        pair_bypass.commit_block();
+        // Same-offset ordering at frame 4: all 4 NoteOffs precede the 3 NoteOns, then 3 NoteOffs at frame 20.
+        assert_eq!(n2, 10);
+        assert!(out_buf[..4].iter().all(|e| matches!(
+            e,
+            NativeInstrumentEvent::NoteOff {
+                frame_offset: 4,
+                ..
+            }
+        )));
+        let new_pitches: Vec<u8> = out_buf[4..7]
+            .iter()
+            .filter_map(|e| match *e {
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 4,
+                    pitch,
+                    ..
+                } => Some(pitch),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(new_pitches, vec![64, 67, 72]);
+        assert!(pair_bypass.committed_is_quiescent());
+
+        // Full flush on original pair with adequate capacity releases all 4 held voices cleanly.
+        pair.begin_block();
+        let flushed = pair.flush_active_note_offs(0, 64, &mut out_buf).unwrap();
+        pair.commit_block();
+        assert_eq!(flushed, 4);
+        assert!(pair.committed_is_quiescent());
     }
 
     #[test]
