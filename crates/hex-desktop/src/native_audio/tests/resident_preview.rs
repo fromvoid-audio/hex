@@ -2786,6 +2786,7 @@ impl WorkerAudioSink for ResidentSink {
         self.inner
             .confirm_stopped_foreign_history(context, accepted)
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     fn received_foreign_program_on_control(
         &mut self,
         binding: hex_audio::plugin_effects::EffectBinding,
@@ -3689,7 +3690,6 @@ impl ResidentHarness {
         }
     }
 
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     pub(crate) fn submitted_observation(&self) -> Option<&PreparedPlaybackObservation> {
         self.submitted_observation.as_deref()
     }
