@@ -292,7 +292,12 @@ impl EditorView {
                 match result {
                     Ok(()) => {
                         view.settings.audio_device.preferences = draft;
-                        let restarted = view.restart_audio_for_current_document();
+                        // Route through full audio recovery so the UI drops its existing
+                        // output lease before the worker reopens with the new device/buffer.
+                        let before_restart = view.audio_pub.pending_restart_request;
+                        view.recover_audio();
+                        let restarted = view.audio_pub.pending_restart_request.is_some()
+                            && view.audio_pub.pending_restart_request != before_restart;
                         view.settings.audio_device.status = Some(match (restarted, advisory) {
                             (true, Some(note)) => {
                                 format!("audio output saved · restarting stream · {note}")
