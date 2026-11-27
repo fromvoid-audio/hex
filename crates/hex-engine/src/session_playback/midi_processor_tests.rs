@@ -868,3 +868,98 @@ fn canonical_chord_device_matches_pcm_oracle_across_overlaps_live_edits_bypass_a
     stop_pb.render(&mut replayed).unwrap();
     assert_eq!(replayed, expected_major);
 }
+
+#[test]
+fn canonical_velocity_device_matches_pcm_oracle_across_fixed_gate_live_edits_and_bypass() {
+    use hex_devices::midi_velocity::{VelocityMode, VelocitySettings};
+
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 40),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 30),
+    ];
+
+    // Fixed(110) maps every note velocity to 110 -> matches authored vel=110 PCM oracle bit-for-bit.
+    let fixed_110 = VelocitySettings {
+        mode: VelocityMode::Fixed,
+        out_high: 110,
+        ..VelocitySettings::default()
+    };
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(vel_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: fixed_110.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected velocity processor id");
+    };
+    let (oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 110),
+    ]);
+
+    let rev_fixed = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_fixed = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_fixed).unwrap();
+
+    let mut pb_fixed = SessionPlayback::new(Arc::clone(&rev_fixed)).unwrap();
+    pb_fixed.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_fixed = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual_fixed.chunks_mut(128) {
+        pb_fixed.render(chunk).unwrap();
+    }
+    assert_eq!(actual_fixed, expected_fixed);
+    assert!(
+        pb_fixed.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live edit to Gate([60..=127]) mid-note: already-held notes 1 & 2 release cleanly; Note 3 (vel=30) is gated!
+    let gate_60 = VelocitySettings {
+        mode: VelocityMode::Gate,
+        lowest: 60,
+        range: 67,
+        ..VelocitySettings::default()
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: vel_id,
+            state: gate_60.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_gate = prepare_revision(editor.project());
+
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 110),
+        (beat_frac(1, 64), beat_frac(1, 32), 60, 110),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_fixed)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(Arc::clone(&rev_gate)).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
