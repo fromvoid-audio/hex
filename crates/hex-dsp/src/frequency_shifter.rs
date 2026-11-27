@@ -311,19 +311,43 @@ impl FrequencyShifter {
     /// filter histories and return untouched to preserve upstream fault boundaries.
     #[inline]
     pub fn process_frame(&mut self, input: [f64; 2]) -> [f64; 2] {
+        self.process_frame_modulated(input, [0.0, 0.0])
+    }
+
+    /// Process one stereo frame with instantaneous per-channel frequency shift
+    /// offsets in Hz (e.g., from an LFO or envelope follower), clamped to the
+    /// sample-rate-safe frequency limit. Passing `[0.0, 0.0]` is bit-identical
+    /// to [`Self::process_frame`].
+    #[inline]
+    pub fn process_frame_modulated(
+        &mut self,
+        input: [f64; 2],
+        shift_offset_hz: [f64; 2],
+    ) -> [f64; 2] {
         let shift_hz = self.shift_hz.advance();
         let spread_hz = self.stereo_spread_hz.advance();
         let phase_offset = self.stereo_phase_cycles.advance();
         let wet = self.dry_wet.advance();
 
-        let rate_l = shift_hz + spread_hz;
-        let rate_r = shift_hz - spread_hz;
+        let sr = f64::from(self.sample_rate);
+        let max_hz = MAX_SHIFT_HZ.min(sr * 0.45);
+        let offset_l = if shift_offset_hz[0].is_finite() {
+            shift_offset_hz[0]
+        } else {
+            0.0
+        };
+        let offset_r = if shift_offset_hz[1].is_finite() {
+            shift_offset_hz[1]
+        } else {
+            0.0
+        };
+        let rate_l = (shift_hz + spread_hz + offset_l).clamp(-max_hz, max_hz);
+        let rate_r = (shift_hz - spread_hz + offset_r).clamp(-max_hz, max_hz);
         let theta_l = TAU * self.phase_cycles[0];
         let theta_r = TAU * (self.phase_cycles[1] + phase_offset).rem_euclid(1.0);
         let (sin_l, cos_l) = theta_l.sin_cos();
         let (sin_r, cos_r) = theta_r.sin_cos();
 
-        let sr = f64::from(self.sample_rate);
         self.phase_cycles[0] = (self.phase_cycles[0] + rate_l / sr).rem_euclid(1.0);
         self.phase_cycles[1] = (self.phase_cycles[1] + rate_r / sr).rem_euclid(1.0);
 
@@ -643,5 +667,49 @@ mod tests {
             .unwrap_err(),
             InvalidFrequencyShifter::DryWet
         );
+    }
+
+    #[test]
+    fn modulated_shift_offset_matches_unmodulated_and_shifts_per_channel() {
+        let sr = 48_000_u32;
+        let sr_f = f64::from(sr);
+        let params = FrequencyShiftParameters {
+            mode: ShiftMode::Frequency,
+            shift_hz: 150.0,
+            ..FrequencyShiftParameters::default()
+        };
+        let mut plain = FrequencyShifter::new(sr, params).unwrap();
+        let mut zero_mod = FrequencyShifter::new(sr, params).unwrap();
+        for i in 0..256 {
+            let s = (TAU * 1_000.0 * i as f64 / sr_f).sin();
+            assert_eq!(
+                plain.process_frame([s, -s]),
+                zero_mod.process_frame_modulated([s, -s], [0.0, 0.0])
+            );
+        }
+
+        let mut modulated = FrequencyShifter::new(
+            sr,
+            FrequencyShiftParameters {
+                mode: ShiftMode::Frequency,
+                shift_hz: 100.0,
+                ..FrequencyShiftParameters::default()
+            },
+        )
+        .unwrap();
+        let settle = 2_048;
+        let window = 8_192;
+        let (mut l_out, mut r_out) = (Vec::with_capacity(window), Vec::with_capacity(window));
+        for i in 0..(settle + window) {
+            let s = (TAU * 1_000.0 * i as f64 / sr_f).sin();
+            let [l, r] = modulated.process_frame_modulated([s, s], [200.0, -50.0]);
+            if i >= settle {
+                l_out.push(l);
+                r_out.push(r);
+            }
+        }
+        // Left: 1000 + 100 + 200 = 1300 Hz; Right: 1000 + 100 - 50 = 1050 Hz.
+        assert!((dft_magnitude_at(&l_out, 1_300.0, sr_f) - 1.0).abs() < 0.02);
+        assert!((dft_magnitude_at(&r_out, 1_050.0, sr_f) - 1.0).abs() < 0.02);
     }
 }

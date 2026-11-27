@@ -22,6 +22,8 @@ mod chain_window_tests;
 
 mod chorus_ui_tests;
 
+mod shifter_ui_tests;
+
 mod compressor_ui_tests;
 
 mod delay_ui_tests;

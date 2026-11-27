@@ -126,6 +126,7 @@ pub(in crate::editor) struct DevicePanelState {
     pub(super) filter_previews: HashMap<DeviceId, filter_panel::Preview>,
     pub(in crate::editor) compressor_sidechains: compressor_panel::sidechain::Controls,
     pub(super) auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
+    pub(super) shifter_previews: HashMap<DeviceId, shifter_panel::PreviewCache>,
     pub(super) reverb_previews: HashMap<DeviceId, reverb_panel::PreviewCache>,
     pub(super) overdrive_previews: HashMap<DeviceId, overdrive_panel::PreviewCache>,
     pub(super) overdrive_graphs: HashMap<DeviceId, overdrive_panel::GraphControl>,
@@ -735,6 +736,7 @@ pub(in crate::editor) fn clear_owner_state(
         view.device_panel.compressor_modes.clear();
     }
     view.device_panel.auto_pan_previews.clear();
+    view.device_panel.shifter_previews.clear();
     view.device_panel.reverb_previews.clear();
     view.device_panel.overdrive_previews.clear();
     view.device_panel.overdrive_graphs.clear();
@@ -929,6 +931,9 @@ pub(in crate::editor) fn retire_transfer_previews(
     });
     panel.auto_pan_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
+    });
+    panel.shifter_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.shifter"))
     });
     panel.reverb_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.reverb"))
