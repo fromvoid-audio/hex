@@ -123,6 +123,7 @@ mod instrument_pair;
 mod instrument_rack;
 mod instrument_runtime;
 mod midi_processor;
+mod midi_rack;
 pub use instrument::{
     ANALYTIC_NOTE_PAYLOAD_WORDS, AnalyticNoteContinuation, MAX_SHARED_ANALYTIC_CONTEXT_BYTES,
     NativeInstrumentDefinition, NativeInstrumentRegistry, PreparedAnalyticNote,
@@ -158,6 +159,14 @@ pub use midi_processor::{
     NativeMidiProcessorError, NativeMidiProcessorLimits, NativeMidiProcessorRegistry,
     NativeMidiProcessorRuntimePair, PreparedNativeMidiProcessor, ScheduledMidiEvent,
     ScheduledMidiKind, resolve_future_time_in_block, validate_future_horizon,
+};
+pub use midi_rack::{
+    MIDI_RACK_BRANCH_COUNT, MIDI_RACK_MAX_ACTIVE_OCCURRENCES,
+    MIDI_RACK_MAX_BRANCH_ACTIVE_OCCURRENCES, MIDI_RACK_MAX_DEPTH, MIDI_RACK_MAX_INPUT_EVENTS,
+    MIDI_RACK_MAX_OUTPUT_EVENTS, MIDI_RACK_MAX_WORK_UNITS, MIDI_RACK_RUNTIME_VERSION,
+    MIDI_RACK_STATE_VERSION, MIDI_RACK_TYPE_ID, MidiRackBranchSpec, MidiRackDefinition,
+    MidiRackSpec, PARAM_MIDI_RACK_BRANCH_1_BYPASS, PARAM_MIDI_RACK_BRANCH_2_BYPASS,
+    PreparedMidiRack,
 };
 
 mod adapters;

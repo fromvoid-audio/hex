@@ -101,7 +101,7 @@ static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 5] = [
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
 ];
-static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 8] = [
+static BUILTIN_LEAF_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 8] = [
     &midi_pitch::PITCH_DEFINITION,
     &midi_chord::CHORD_DEFINITION,
     &midi_velocity::VELOCITY_DEFINITION,
@@ -111,6 +111,11 @@ static BUILTIN_NATIVE_MIDI_PROCESSORS: [&dyn NativeMidiProcessorDefinition; 8] =
     &midi_note_length::NOTE_LENGTH_DEFINITION,
     &midi_arpeggiator::ARPEGGIATOR_DEFINITION,
 ];
+
+static BUILTIN_MIDI_RACK_DEFINITION: OnceLock<hex_lattice::MidiRackDefinition<'static>> =
+    OnceLock::new();
+static BUILTIN_NATIVE_MIDI_PROCESSORS: OnceLock<[&'static dyn NativeMidiProcessorDefinition; 9]> =
+    OnceLock::new();
 
 pub const SINE_INSTRUMENT_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sine");
 
@@ -133,10 +138,34 @@ pub fn native_instrument_registry()
     hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_NATIVE_INSTRUMENTS)
 }
 
-/// The immutable catalog of original bounded native MIDI processors.
+/// The immutable catalog of original bounded native MIDI processors, including
+/// the bounded two-branch MIDI Rack (`hex.rack.midi`).
 pub fn native_midi_processor_registry()
 -> Result<hex_lattice::NativeMidiProcessorRegistry<'static>, DeviceContractError> {
-    hex_lattice::NativeMidiProcessorRegistry::new(&BUILTIN_NATIVE_MIDI_PROCESSORS)
+    let rack_def = if let Some(existing) = BUILTIN_MIDI_RACK_DEFINITION.get() {
+        existing
+    } else {
+        let leaf = hex_lattice::NativeMidiProcessorRegistry::new(&BUILTIN_LEAF_MIDI_PROCESSORS)?;
+        let created = hex_lattice::MidiRackDefinition::new(leaf)?;
+        let _ = BUILTIN_MIDI_RACK_DEFINITION.set(created);
+        BUILTIN_MIDI_RACK_DEFINITION
+            .get()
+            .ok_or(DeviceContractError::InvalidDescriptor)?
+    };
+    let all = BUILTIN_NATIVE_MIDI_PROCESSORS.get_or_init(|| {
+        [
+            BUILTIN_LEAF_MIDI_PROCESSORS[0],
+            BUILTIN_LEAF_MIDI_PROCESSORS[1],
+            BUILTIN_LEAF_MIDI_PROCESSORS[2],
+            BUILTIN_LEAF_MIDI_PROCESSORS[3],
+            BUILTIN_LEAF_MIDI_PROCESSORS[4],
+            BUILTIN_LEAF_MIDI_PROCESSORS[5],
+            BUILTIN_LEAF_MIDI_PROCESSORS[6],
+            BUILTIN_LEAF_MIDI_PROCESSORS[7],
+            rack_def,
+        ]
+    });
+    hex_lattice::NativeMidiProcessorRegistry::new(all)
 }
 
 /// The immutable catalog of all 16 built-in native modulators.
