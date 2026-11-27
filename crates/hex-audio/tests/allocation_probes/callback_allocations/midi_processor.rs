@@ -483,3 +483,88 @@ fn canonical_velocity_midi_processor_mapping_live_edit_and_bypass_allocate_nothi
     drop(rev_fixed);
     drop(table);
 }
+
+#[test]
+fn canonical_scale_midi_processor_mapping_live_edit_and_bypass_allocate_nothing_on_callback() {
+    let (mut editor, track, _session_clip) = build_project();
+    let major = hex_devices::midi_scale::ScaleSettings {
+        base: 0,
+        degree_map: [0, 0, 2, 2, 4, 5, 5, 7, 7, 9, 9, 11],
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    let Created::Device(scale_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: major,
+        })
+        .unwrap()
+    else {
+        panic!("expected scale processor id");
+    };
+
+    let table = Arc::new(SineTable::new());
+    let rev_a = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let minor = hex_devices::midi_scale::ScaleSettings {
+        base: 0,
+        degree_map: [0, 0, 2, 3, 3, 5, 5, 7, 8, 8, 10, 10],
+        ..Default::default()
+    }
+    .encode()
+    .unwrap();
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: scale_id,
+            state: minor,
+        })
+        .unwrap();
+    let rev_b = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: scale_id,
+            bypassed: true,
+        })
+        .unwrap();
+    let rev_bypassed = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev_a)).unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&rev_b)).unwrap();
+    let mut bypassed = SessionPlayback::new(Arc::clone(&rev_bypassed)).unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        next.try_inherit_state_from(&mut active).unwrap();
+        next.render(&mut buf).unwrap();
+        bypassed.try_inherit_state_from(&mut next).unwrap();
+        bypassed.render(&mut buf).unwrap();
+        bypassed.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(buf.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    drop(bypassed);
+    drop(next);
+    drop(active);
+    drop(rev_bypassed);
+    drop(rev_b);
+    drop(rev_a);
+    drop(table);
+}

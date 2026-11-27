@@ -963,3 +963,95 @@ fn canonical_velocity_device_matches_pcm_oracle_across_fixed_gate_live_edits_and
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn canonical_scale_device_matches_pcm_oracle_across_quantize_off_degree_and_live_edits() {
+    use hex_devices::midi_scale::{DEGREE_OFF, ScaleSettings};
+
+    // C#4 (61) snaps to C4 (60), F#4 (66) is OFF, D#4 (63) snaps to D4 (62).
+    let authored_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 61, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 66, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 63, 105),
+    ];
+
+    let c_major = ScaleSettings {
+        base: 0,
+        degree_map: [0, 0, 2, 2, 4, 5, DEGREE_OFF, 7, 7, 9, 9, 11],
+        ..ScaleSettings::default()
+    };
+    let (mut editor, track) = build_subtractive_project(&authored_notes);
+    let Created::Device(scale_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: c_major.encode().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected scale processor id");
+    };
+    let (oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 62, 105),
+    ]);
+
+    let rev_scale = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_scale)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual, expected);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Mid-note live edit: change degree 3 (D#) to map to E (4) while C#4 & suppressed F#4 are held!
+    let c_major_up = ScaleSettings {
+        base: 0,
+        degree_map: [0, 0, 2, 4, 4, 5, DEGREE_OFF, 7, 7, 9, 9, 11],
+        ..ScaleSettings::default()
+    };
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: scale_id,
+            state: c_major_up.encode().unwrap(),
+        })
+        .unwrap();
+    let rev_up = prepare_revision(editor.project());
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_scale)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_up).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
