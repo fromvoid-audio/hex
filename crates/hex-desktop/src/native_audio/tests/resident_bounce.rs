@@ -428,3 +428,561 @@ fn track_bounce_in_place_and_its_history_apply_while_playing() {
     fs::remove_file(&baked).unwrap();
     fs::remove_dir(baked.parent().unwrap()).unwrap();
 }
+
+/// End-to-end M24 qualification (#3252, #2756): create/edit a native synth and
+/// resource-backed sampler, share one live synth across two tracks without
+/// doubling, whole-track bounce a contributor, delete all tracks to leave
+/// zero-user retained sources, cold save/reopen from disk without preset export
+/// or Undo recovery, assign the SAME retained sources to fresh tracks and render
+/// with zero callback allocations, then verify explicit-only deletion and Undo.
+#[test]
+fn retained_native_synth_and_sampler_create_share_bounce_delete_save_reopen_reuse_and_explicit_delete()
+ {
+    let _native = native_fixture();
+    let files = Files::new();
+    let sampler_wav = files.wav(48_000, 16_384);
+    let original_wav_bytes = fs::read(&sampler_wav).unwrap();
+    let saved_path = files.0.join("m24-retained-workflow.hex");
+
+    let mut h = ResidentHarness::with_frame_limit(2_000_000);
+    h.next();
+    let (mut applied, _) = h.applied(0);
+
+    // 1. Create a native synth (receiver) with a track-local utility effect and a resource-backed Sampler.
+    let added_receiver = edit(
+        &mut h,
+        &mut applied,
+        Command::AddMidiTrack {
+            name: "synth receiver".into(),
+        },
+    );
+    let Some(Created::Track(receiver_track)) = added_receiver.created else {
+        panic!("receiver track")
+    };
+    let inserted_synth = h.run(Request::AddNativeDevice {
+        track: receiver_track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static("hex.instrument.sine")),
+        before: None,
+    });
+    (applied, _) = h.applied(applied);
+    let synth_source = inserted_synth
+        .state
+        .project
+        .track(receiver_track)
+        .unwrap()
+        .source_id()
+        .expect("synth auto-registered as retained source");
+    let synth_device = inserted_synth
+        .state
+        .project
+        .native_source(synth_source)
+        .unwrap()
+        .instrument()
+        .id();
+    edit(
+        &mut h,
+        &mut applied,
+        Command::RenameNativeSource {
+            source: synth_source,
+            name: "retained sine lead".into(),
+        },
+    );
+    let synth_state = inserted_synth
+        .state
+        .project
+        .device(synth_device)
+        .unwrap()
+        .state()
+        .clone()
+        .with_output_gain_db(-6.0)
+        .unwrap();
+    edit(
+        &mut h,
+        &mut applied,
+        Command::ReplaceDeviceState {
+            device: synth_device,
+            state: synth_state,
+        },
+    );
+    let local_utility = hex_engine::default_native_device_state_for_class(
+        hex_engine::NativeDeviceClass::Effect,
+        hex_engine::DeviceTypeId::from_static("hex.utility"),
+    )
+    .unwrap()
+    .with_output_gain_db(6.0)
+    .unwrap();
+    edit(
+        &mut h,
+        &mut applied,
+        Command::InsertDevice {
+            track: receiver_track,
+            before: None,
+            state: local_utility,
+        },
+    );
+
+    let added_sampler = edit(
+        &mut h,
+        &mut applied,
+        Command::AddMidiTrack {
+            name: "sampler track".into(),
+        },
+    );
+    let Some(Created::Track(sampler_track)) = added_sampler.created else {
+        panic!("sampler track")
+    };
+    let loaded_sampler = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added_sampler.state.revision,
+        target: hex_session::service::SamplerLoadTarget::Track {
+            track: sampler_track,
+            slot: hex_session::service::SamplerLoadSlot::New(
+                hex_project::InstrumentLoadPlacement::First,
+            ),
+        },
+        path: sampler_wav.clone(),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let sampler_source = loaded_sampler
+        .state
+        .project
+        .track(sampler_track)
+        .unwrap()
+        .source_id()
+        .expect("sampler auto-registered as retained source");
+    let sampler_device = loaded_sampler
+        .state
+        .project
+        .native_source(sampler_source)
+        .unwrap()
+        .instrument()
+        .id();
+    let sampler_asset = loaded_sampler
+        .state
+        .project
+        .device(sampler_device)
+        .unwrap()
+        .state()
+        .asset_references()[0]
+        .asset;
+    edit(
+        &mut h,
+        &mut applied,
+        Command::RenameNativeSource {
+            source: sampler_source,
+            name: "retained constant sampler".into(),
+        },
+    );
+    let sampler_state = loaded_sampler
+        .state
+        .project
+        .device(sampler_device)
+        .unwrap()
+        .state()
+        .clone()
+        .with_output_gain_db(-6.0)
+        .unwrap();
+    edit(
+        &mut h,
+        &mut applied,
+        Command::ReplaceDeviceState {
+            device: sampler_device,
+            state: sampler_state,
+        },
+    );
+
+    // 2. Bind a second contributor track to the SAME retained synth and place simultaneous MIDI.
+    let added_contributor = edit(
+        &mut h,
+        &mut applied,
+        Command::AddMidiTrack {
+            name: "synth contributor".into(),
+        },
+    );
+    let Some(Created::Track(contributor_track)) = added_contributor.created else {
+        panic!("contributor track")
+    };
+    edit(
+        &mut h,
+        &mut applied,
+        Command::BindTrackSource {
+            track: contributor_track,
+            source: Some(synth_source),
+        },
+    );
+    for (track, pitch) in [(receiver_track, 60_u8), (contributor_track, 67_u8)] {
+        let placed = edit(
+            &mut h,
+            &mut applied,
+            Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            },
+        );
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("midi clip")
+        };
+        edit(
+            &mut h,
+            &mut applied,
+            Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch,
+                channel: 0,
+                velocity: 110,
+            },
+        );
+    }
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut shared_peak = 0.0_f32;
+    let measured_shared = allocation_counter::measure(|| {
+        for _ in 0..8 {
+            for frame in h.render() {
+                shared_peak = shared_peak.max(frame[0].abs()).max(frame[1].abs());
+            }
+        }
+    });
+    assert!(shared_peak > 0.01, "shared synth playback must be audible");
+    assert_eq!(measured_shared.count_total, 0);
+    assert_eq!(measured_shared.count_current, 0);
+    assert_eq!(measured_shared.bytes_total, 0);
+    assert_eq!(measured_shared.bytes_current, 0);
+
+    // 3. Whole-track in-place bounce on the contributor track: contributor prints to audio
+    // and unlinks, while receiver + retained synth stay intact and Undo/Redo works in one step.
+    let before_bounce = h.run(Request::Edit(Command::Gain {
+        track: contributor_track,
+        gain: 1.0,
+    }));
+    (applied, _) = h.applied(applied);
+    let bounced = super::resident_sections::run_callback(
+        &mut h,
+        Request::BounceArrangement {
+            project_generation: 0,
+            revision: before_bounce.state.revision,
+            target: hex_project::BounceTarget::Track(contributor_track),
+            in_place: true,
+            adoption: hex_project::BounceAdoption::NewTracks,
+            control: hex_export::ExportControl::default(),
+        },
+    );
+    assert!(bounced.error.is_none(), "{:?}", bounced.error);
+    (applied, _) = h.applied(applied);
+    assert!(
+        bounced
+            .state
+            .project
+            .track(contributor_track)
+            .unwrap()
+            .source_id()
+            .is_none()
+    );
+    assert_eq!(
+        bounced
+            .state
+            .project
+            .track(receiver_track)
+            .unwrap()
+            .source_id(),
+        Some(synth_source)
+    );
+    assert!(bounced.state.project.native_source(synth_source).is_some());
+    let baked_path = bounced
+        .state
+        .project
+        .asset(
+            bounced
+                .state
+                .project
+                .track(contributor_track)
+                .unwrap()
+                .clips()[0]
+                .asset(),
+        )
+        .unwrap()
+        .path()
+        .to_owned();
+    let undone_bounce = super::resident_sections::run_callback(&mut h, Request::Undo);
+    assert!(undone_bounce.error.is_none());
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        undone_bounce
+            .state
+            .project
+            .track(contributor_track)
+            .unwrap()
+            .source_id(),
+        Some(synth_source)
+    );
+    let redone_bounce = super::resident_sections::run_callback(&mut h, Request::Redo);
+    assert!(redone_bounce.error.is_none());
+    (applied, _) = h.applied(applied);
+    assert!(
+        redone_bounce
+            .state
+            .project
+            .track(contributor_track)
+            .unwrap()
+            .source_id()
+            .is_none()
+    );
+
+    // 4. Delete printed track, receiver track, and sampler track: BOTH retained sources
+    // survive with zero linked tracks and persist across a cold disk save.
+    for track in [contributor_track, receiver_track, sampler_track] {
+        edit(&mut h, &mut applied, Command::RemoveTrack(track));
+    }
+    let saved = h.run(Request::SaveNew(saved_path.clone()));
+    assert!(saved.save_complete, "{:?}", saved.error);
+    assert_eq!(saved.state.project.tracks().len(), 0);
+    assert!(saved.state.project.native_source(synth_source).is_some());
+    assert!(saved.state.project.native_source(sampler_source).is_some());
+    assert_eq!(
+        saved
+            .state
+            .project
+            .native_source(synth_source)
+            .unwrap()
+            .receiver(),
+        None
+    );
+    assert_eq!(
+        saved
+            .state
+            .project
+            .native_source(sampler_source)
+            .unwrap()
+            .receiver(),
+        None
+    );
+    // 5. Reopen from disk (no Undo history, no preset export):
+    // zero-user retained synth & resource-backed sampler keep identity, names, parameters & assets,
+    // and immediately sound when bound to brand-new tracks with zero callback allocations.
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(saved_path));
+    assert!(
+        opened.open_complete && opened.project_replaced && opened.error.is_none(),
+        "{:?}",
+        opened.error
+    );
+    assert!(!opened.state.can_undo);
+    assert_eq!(
+        opened
+            .state
+            .project
+            .native_source(synth_source)
+            .unwrap()
+            .name(),
+        "retained sine lead"
+    );
+    assert_eq!(
+        opened
+            .state
+            .project
+            .native_source(sampler_source)
+            .unwrap()
+            .name(),
+        "retained constant sampler"
+    );
+    assert!(
+        (opened
+            .state
+            .project
+            .device(synth_device)
+            .unwrap()
+            .state()
+            .output_gain_db()
+            + 6.0)
+            .abs()
+            < 1e-6
+    );
+    assert_eq!(
+        opened
+            .state
+            .project
+            .device(sampler_device)
+            .unwrap()
+            .state()
+            .asset_references()[0]
+            .asset,
+        sampler_asset
+    );
+    applied = super::resident_lifecycle::finish_replacement(&mut h, &opened, old_output);
+
+    let fresh_synth_track = {
+        let added = edit(
+            &mut h,
+            &mut applied,
+            Command::AddMidiTrack {
+                name: "reused synth".into(),
+            },
+        );
+        let Some(Created::Track(track)) = added.created else {
+            panic!("fresh synth track")
+        };
+        edit(
+            &mut h,
+            &mut applied,
+            Command::BindTrackSource {
+                track,
+                source: Some(synth_source),
+            },
+        );
+        let placed = edit(
+            &mut h,
+            &mut applied,
+            Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            },
+        );
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("fresh synth clip")
+        };
+        edit(
+            &mut h,
+            &mut applied,
+            Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 64,
+                channel: 0,
+                velocity: 120,
+            },
+        );
+        track
+    };
+    let fresh_sampler_track = {
+        let added = edit(
+            &mut h,
+            &mut applied,
+            Command::AddMidiTrack {
+                name: "reused sampler".into(),
+            },
+        );
+        let Some(Created::Track(track)) = added.created else {
+            panic!("fresh sampler track")
+        };
+        edit(
+            &mut h,
+            &mut applied,
+            Command::BindTrackSource {
+                track,
+                source: Some(sampler_source),
+            },
+        );
+        let placed = edit(
+            &mut h,
+            &mut applied,
+            Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            },
+        );
+        let Some(Created::Clip(clip)) = placed.created else {
+            panic!("fresh sampler clip")
+        };
+        edit(
+            &mut h,
+            &mut applied,
+            Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            },
+        );
+        track
+    };
+
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let mut reused_peak = 0.0_f32;
+    let measured_reused = allocation_counter::measure(|| {
+        for _ in 0..8 {
+            for frame in h.render() {
+                reused_peak = reused_peak.max(frame[0].abs()).max(frame[1].abs());
+            }
+        }
+    });
+    assert!(
+        reused_peak > 0.05,
+        "reused retained synth + sampler must be audible after reopen"
+    );
+    assert_eq!(measured_reused.count_total, 0);
+    assert_eq!(measured_reused.count_current, 0);
+    assert_eq!(measured_reused.bytes_total, 0);
+    assert_eq!(measured_reused.bytes_current, 0);
+
+    // 6. Explicit manager deletion only: deleting a referenced source refuses cleanly;
+    // unlinking then deleting removes the source, and Undo restores exact identity/state.
+    h.service
+        .submit(Request::Edit(Command::RemoveNativeSource(sampler_source)))
+        .unwrap();
+    let refused_delete = h.next();
+    assert!(refused_delete.error.is_some());
+    assert!(
+        refused_delete
+            .state
+            .project
+            .native_source(sampler_source)
+            .is_some()
+    );
+    edit(
+        &mut h,
+        &mut applied,
+        Command::BindTrackSource {
+            track: fresh_sampler_track,
+            source: None,
+        },
+    );
+    let deleted = edit(
+        &mut h,
+        &mut applied,
+        Command::RemoveNativeSource(sampler_source),
+    );
+    assert!(
+        deleted
+            .state
+            .project
+            .native_source(sampler_source)
+            .is_none()
+    );
+    let restored = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        restored
+            .state
+            .project
+            .native_source(sampler_source)
+            .unwrap()
+            .name(),
+        "retained constant sampler"
+    );
+    let _ = (fresh_synth_track, applied);
+    assert_eq!(fs::read(&sampler_wav).unwrap(), original_wav_bytes);
+    if baked_path.exists() {
+        fs::remove_file(&baked_path).unwrap();
+        let _ = fs::remove_dir(baked_path.parent().unwrap());
+    }
+}

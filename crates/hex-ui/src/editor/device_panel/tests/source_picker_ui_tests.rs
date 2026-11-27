@@ -7,7 +7,7 @@ fn settle(
     cx: &mut TestAppContext,
     predicate: impl Fn(&EditorView) -> bool,
 ) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let deadline = crate::test_wait::hang_deadline();
     loop {
         editor.update(cx, |view, cx| {
             view.tick(cx);
