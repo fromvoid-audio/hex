@@ -2054,3 +2054,190 @@ fn canonical_arpeggiator_device_matches_pcm_oracle_across_partitions_tempo_and_l
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn canonical_two_branch_midi_rack_matches_pcm_oracle_across_parallel_pitch_bypass_and_stop() {
+    use hex_devices::midi_pitch::PitchSettings;
+    use hex_lattice::{MidiRackBranchSpec, MidiRackSpec};
+
+    // Authored C4 (60) + E4 (64) overlapping notes through a canonical two-branch MIDI Rack:
+    //   Branch 0: Pitch(+4)  -> 64, 68
+    //   Branch 1: Pitch(+7)  -> 67, 71
+    let authored = [
+        (BeatTime::ZERO, beat_frac(1, 32), 60, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 64, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 60, 105),
+    ];
+    let rack_spec = MidiRackSpec {
+        rack_id: NonZeroU64::new(1).unwrap(),
+        branches: [
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(10).unwrap(),
+                device_id: NonZeroU64::new(100).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 4,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+            MidiRackBranchSpec {
+                branch_id: NonZeroU64::new(20).unwrap(),
+                device_id: NonZeroU64::new(200).unwrap(),
+                bypassed: false,
+                state: Some(
+                    PitchSettings {
+                        semitones: 7,
+                        ..Default::default()
+                    }
+                    .encode()
+                    .unwrap(),
+                ),
+            },
+        ],
+    };
+
+    let (mut editor, track) = build_subtractive_project(&authored);
+    let Created::Device(rack_dev_id) = editor
+        .execute(Command::InsertMidiProcessor {
+            track,
+            state: rack_spec.encode_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("expected midi rack processor id");
+    };
+
+    let oracle_notes = [
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 68, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 71, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+        (beat_frac(1, 16), beat_frac(1, 32), 67, 105),
+    ];
+    let (oracle_editor, _) = build_subtractive_project(&oracle_notes);
+
+    let rev_both = prepare_revision(editor.project());
+    let total_frames = 3_000_usize;
+    let mut oracle = SessionPlayback::new(prepare_revision(oracle_editor.project())).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_both = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected_both).unwrap();
+    assert!(expected_both.iter().flatten().any(|s| s.abs() > 1e-3));
+
+    // Chunked render matches dual-branch PCM oracle bit-for-bit!
+    let mut pb = SessionPlayback::new(Arc::clone(&rev_both)).unwrap();
+    pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = vec![[0.0_f32; 2]; total_frames];
+    for chunk in actual.chunks_mut(128) {
+        pb.render(chunk).unwrap();
+    }
+    assert_eq!(actual, expected_both);
+    assert!(
+        pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Live mid-note branch 1 bypass: held notes 1 & 2 release all 4 voices cleanly;
+    // Note 3 plays ONLY branch 0 (+4 -> 64)!
+    let mut b1_bypassed = rack_spec.clone();
+    b1_bypassed.branches[1].bypassed = true;
+    editor
+        .execute(Command::ReplaceDeviceState {
+            device: rack_dev_id,
+            state: b1_bypassed.encode_state().unwrap(),
+        })
+        .unwrap();
+    let rev_b1_bypass = prepare_revision(editor.project());
+    let (mixed_oracle_editor, _) = build_subtractive_project(&[
+        (BeatTime::ZERO, beat_frac(1, 32), 64, 100),
+        (BeatTime::ZERO, beat_frac(1, 32), 67, 100),
+        (beat_frac(1, 64), beat_frac(1, 32), 68, 90),
+        (beat_frac(1, 64), beat_frac(1, 32), 71, 90),
+        (beat_frac(1, 16), beat_frac(1, 32), 64, 105),
+    ]);
+    let mut mixed_oracle =
+        SessionPlayback::new(prepare_revision(mixed_oracle_editor.project())).unwrap();
+    mixed_oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected_mixed = vec![[0.0_f32; 2]; total_frames];
+    mixed_oracle.render(&mut expected_mixed).unwrap();
+
+    let mut live_a = SessionPlayback::new(Arc::clone(&rev_both)).unwrap();
+    live_a.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_mixed = vec![[0.0_f32; 2]; total_frames];
+    live_a.render(&mut actual_mixed[..500]).unwrap();
+    let mut live_b = SessionPlayback::new(rev_b1_bypass).unwrap();
+    live_b.try_inherit_state_from(&mut live_a).unwrap();
+    live_b.render(&mut actual_mixed[500..]).unwrap();
+    assert_eq!(actual_mixed, expected_mixed);
+    assert!(
+        live_b.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // Undo/Redo and snapshot roundtrip preserve canonical two-branch MIDI Rack state;
+    // Stop + Seek(0) + Play replays cleanly with zero stuck notes.
+    editor.undo();
+    let undone_state = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&undone_state).unwrap(),
+        rack_spec
+    );
+    let reopened = Project::from_snapshot(editor.project().snapshot()).unwrap();
+    let reopened_state = reopened
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&reopened_state).unwrap(),
+        rack_spec
+    );
+    editor.redo();
+    let redone_state = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_processor()
+        .unwrap()
+        .state()
+        .clone();
+    assert_eq!(
+        MidiRackSpec::decode_state(&redone_state).unwrap(),
+        b1_bypassed
+    );
+    editor.undo();
+    let mut stop_pb = SessionPlayback::new(rev_both).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut mid = [[0.0_f32; 2]; 256];
+    stop_pb.render(&mut mid).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; total_frames];
+    stop_pb.render(&mut replay).unwrap();
+    assert_eq!(replay, expected_both);
+}
