@@ -449,6 +449,14 @@ impl ForeignProcessors for WithPrograms<'_> {
         )
     }
 
+    fn drain_output_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        out: &mut hex_lattice::ForeignOutputEvents,
+    ) -> Result<usize, DeviceContractError> {
+        self.inner.drain_output_notes(node, out)
+    }
+
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         self.inner.committed_tail_is_drained(node)
     }

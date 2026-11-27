@@ -55,6 +55,9 @@ impl NativeEffectEntry {
     pub(crate) fn callback(&self) -> &NativeEffectCallback {
         &self.callback
     }
+    pub(crate) fn callback_mut(&mut self) -> &mut NativeEffectCallback {
+        &mut self.callback
+    }
     pub(crate) fn into_callback(self) -> NativeEffectCallback {
         self.callback
     }
@@ -396,6 +399,25 @@ impl ForeignProcessors for NativeEffectCallbacks {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), DeviceContractError> {
         self.stage_segment(node, offset, frames, None, &[], &[], clock, Some(lane))
+    }
+    fn drain_output_notes(
+        &mut self,
+        node: ForeignProcessorNode<'_>,
+        out: &mut hex_lattice::ForeignOutputEvents,
+    ) -> Result<usize, DeviceContractError> {
+        if self.cycle.revoked() {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        }
+        let Some(index) = node.prepared.binding().and_then(|binding| {
+            self.entries
+                .binary_search_by_key(&binding, NativeEffectEntry::binding)
+                .ok()
+        }) else {
+            return Err(DeviceContractError::ForeignProcessingUnavailable);
+        };
+        self.entries[index]
+            .callback_mut()
+            .drain_output_notes(node, out)
     }
     fn committed_tail_is_drained(&self, node: ForeignProcessorNode<'_>) -> bool {
         !self.cycle.revoked()
