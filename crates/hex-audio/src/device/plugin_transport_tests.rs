@@ -468,6 +468,175 @@ fn host_callback_subslices_frames_above_256_into_plugin_quanta_without_fault_or_
     assert!(host_513.chunks_exact(2).all(|frame| frame == [0.75, -0.5]));
 }
 
+#[test]
+fn subsliced_512_frame_44100_callback_stamps_exact_output_clock_offsets_without_double_counting() {
+    use crate::sample_recording::{End, OutputClockOrigin};
+    use hex_engine::playback::Playback;
+    use hex_project::{Command, Created, Editor, Project};
+
+    const RATE: u32 = 44_100;
+    const HOST_FRAMES: u64 = 512;
+    const QUANTUM: usize = 256;
+    const BASE_NS: u128 = 2_000_000_000_000_000_000;
+    let frame_ns = |frames: u64| u128::from(frames) * 1_000_000_000 / u128::from(RATE);
+    let instant = |nanos: u128| {
+        cpal::StreamInstant::new(
+            i64::try_from(nanos / 1_000_000_000).unwrap(),
+            u32::try_from(nanos % 1_000_000_000).unwrap(),
+        )
+    };
+    let as_ns = |ts: cpal::StreamInstant| {
+        ts.duration_since(&cpal::StreamInstant::new(0, 0))
+            .unwrap()
+            .as_nanos()
+    };
+
+    let mut editor = Editor::new(Project::new(RATE).unwrap(), 4).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "bed".into(),
+            path: "bed.wav".into(),
+            sample_rate: RATE,
+            frames: 4096,
+        })
+        .unwrap()
+    else {
+        panic!("imported");
+    };
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        hex_engine::Audio::new(RATE, vec![[0.5, -0.25]; 4096]).unwrap(),
+    )]);
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let playback = Playback::try_from_prepared_with_session(revision).unwrap();
+
+    let (mut control, mut callback) = prepared::channel(RATE).unwrap();
+    control
+        .configure_device_resource_publication_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 256,
+                root_rows: 128,
+                max_retained_bytes: 32_000_000,
+                max_construction_peak_bytes: 32_000_000,
+            },
+        )
+        .unwrap();
+    control
+        .configure_plugin_callback_quantum(&mut callback, QUANTUM as u16)
+        .unwrap();
+    control
+        .publish_with_admission_and_source_on_control(
+            playback,
+            crate::prepared::PublicationPolicy::InstallFreshRuntime,
+            hex_engine::AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 1,
+            },
+            |_| Ok::<_, ()>(()),
+        )
+        .unwrap();
+    callback.begin_block();
+    callback.render(&mut []).unwrap();
+    let source = control.status.recording_source().unwrap();
+    let mut reader = control.sample_recording.start_bound(source).unwrap();
+    let mut clock_index = crate::sample_recording::OutputClockIndex::new(&reader);
+    assert!(reader.ready());
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+
+    let mut previous_start = None;
+    let callback_clock = crate::callback_clock::CallbackClock::prewarm_monotonic();
+    // Run two 512-frame callbacks (= four 256-frame plugin bridge quanta).
+    for cb_index in 0..2_u64 {
+        let playback_ts = instant(BASE_NS + frame_ns((cb_index + 1) * HOST_FRAMES));
+        let info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
+            callback: instant(BASE_NS + frame_ns(cb_index * HOST_FRAMES)),
+            playback: playback_ts,
+        });
+        let mut host = vec![0.0_f32; HOST_FRAMES as usize * 2];
+        let run = || {
+            render_host_callback(
+                &mut callback,
+                &control.status,
+                &mut host,
+                &info,
+                2,
+                RATE,
+                Some(QUANTUM as u16),
+                callback_clock,
+                &mut previous_start,
+            );
+        };
+        #[cfg(feature = "allocation-probe")]
+        {
+            let measured = allocation_counter::measure(run);
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            let mut run = run;
+            run();
+        }
+        assert_eq!(clock_index.poll(&mut reader), Ok(None));
+    }
+    reader.stop();
+    let mut drain_host = vec![0.0_f32; HOST_FRAMES as usize * 2];
+    let drain_info = cpal::OutputCallbackInfo::new(cpal::OutputStreamTimestamp {
+        callback: instant(BASE_NS + frame_ns(2 * HOST_FRAMES)),
+        playback: instant(BASE_NS + frame_ns(3 * HOST_FRAMES)),
+    });
+    render_host_callback(
+        &mut callback,
+        &control.status,
+        &mut drain_host,
+        &drain_info,
+        2,
+        RATE,
+        Some(QUANTUM as u16),
+        callback_clock,
+        &mut previous_start,
+    );
+    assert_eq!(clock_index.poll(&mut reader), Ok(Some(End::Stopped)));
+
+    let observed: Vec<_> = (0..clock_index.len())
+        .map(|i| {
+            let packet = clock_index.packet(i).unwrap();
+            assert_eq!(packet.frames as usize, QUANTUM);
+            let clock = packet.clock;
+            #[cfg(target_os = "macos")]
+            assert_eq!(clock.origin, OutputClockOrigin::CoreAudioHostTime);
+            (as_ns(clock.playback), clock.offset_frames)
+        })
+        .collect();
+    // Callback 0 -> playback BASE_NS + 512 frames, sub-slices at offsets 0 and 256.
+    // Callback 1 -> playback BASE_NS + 1024 frames, sub-slices at offsets 0 and 256.
+    assert_eq!(
+        observed,
+        vec![
+            (BASE_NS + frame_ns(512), 0),
+            (BASE_NS + frame_ns(512), 256),
+            (BASE_NS + frame_ns(1024), 0),
+            (BASE_NS + frame_ns(1024), 256),
+        ]
+    );
+}
+
 #[cfg(feature = "allocation-probe")]
 #[test]
 fn owned_worker_and_all_four_original_guards_retire_on_control_after_zero_allocation_callbacks() {
