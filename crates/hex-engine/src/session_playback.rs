@@ -3276,3 +3276,6 @@ mod midi_processor_tests;
 
 #[cfg(test)]
 mod instrument_rack_tests;
+
+#[cfg(test)]
+mod multisample_tests;

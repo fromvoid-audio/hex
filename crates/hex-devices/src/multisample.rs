@@ -687,5 +687,12 @@ fn interpolate_linear(pcm: DeviceResourcePcm<'_>, position: f64) -> [f64; 2] {
     ]
 }
 
+pub mod instrument;
+pub use instrument::{
+    GAIN, MULTISAMPLE_DEFINITION, MULTISAMPLE_STATE_VERSION, MULTISAMPLE_TYPE_ID,
+    MultisampleDefinition, MultisampleState, OVERLAP_POLICY, PreparedMultisampleInstrumentRuntime,
+    VOICE_LIMIT,
+};
+
 #[cfg(test)]
 mod tests;

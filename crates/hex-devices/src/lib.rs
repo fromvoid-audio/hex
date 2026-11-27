@@ -94,9 +94,10 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 14] = 
     &delay::DEFINITION,
     &rattle::RATTLE_DEFINITION,
 ];
-static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 5] = [
+static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 6] = [
     &SINE_INSTRUMENT,
     &sampler::catalog::DEFINITION,
+    &multisample::MULTISAMPLE_DEFINITION,
     &fm4::device::FM4_DEFINITION,
     &operator_state::OPERATOR_METADATA,
     &subtractive::SUBTRACTIVE_DEFINITION,
