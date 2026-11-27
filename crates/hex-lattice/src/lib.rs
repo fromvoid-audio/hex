@@ -151,9 +151,13 @@ pub use instrument_runtime::{
     PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
 pub use midi_processor::{
+    BoundedFutureMidiQueue, DueMidiEvent, FUTURE_MIDI_EVENT_QUEUE_CAPACITY,
+    FUTURE_MIDI_MAX_HORIZON_BEATS_Q32, FUTURE_MIDI_MAX_HORIZON_FRAMES,
+    FUTURE_MIDI_RESERVED_NOTE_OFF_SLOTS, FutureMidiTime, GENERATED_OCCURRENCE_ID_BASE,
     MidiProcessorOutput, MutableMidiProcessorRuntime, NativeMidiProcessorDefinition,
     NativeMidiProcessorError, NativeMidiProcessorLimits, NativeMidiProcessorRegistry,
-    NativeMidiProcessorRuntimePair, PreparedNativeMidiProcessor,
+    NativeMidiProcessorRuntimePair, PreparedNativeMidiProcessor, ScheduledMidiEvent,
+    ScheduledMidiKind, resolve_future_time_in_block, validate_future_horizon,
 };
 
 mod adapters;
