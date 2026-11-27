@@ -313,7 +313,7 @@ pub fn render_prepared_new(
         playback
             .apply(SessionPlaybackCommand::Play)
             .map_err(ExportError::SessionRender)?;
-        let mut renderer = PreparedBlockRenderer(playback);
+        let mut renderer = PreparedBlockRenderer(Box::new(playback));
         discard_latency(&mut renderer, latency)?;
         Ok(renderer)
     })
@@ -434,7 +434,7 @@ impl BlockRenderer for LinearBlockRenderer<'_> {
     }
 }
 
-struct PreparedBlockRenderer(SessionPlayback);
+struct PreparedBlockRenderer(Box<SessionPlayback>);
 
 impl BlockRenderer for PreparedBlockRenderer {
     fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError> {
@@ -1948,15 +1948,20 @@ mod tests {
         fs::write(&target, b"original-content").unwrap();
         let original_mtime = fs::metadata(&target).unwrap().modified().unwrap();
         let consent = Publication::confirmed_save(&target).unwrap();
-        let report = publish(&target, 48_000, 0, 1, &consent, || {
+        let error = publish(&target, 48_000, 0, 1, &consent, || {
             Ok(ConcurrentEdit {
                 target: target.clone(),
                 original_mtime,
             })
         })
-        .expect("publish while retaining the displaced file");
-        let recovery = report.recovery_path.expect("report retained file");
-        assert_eq!(fs::read(recovery).unwrap(), b"changed--content");
+        .expect_err("content-digest check must refuse same-inode mutation before exchange");
+        let (stage, cause) = retained(error);
+        assert!(matches!(
+            cause,
+            ExportError::Invalid("confirmed overwrite destination changed")
+        ));
+        assert_eq!(fs::read(&target).unwrap(), b"changed--content");
+        assert_eq!(&fs::read(stage).unwrap()[..4], b"RIFF");
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

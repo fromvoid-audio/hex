@@ -587,7 +587,12 @@ fn verified_pages_feed_offline_processor_and_failures_preserve_existing_output()
         },
     );
     let error = exported(&foreign).result.unwrap_err();
-    assert!(error.message().contains("supports main only"), "{error}");
+    assert!(
+        error
+            .message()
+            .contains("does not support captured output export"),
+        "{error}"
+    );
     assert_eq!(fs::read(existing).unwrap(), b"keep existing");
 }
 

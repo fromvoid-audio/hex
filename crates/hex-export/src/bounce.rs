@@ -69,7 +69,7 @@ fn render_bounce_using(
         },
     )
 }
-struct BounceRenderer(SessionPlayback, f32);
+struct BounceRenderer(Box<SessionPlayback>, f32);
 impl BlockRenderer for BounceRenderer {
     fn render_block(&mut self, frames: &mut [hex_engine::Frame]) -> Result<(), ExportError> {
         self.0.render(frames).map_err(ExportError::SessionRender)?;
