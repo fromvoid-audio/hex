@@ -882,3 +882,64 @@ fn canonical_cc_control_midi_processor_live_edit_slew_and_bypass_allocate_nothin
     drop(rev_a);
     drop(table);
 }
+
+#[test]
+fn timed_future_midi_event_queue_and_tempo_change_allocate_nothing_on_callback() {
+    use hex_lattice::conformance::midi_timed_gate::{
+        PreparedTimedGateMidiProcessor, TimedGateDomain,
+    };
+    use hex_project::Tempo;
+
+    let (mut editor, track, _session_clip) = build_project();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: beat_frac(1, 64),
+            tempo: Tempo::new(180_000_000).unwrap(),
+        })
+        .unwrap();
+    let table = Arc::new(SineTable::new());
+    let rev = Arc::new(
+        PreparedRevision::prepare(editor.project(), &BTreeMap::new(), Arc::clone(&table), None)
+            .unwrap(),
+    );
+    let timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+        delay_beats_q32: beat_frac(1, 32).raw(),
+        gate_beats_q32: beat_frac(1, 32).raw(),
+    })
+    .unwrap();
+    let proc_id = NonZeroU64::new(91).unwrap();
+
+    let mut active = SessionPlayback::new(Arc::clone(&rev)).unwrap();
+    active
+        .install_track_midi_processor_on_control(track, proc_id, &timed)
+        .unwrap();
+    let mut next = SessionPlayback::new(Arc::clone(&rev)).unwrap();
+    next.install_track_midi_processor_on_control(track, proc_id, &timed)
+        .unwrap();
+    let mut buf = vec![[0.0_f32; 2]; 256];
+    let mut any_audio = false;
+
+    let info = measure(|| {
+        active.apply(SessionPlaybackCommand::Play).unwrap();
+        active.render(&mut buf).unwrap();
+        next.try_inherit_state_from(&mut active).unwrap();
+        for _ in 0..6 {
+            next.render(&mut buf).unwrap();
+            if buf.iter().flatten().any(|s| s.abs() > 1e-3) {
+                any_audio = true;
+            }
+        }
+        next.apply(SessionPlaybackCommand::Stop).unwrap();
+    });
+
+    assert_eq!(info.count_total, 0, "callback allocated: {info:?}");
+    assert_eq!(info.bytes_total, 0, "callback allocated bytes: {info:?}");
+    assert_eq!(info.count_current, 0, "callback net count: {info:?}");
+    assert_eq!(info.bytes_current, 0, "callback net bytes: {info:?}");
+    assert!(any_audio);
+
+    drop(next);
+    drop(active);
+    drop(rev);
+    drop(table);
+}

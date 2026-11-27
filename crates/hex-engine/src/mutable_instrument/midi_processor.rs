@@ -39,13 +39,15 @@ pub(crate) fn midi_processor_limits() -> NativeMidiProcessorLimits {
 }
 
 /// Preallocated pre-instrument MIDI processor stage with transactional pair,
-/// transactional host bypass ledger, and fixed output scratch storage.
+/// transactional host bypass ledger, and fixed output/partition scratch storage.
 pub(crate) struct MidiProcessorStage {
     identity: NonZeroU64,
     bypassed: bool,
     pair: NativeMidiProcessorRuntimePair,
     bypassed_primary: [Option<u64>; MAX_SIMULTANEOUS_VOICES_PER_TRACK],
     bypassed_scratch: [Option<u64>; MAX_SIMULTANEOUS_VOICES_PER_TRACK],
+    pair_input: [NativeInstrumentEvent; MAX_MUTABLE_EVENTS_PER_QUERY],
+    bypass_output: [NativeInstrumentEvent; MAX_MUTABLE_EVENTS_PER_QUERY],
     output_events: [NativeInstrumentEvent; MAX_MUTABLE_EVENTS_PER_QUERY],
 }
 
@@ -57,16 +59,19 @@ impl MidiProcessorStage {
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let pair = NativeMidiProcessorRuntimePair::new(prepared, midi_processor_limits())
             .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
+        let default_event = NativeInstrumentEvent::NoteOff {
+            frame_offset: 0,
+            occurrence_id: 1,
+        };
         Ok(Self {
             identity,
             bypassed,
             pair,
             bypassed_primary: [None; MAX_SIMULTANEOUS_VOICES_PER_TRACK],
             bypassed_scratch: [None; MAX_SIMULTANEOUS_VOICES_PER_TRACK],
-            output_events: [NativeInstrumentEvent::NoteOff {
-                frame_offset: 0,
-                occurrence_id: 1,
-            }; MAX_MUTABLE_EVENTS_PER_QUERY],
+            pair_input: [default_event; MAX_MUTABLE_EVENTS_PER_QUERY],
+            bypass_output: [default_event; MAX_MUTABLE_EVENTS_PER_QUERY],
+            output_events: [default_event; MAX_MUTABLE_EVENTS_PER_QUERY],
         })
     }
 
@@ -133,7 +138,8 @@ impl MidiProcessorStage {
             prev_offset = offset;
         }
 
-        let mut out_len = 0_usize;
+        let mut pair_in_len = 0_usize;
+        let mut bypass_out_len = 0_usize;
         for &event in events.iter() {
             match event {
                 NativeInstrumentEvent::NoteOn {
@@ -153,7 +159,7 @@ impl MidiProcessorStage {
                         ));
                     }
                     if self.bypassed {
-                        if out_len >= capacity {
+                        if bypass_out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
                                 NativeMidiProcessorError::OutputEventCapacityExceeded,
                             ));
@@ -166,19 +172,11 @@ impl MidiProcessorStage {
                                 NativeMidiProcessorError::ActiveOccurrenceCapacityExceeded,
                             ))?;
                         self.bypassed_scratch[free] = Some(occurrence_id);
-                        self.output_events[out_len] = event;
-                        out_len += 1;
+                        self.bypass_output[bypass_out_len] = event;
+                        bypass_out_len += 1;
                     } else {
-                        let written = self
-                            .pair
-                            .process_block(
-                                &[event],
-                                frame_count,
-                                &mut self.output_events[out_len..capacity],
-                                clock,
-                            )
-                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
-                        out_len += written;
+                        self.pair_input[pair_in_len] = event;
+                        pair_in_len += 1;
                     }
                 }
                 NativeInstrumentEvent::NoteOff { occurrence_id, .. } => {
@@ -188,49 +186,33 @@ impl MidiProcessorStage {
                         ));
                     }
                     if let Some(slot) = Self::find_bypassed(&self.bypassed_scratch, occurrence_id) {
-                        if out_len >= capacity {
+                        if bypass_out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
                                 NativeMidiProcessorError::OutputEventCapacityExceeded,
                             ));
                         }
                         self.bypassed_scratch[slot] = None;
-                        self.output_events[out_len] = event;
-                        out_len += 1;
+                        self.bypass_output[bypass_out_len] = event;
+                        bypass_out_len += 1;
                     } else {
-                        let written = self
-                            .pair
-                            .process_block(
-                                &[event],
-                                frame_count,
-                                &mut self.output_events[out_len..capacity],
-                                clock,
-                            )
-                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
-                        out_len += written;
+                        self.pair_input[pair_in_len] = event;
+                        pair_in_len += 1;
                     }
                 }
                 NativeInstrumentEvent::NotePressure { occurrence_id, .. }
                 | NativeInstrumentEvent::NotePitchBend { occurrence_id, .. }
                 | NativeInstrumentEvent::NoteTimbre { occurrence_id, .. } => {
                     if Self::find_bypassed(&self.bypassed_scratch, occurrence_id.get()).is_some() {
-                        if out_len >= capacity {
+                        if bypass_out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
                                 NativeMidiProcessorError::OutputEventCapacityExceeded,
                             ));
                         }
-                        self.output_events[out_len] = event;
-                        out_len += 1;
+                        self.bypass_output[bypass_out_len] = event;
+                        bypass_out_len += 1;
                     } else {
-                        let written = self
-                            .pair
-                            .process_block(
-                                &[event],
-                                frame_count,
-                                &mut self.output_events[out_len..capacity],
-                                clock,
-                            )
-                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
-                        out_len += written;
+                        self.pair_input[pair_in_len] = event;
+                        pair_in_len += 1;
                     }
                 }
                 NativeInstrumentEvent::Expression { expression, .. } => {
@@ -240,24 +222,16 @@ impl MidiProcessorStage {
                         ));
                     }
                     if self.bypassed {
-                        if out_len >= capacity {
+                        if bypass_out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
                                 NativeMidiProcessorError::OutputEventCapacityExceeded,
                             ));
                         }
-                        self.output_events[out_len] = event;
-                        out_len += 1;
+                        self.bypass_output[bypass_out_len] = event;
+                        bypass_out_len += 1;
                     } else {
-                        let written = self
-                            .pair
-                            .process_block(
-                                &[event],
-                                frame_count,
-                                &mut self.output_events[out_len..capacity],
-                                clock,
-                            )
-                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
-                        out_len += written;
+                        self.pair_input[pair_in_len] = event;
+                        pair_in_len += 1;
                     }
                 }
                 NativeInstrumentEvent::ControlChange { cc, value, .. } => {
@@ -267,24 +241,16 @@ impl MidiProcessorStage {
                         ));
                     }
                     if self.bypassed {
-                        if out_len >= capacity {
+                        if bypass_out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
                                 NativeMidiProcessorError::OutputEventCapacityExceeded,
                             ));
                         }
-                        self.output_events[out_len] = event;
-                        out_len += 1;
+                        self.bypass_output[bypass_out_len] = event;
+                        bypass_out_len += 1;
                     } else {
-                        let written = self
-                            .pair
-                            .process_block(
-                                &[event],
-                                frame_count,
-                                &mut self.output_events[out_len..capacity],
-                                clock,
-                            )
-                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
-                        out_len += written;
+                        self.pair_input[pair_in_len] = event;
+                        pair_in_len += 1;
                     }
                 }
                 NativeInstrumentEvent::PitchBend { value, .. } => {
@@ -294,30 +260,48 @@ impl MidiProcessorStage {
                         ));
                     }
                     if self.bypassed {
-                        if out_len >= capacity {
+                        if bypass_out_len >= capacity {
                             return Err(MutableInstrumentRuntimeError::MidiProcessor(
                                 NativeMidiProcessorError::OutputEventCapacityExceeded,
                             ));
                         }
-                        self.output_events[out_len] = event;
-                        out_len += 1;
+                        self.bypass_output[bypass_out_len] = event;
+                        bypass_out_len += 1;
                     } else {
-                        let written = self
-                            .pair
-                            .process_block(
-                                &[event],
-                                frame_count,
-                                &mut self.output_events[out_len..capacity],
-                                clock,
-                            )
-                            .map_err(MutableInstrumentRuntimeError::MidiProcessor)?;
-                        out_len += written;
+                        self.pair_input[pair_in_len] = event;
+                        pair_in_len += 1;
                     }
                 }
             }
         }
+
+        // Advance the underlying processor pair at most once per audio block so
+        // clock-driven future events (e.g., pending generated NoteOffs) drain
+        // at exact offsets without double-advancing during bypass transitions.
+        let pair_out_len = if pair_in_len > 0 || !self.pair.speculative_is_quiescent() {
+            let remaining = capacity.saturating_sub(bypass_out_len);
+            self.pair
+                .process_block(
+                    &self.pair_input[..pair_in_len],
+                    frame_count,
+                    &mut self.output_events[..remaining],
+                    clock,
+                )
+                .map_err(MutableInstrumentRuntimeError::MidiProcessor)?
+        } else {
+            0
+        };
+        let total_len = pair_out_len + bypass_out_len;
+        if total_len > capacity {
+            return Err(MutableInstrumentRuntimeError::MidiProcessor(
+                NativeMidiProcessorError::OutputEventCapacityExceeded,
+            ));
+        }
+        self.output_events[pair_out_len..total_len]
+            .copy_from_slice(&self.bypass_output[..bypass_out_len]);
+        super::stable_sort_native_events(&mut self.output_events[..total_len]);
         events.clear();
-        events.extend_from_slice(&self.output_events[..out_len]);
+        events.extend_from_slice(&self.output_events[..total_len]);
         Ok(())
     }
 

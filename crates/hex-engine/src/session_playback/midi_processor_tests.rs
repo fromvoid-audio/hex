@@ -1596,3 +1596,185 @@ fn canonical_cc_control_device_matches_fm4_pcm_oracle_across_live_edits_override
             .committed_is_quiescent()
     );
 }
+
+#[test]
+fn timed_future_midi_events_match_pcm_oracle_across_partitions_tempo_change_loop_and_handoff() {
+    use hex_lattice::conformance::midi_timed_gate::{
+        PreparedTimedGateMidiProcessor, TimedGateDomain,
+    };
+    use hex_project::Tempo;
+
+    let delay_beats = beat_frac(1, 32);
+    let gate_beats = beat_frac(1, 32);
+
+    // Source note starts at beat 0 (duration 1/64); timed gate schedules generated NoteOn at beat 1/32
+    // and generated NoteOff at beat 1/16. A tempo jump from 120 BPM -> 240 BPM happens at beat 1/64!
+    let (mut source_editor, track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 64), 60, 110)]);
+    let (mut oracle_editor, _) = build_subtractive_project(&[(delay_beats, gate_beats, 60, 110)]);
+
+    for editor in [&mut source_editor, &mut oracle_editor] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: beat_frac(1, 64),
+                tempo: Tempo::new(240_000_000).unwrap(),
+            })
+            .unwrap();
+    }
+
+    let source_rev = prepare_revision(source_editor.project());
+    let oracle_rev = prepare_revision(oracle_editor.project());
+    let timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+        delay_beats_q32: delay_beats.raw(),
+        gate_beats_q32: gate_beats.raw(),
+    })
+    .unwrap();
+    let other_timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+        delay_beats_q32: beat_frac(1, 16).raw(),
+        gate_beats_q32: gate_beats.raw(),
+    })
+    .unwrap();
+
+    // Horizon refusal sanity check.
+    assert!(
+        PreparedTimedGateMidiProcessor::new(TimedGateDomain::BeatsQ32 {
+            delay_beats_q32: hex_lattice::FUTURE_MIDI_MAX_HORIZON_BEATS_Q32,
+            gate_beats_q32: 1,
+        })
+        .is_err()
+    );
+
+    let total_frames = 2_400_usize;
+    let mut oracle = SessionPlayback::new(oracle_rev).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = vec![[0.0_f32; 2]; total_frames];
+    oracle.render(&mut expected).unwrap();
+    assert!(expected.iter().flatten().any(|s| s.abs() > 1e-3));
+    assert!(
+        oracle.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 1. Irregular block partitions match tempo-mapped PCM oracle bit-for-bit and finish quiescent.
+    let mut chunked = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    chunked
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    chunked.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual_chunked = vec![[0.0_f32; 2]; total_frames];
+    let pattern = [7, 19, 64, 128, 257];
+    let mut cursor = 0_usize;
+    let mut step = 0_usize;
+    while cursor < total_frames {
+        let len = pattern[step % pattern.len()].min(total_frames - cursor);
+        chunked
+            .render(&mut actual_chunked[cursor..cursor + len])
+            .unwrap();
+        cursor += len;
+        step += 1;
+    }
+    assert_eq!(actual_chunked, expected);
+    assert!(
+        chunked.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 2. Stop while future events are queued -> clears queue & replays bit-for-bit from 0.
+    let mut stop_pb = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    stop_pb
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut early = [[0.0_f32; 2]; 128];
+    stop_pb.render(&mut early).unwrap();
+    // Future NoteOn/NoteOff are still queued (not yet quiescent)!
+    assert!(
+        !stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        stop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+    stop_pb.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+    stop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut replay = vec![[0.0_f32; 2]; total_frames];
+    stop_pb.render(&mut replay).unwrap();
+    assert_eq!(replay, expected);
+
+    // 3. Compatible handoff while future events are queued preserves exact pending timeline;
+    //    incompatible handoff refuses atomically without mutating active playback.
+    let mut active = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    active
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    active.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut handed_off = vec![[0.0_f32; 2]; total_frames];
+    active.render(&mut handed_off[..128]).unwrap();
+
+    let mut incompatible = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    incompatible
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &other_timed)
+        .unwrap();
+    assert_eq!(
+        incompatible.try_inherit_state_from(&mut active),
+        Err(SessionPlaybackError::SourceHistoryUnavailable)
+    );
+
+    let mut compatible = SessionPlayback::new(Arc::clone(&source_rev)).unwrap();
+    compatible
+        .install_track_midi_processor_on_control(track, midi_proc_id(), &timed)
+        .unwrap();
+    compatible.try_inherit_state_from(&mut active).unwrap();
+    compatible.render(&mut handed_off[128..]).unwrap();
+    assert_eq!(handed_off, expected);
+    assert!(
+        compatible.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+
+    // 4. Loop wrap across performance-frame scheduled NoteOff leaves zero stuck notes after Stop.
+    let (mut loop_editor, loop_track) =
+        build_subtractive_project(&[(BeatTime::ZERO, beat_frac(1, 64), 60, 100)]);
+    loop_editor
+        .execute(Command::SetLoopRegion {
+            start: 0,
+            end: 500,
+            enabled: true,
+        })
+        .unwrap();
+    let loop_rev = prepare_revision(loop_editor.project());
+    let frame_timed = PreparedTimedGateMidiProcessor::new(TimedGateDomain::PerformanceFrames {
+        delay_frames: 200,
+        gate_frames: 400,
+    })
+    .unwrap();
+    let mut loop_pb = SessionPlayback::new(loop_rev).unwrap();
+    loop_pb
+        .install_track_midi_processor_on_control(loop_track, midi_proc_id(), &frame_timed)
+        .unwrap();
+    loop_pb.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut loop_out = vec![[0.0_f32; 2]; 1_500];
+    for chunk in loop_out.chunks_mut(128) {
+        loop_pb.render(chunk).unwrap();
+    }
+    assert!(loop_out.iter().flatten().any(|s| s.abs() > 1e-3));
+    loop_pb.apply(SessionPlaybackCommand::Stop).unwrap();
+    assert!(
+        loop_pb.mutable_instruments[0]
+            .as_ref()
+            .unwrap()
+            .committed_is_quiescent()
+    );
+}
