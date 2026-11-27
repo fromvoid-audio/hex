@@ -61,6 +61,12 @@ pub use panel::{
 mod numeric;
 mod numeric_control;
 mod numeric_text;
+mod region_overlay;
+pub use region_overlay::{
+    REGION_DRAG_DEADZONE_PX, REGION_EDGE_HIT_TOLERANCE_PX, RegionDragDraft, RegionDragError,
+    RegionDragUpdate, RegionEdge, RegionSpan, hit_test_region_edge, normalized_region_x,
+    region_active_band, region_edge_handle, region_frame_at_x, region_marker,
+};
 mod response_graph;
 mod spectrum_painter;
 mod spectrum_plot;
