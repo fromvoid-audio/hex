@@ -664,3 +664,101 @@ fn arrangement_stopped_gate_refuses_an_earlier_play_without_changing_runtime() {
     callback.begin_block();
     control.reclaim();
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn priority_stop_marker_revokes_native_effects_as_stop_not_fault() {
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(graph().0).unwrap();
+    callback.begin_block();
+    let root = control.output_identity().unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root,
+        instance: 2,
+        graph: 1,
+        epoch: 1,
+    };
+    let identity =
+        hex_lattice::ProcessorInstanceIdentity::new(hex_lattice::ProcessorChainOwner::Main, 2)
+            .unwrap();
+    let state =
+        hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+    let (transport_control, transport_cb, _worker) =
+        hex_plugin_host::transport::native_pcm_channel_from_completed_prefix(binding, 4, 0)
+            .unwrap();
+    let endpoint = crate::plugin_effects::NativeEffectCallback::for_test(
+        identity,
+        binding,
+        state,
+        transport_cb,
+    );
+    callback.native_sources.install_for_test(endpoint);
+
+    control.command(PlaybackCommand::Play).unwrap();
+    callback.begin_block();
+    assert!(!transport_control.is_revoked());
+    assert!(!transport_control.was_revoked_for_stop());
+
+    // Priority stop sets `pending_stop_marker` before `begin_block` runs.
+    // `begin_block_inner` must stop-revoke (not fault-revoke) so Control does
+    // not falsely degrade healthy VST3 plugins on Stop.
+    control.stop();
+    callback.begin_block();
+    assert!(transport_control.is_revoked());
+    assert!(
+        transport_control.was_revoked_for_stop(),
+        "PriorityStop via pending_stop_marker must mark healthy native effects stop-revoked"
+    );
+    assert_eq!(transport_control.take_callback_fault(), None);
+
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[test]
+fn mid_block_stop_marker_at_finish_native_effect_callback_marks_stop_revoked() {
+    let (mut control, mut callback) = channel(48_000).unwrap();
+    control.publish(graph().0).unwrap();
+    callback.begin_block();
+    let root = control.output_identity().unwrap();
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root,
+        instance: 3,
+        graph: 1,
+        epoch: 1,
+    };
+    let identity =
+        hex_lattice::ProcessorInstanceIdentity::new(hex_lattice::ProcessorChainOwner::Main, 3)
+            .unwrap();
+    let state =
+        hex_engine::default_native_device_state(hex_devices::utility::UTILITY_TYPE_ID).unwrap();
+    let (transport_control, transport_cb, _worker) =
+        hex_plugin_host::transport::native_pcm_channel_from_completed_prefix(binding, 4, 0)
+            .unwrap();
+    let endpoint = crate::plugin_effects::NativeEffectCallback::for_test(
+        identity,
+        binding,
+        state,
+        transport_cb,
+    );
+    callback.native_sources.install_for_test(endpoint);
+
+    // Stop arrives mid-callback after begin_block and before finish_native_effect_callback.
+    control.stop();
+    assert_eq!(
+        callback.finish_native_effect_callback(true),
+        OutputTransportDelivery::Cancelled
+    );
+    assert!(transport_control.is_revoked());
+    assert!(
+        transport_control.was_revoked_for_stop(),
+        "mid-block pending_stop_marker must stop-revoke healthy native effects"
+    );
+    assert_eq!(transport_control.take_callback_fault(), None);
+
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}

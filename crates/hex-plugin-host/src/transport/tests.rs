@@ -2441,6 +2441,10 @@ fn revoke_for_stop_marks_live_endpoint_without_fault_and_never_masks_prior_fault
     cb.revoke_for_stop();
     assert!(control.is_revoked());
     assert!(control.was_revoked_for_stop());
+    // Subsequent follow-up rejection (for example invalidate_gain_recording after
+    // PriorityStop) must preserve the clean stop-revoked marker.
+    cb.reject(Fault::Revoked);
+    assert!(control.was_revoked_for_stop());
     assert_eq!(control.take_callback_fault(), None);
 
     // 2. Endpoint that faulted with MissingOutput before Stop preserves its real fault.

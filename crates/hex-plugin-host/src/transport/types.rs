@@ -233,15 +233,28 @@ impl Revocation {
     }
 
     pub(super) fn revoke_for_stop(&self) {
-        let was_revoked = self
-            .parameter_input_generation
-            .fetch_or(parameter_fence::REVOKED_BIT, AcqRel)
-            & parameter_fence::REVOKED_BIT
-            != 0;
-        if !was_revoked {
-            let _ =
-                self.callback_fault
-                    .compare_exchange(0, Self::STOP_REVOKED_CODE, Release, Relaxed);
+        if !self.is_revoked() {
+            // Publish STOP_REVOKED_CODE before REVOKED_BIT so any Acquire
+            // reader observing `is_revoked()` on a clean stop is guaranteed
+            // to observe `is_stop_revoked()`. Roll back if a concurrent
+            // worker/control revocation won the race.
+            let marked = self
+                .callback_fault
+                .compare_exchange(0, Self::STOP_REVOKED_CODE, Release, Relaxed)
+                .is_ok();
+            let was_revoked = self
+                .parameter_input_generation
+                .fetch_or(parameter_fence::REVOKED_BIT, AcqRel)
+                & parameter_fence::REVOKED_BIT
+                != 0;
+            if was_revoked && marked {
+                let _ = self.callback_fault.compare_exchange(
+                    Self::STOP_REVOKED_CODE,
+                    0,
+                    Release,
+                    Relaxed,
+                );
+            }
         }
         self.wake_worker();
     }
