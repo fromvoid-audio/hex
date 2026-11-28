@@ -55,6 +55,47 @@ impl CapturedCanonicalBases {
             .iter()
             .map(|parameter| (parameter.id, f64::from_bits(parameter.normalized_base_bits)))
     }
+
+    /// Project a verified subset of already-captured canonical bases for the
+    /// exact same binding, prepared profile, sample rate, and canonical state.
+    pub fn project_selection(&self, selection: &AuthoredSelection) -> Result<Self, &'static str> {
+        let (class, ids) = selection.parameters();
+        if self.capabilities.class() != Some(class) {
+            return Err("native canonical base class differs");
+        }
+        let mut values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let mut steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
+        let source = self.capabilities.parameters();
+        for ((value_slot, step_slot), &id) in values.iter_mut().zip(steps.iter_mut()).zip(ids) {
+            let index = source
+                .binary_search_by_key(&id, |parameter| parameter.id)
+                .map_err(|_| "native canonical base value missing")?;
+            let parameter = source[index];
+            *value_slot = Some((parameter.id, parameter.normalized_base_bits));
+            *step_slot = parameter.steps;
+        }
+        let capabilities = automation::SourceCapabilities::from_canonical(class, &values, &steps)?;
+        Ok(Self {
+            binding: self.binding,
+            source: self.source,
+            fence: self.fence,
+            canonical: self.canonical.clone(),
+            prepared: self.prepared,
+            sample_rate: self.sample_rate,
+            capabilities,
+        })
+    }
+
+    pub(crate) fn with_rebound_source(
+        &self,
+        source: (AppliedAudioSource, u64, bool),
+        selection: &AuthoredSelection,
+    ) -> Result<Self, &'static str> {
+        let mut projected = self.project_selection(selection)?;
+        projected.source = source;
+        projected.fence = None;
+        Ok(projected)
+    }
 }
 
 /// One private query in the existing fixed Root source pool. Poll through its
@@ -457,5 +498,95 @@ mod tests {
         ] {
             assert!(!compatible(original, different, binding));
         }
+    }
+
+    #[test]
+    fn project_selection_preserves_verified_bits_and_refuses_absent_or_mismatched_targets() {
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let class = hex_plugin_state::ClassId::new([7; 16]).unwrap();
+        let precise = f64::from_bits(0x3fe0_0000_0000_0001);
+        let mut values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+        values[0] = Some((1, precise.to_bits()));
+        values[1] = Some((4, 0.25_f64.to_bits()));
+        values[2] = Some((9, 1.0_f64.to_bits()));
+        let mut steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
+        steps[0] = 0;
+        steps[1] = 5;
+        steps[2] = 1;
+        let capabilities =
+            automation::SourceCapabilities::from_canonical(class, &values, &steps).unwrap();
+        let original_source = (
+            AppliedAudioSource {
+                context: hex_engine::AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                output_identity: 1,
+                audio_revision: 3,
+            },
+            10,
+            true,
+        );
+        let facts = CapturedCanonicalBases {
+            binding,
+            source: original_source,
+            fence: None,
+            canonical: NativeDeviceState::new(
+                hex_lattice_contract::VST3_DEVICE_TYPE_ID,
+                1,
+                vec![1, 2, 3],
+            )
+            .unwrap(),
+            prepared: PreparedForeignProcessor::new(8, 0, 16)
+                .unwrap()
+                .with_binding(binding)
+                .unwrap(),
+            sample_rate: 48_000,
+            capabilities,
+        };
+
+        let subset = AuthoredSelection::from_targets([(4, Some([7; 16])), (9, Some([7; 16]))])
+            .unwrap()
+            .unwrap();
+        let projected = facts.project_selection(&subset).unwrap();
+        assert_eq!(projected.binding(), binding);
+        assert_eq!(projected.sample_rate(), 48_000);
+        assert_eq!(projected.source(), original_source);
+        let params: Vec<_> = projected.parameters().collect();
+        assert_eq!(params.len(), 2);
+        assert_eq!((params[0].id, params[0].steps), (4, 5));
+        assert_eq!(params[0].normalized_base_bits, 0.25_f64.to_bits());
+        assert_eq!((params[1].id, params[1].steps), (9, 1));
+        assert_eq!(params[1].normalized_base_bits, 1.0_f64.to_bits());
+
+        let empty = AuthoredSelection::for_no_parameters([7; 16]).unwrap();
+        assert_eq!(facts.project_selection(&empty).unwrap().values().count(), 0);
+
+        let missing = AuthoredSelection::from_targets([(4, Some([7; 16])), (12, Some([7; 16]))])
+            .unwrap()
+            .unwrap();
+        assert!(facts.project_selection(&missing).is_err());
+
+        let wrong_class = AuthoredSelection::from_targets([(4, Some([8; 16]))])
+            .unwrap()
+            .unwrap();
+        assert!(facts.project_selection(&wrong_class).is_err());
+
+        let next_source = (
+            AppliedAudioSource {
+                audio_revision: 5,
+                ..original_source.0
+            },
+            11,
+            true,
+        );
+        let rebound = facts.with_rebound_source(next_source, &subset).unwrap();
+        assert_eq!(rebound.source(), next_source);
+        assert_eq!(rebound.parameters().count(), 2);
     }
 }

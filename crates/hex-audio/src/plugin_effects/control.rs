@@ -707,6 +707,10 @@ impl<'a> NativeEffectDefinition<'a> {
 }
 
 impl NativeEffectControl {
+    pub(crate) fn matches_constructor_bases(&self, facts: &CapturedCanonicalBases) -> bool {
+        super::parameter_extension::matches_constructor(&self.configuration, facts)
+    }
+
     pub(crate) fn begin_parameter_extension(
         &mut self,
         class: hex_plugin_state::ClassId,
