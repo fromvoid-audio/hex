@@ -203,7 +203,6 @@ impl EditorView {
         // Clear any pending wake latch before draining service events so an event
         // enqueued during or after this tick still wakes the next WakeOrTimer wait.
         self.poll_cadence.signal.take();
-        super::device_panel::vst3_parameters::tick(self, cx);
         let overrange_changed = self
             .timeline_caches
             .waveform_geometry_cache
@@ -216,6 +215,10 @@ impl EditorView {
                 .wrapping_add(1);
         }
         let changed = self.tick(cx) | overrange_changed;
+        // Run VST3 parameter reconciliation after draining session events so a
+        // completed gesture commit or deferred result dispatches immediately on
+        // the same tick instead of waiting for the next poll interval.
+        super::device_panel::vst3_parameters::tick(self, cx);
         if changed {
             cx.notify();
         }

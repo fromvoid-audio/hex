@@ -443,6 +443,7 @@ impl Plugins {
                     &selection,
                     cancellation,
                     None,
+                    self.diagnostics.as_ref(),
                 )?;
                 if expected
                     .iter()

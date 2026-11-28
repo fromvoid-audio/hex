@@ -307,9 +307,11 @@ impl Gesture {
         &mut self,
         control: &mut PublicationControl,
         host: &Hosting,
+        diagnostics: Option<&hex_diagnostics::DiagnosticsHandle>,
         canonical: &NativeDeviceState,
         cancellation: Option<&RequestCancellation>,
     ) -> Result<Prepared, Error> {
+        let started = Instant::now();
         let actual = self.sdk_value(self.last);
         let live = self.live.as_mut().ok_or_else(lost)?;
         if (live.playing && live.uses_hold && live.hold.is_none()) || live.invalidated {
@@ -321,6 +323,8 @@ impl Gesture {
             cancellation.is_some_and(RequestCancellation::is_cancelled)
                 || status.native_parameter_source(live.playing) != Some(expected)
         };
+        let mut warm_reused = false;
+        let mut skipped_restore = false;
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
             if cancelled() {
@@ -347,7 +351,11 @@ impl Gesture {
                     )
                 };
                 match beginning {
-                    Ok(scratch) => live.scratch = Some(scratch),
+                    Ok(scratch) => {
+                        warm_reused = scratch.warm_reused();
+                        skipped_restore = scratch.skipped_restore();
+                        live.scratch = Some(scratch);
+                    }
                     Err(reason)
                         if matches!(
                             reason.as_str(),
@@ -359,6 +367,17 @@ impl Gesture {
             if let Some(scratch) = live.scratch.as_mut()
                 && let Some(terminal) = scratch.poll_on_control(control, &mut cancelled)
             {
+                if let Some(log) = diagnostics {
+                    let _ = log.record_typed(
+                        hex_diagnostics::Level::Debug,
+                        hex_diagnostics::Category::Audio,
+                        &format!(
+                            "vst3_scratch v=1 kind=manual_base warm={warm_reused} skipped_restore={skipped_restore} ok={} elapsed_us={}",
+                            terminal.is_ok(),
+                            started.elapsed().as_micros(),
+                        ),
+                    );
+                }
                 live.scratch = None;
                 return terminal
                     .map_err(|error| refused(error.to_string()))
@@ -374,7 +393,15 @@ impl Gesture {
             if Instant::now() >= deadline {
                 return Err(refused("vst3 manual base capture is still settling"));
             }
-            edits::poll_control(control);
+            if live
+                .scratch
+                .as_ref()
+                .is_some_and(hex_audio::plugin_effects::ManualBaseCapture::poll_step_is_ready)
+            {
+                edits::poll_control_nonblocking(control);
+            } else {
+                edits::poll_control(control);
+            }
         }
     }
 }

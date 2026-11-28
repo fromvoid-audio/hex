@@ -326,13 +326,7 @@ impl Plugins {
             let row = inventory
                 .rows
                 .iter()
-                .find(|row| {
-                    row.id == origin.parameter
-                        && row.editable
-                        && row.page_first == origin.page_first
-                        && row.metadata_revision == origin.metadata_revision
-                        && row.normalized == origin.initial.normalized()
-                })
+                .find(|row| observed_row_matches_origin(row, origin))
                 .ok_or_else(|| refused("vst3 parameter metadata changed · refresh the list"))?;
             let source = self
                 .sources
@@ -511,7 +505,14 @@ impl Plugins {
         let result = if !gesture.current(self, control, input.context()) {
             Err(lost())
         } else {
-            gesture.apply(control, self.host.as_ref(), &input, cancellation, clock)
+            gesture.apply(
+                control,
+                self.host.as_ref(),
+                self.diagnostics.as_ref(),
+                &input,
+                cancellation,
+                clock,
+            )
         };
         self.confirmed_parameters
             .extend(gesture.deliveries.drain(..));
@@ -708,6 +709,7 @@ impl Gesture {
         &mut self,
         control: &mut PublicationControl,
         host: Option<&Hosting>,
+        diagnostics: Option<&hex_diagnostics::DiagnosticsHandle>,
         input: &PluginParameterGestureInput<'_>,
         cancellation: Option<&RequestCancellation>,
         clock: Option<(u32, hex_session::service::ResidentRuntimeLoop)>,
@@ -771,6 +773,7 @@ impl Gesture {
                 return self.capture_override(
                     control,
                     host.ok_or_else(|| refused("qualified vst3 helper unavailable"))?,
+                    diagnostics,
                     input.canonical_state(),
                     cancellation,
                 );
@@ -1192,4 +1195,111 @@ fn validate_current_parameter(
     PluginParameterValue::new(parameter.normalized)
         .map(|value| (value, page.revision))
         .map_err(refused)
+}
+
+fn observed_row_matches_origin(
+    row: &hex_session::service::PluginParameterRow,
+    origin: PluginParameterOrigin,
+) -> bool {
+    origin.metadata_revision != 0
+        && row.id == origin.parameter
+        && row.editable
+        && row.page_first == origin.page_first
+        && row.metadata_revision >= origin.metadata_revision
+        && row.normalized == origin.initial.normalized()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hex_session::service::PluginParameterRow;
+
+    #[test]
+    fn observed_row_matches_origin_allows_monotonic_playback_revision_advance() {
+        let mut project =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Device(device) = project
+            .execute(hex_project::Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device expected");
+        };
+        let row = PluginParameterRow {
+            id: 11,
+            name: "enable".into(),
+            value: "off".into(),
+            normalized: 0.0,
+            default_normalized: 0.0,
+            steps: 1,
+            editable: true,
+            automation_class: None,
+            page_first: 0,
+            metadata_revision: 5355,
+            editor_sequence: 0,
+        };
+        let origin = PluginParameterOrigin {
+            context: AudioSourceContext {
+                project_generation: 1,
+                editor_revision: 4,
+            },
+            device,
+            parameter: 11,
+            page_first: 0,
+            metadata_revision: 5251,
+            initial: PluginParameterValue::new(0.0).unwrap(),
+        };
+
+        // Background playback poll advanced metadata_revision -> still valid.
+        assert!(observed_row_matches_origin(&row, origin));
+        // Exact revision match -> valid.
+        assert!(observed_row_matches_origin(
+            &PluginParameterRow {
+                metadata_revision: 5251,
+                ..row.clone()
+            },
+            origin,
+        ));
+        // Regressed revision, zero placeholder origin, non-editable, or moved value -> refused.
+        assert!(!observed_row_matches_origin(
+            &PluginParameterRow {
+                metadata_revision: 5250,
+                ..row.clone()
+            },
+            origin,
+        ));
+        assert!(!observed_row_matches_origin(
+            &row,
+            PluginParameterOrigin {
+                metadata_revision: 0,
+                ..origin
+            },
+        ));
+        assert!(!observed_row_matches_origin(
+            &PluginParameterRow {
+                editable: false,
+                ..row.clone()
+            },
+            origin,
+        ));
+        assert!(!observed_row_matches_origin(
+            &PluginParameterRow {
+                normalized: 1.0,
+                ..row.clone()
+            },
+            origin,
+        ));
+        assert!(!observed_row_matches_origin(
+            &PluginParameterRow {
+                page_first: 64,
+                ..row
+            },
+            origin,
+        ));
+    }
 }

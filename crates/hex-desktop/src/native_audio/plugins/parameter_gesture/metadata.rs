@@ -136,6 +136,7 @@ fn extend_target(
                 &expanded,
                 cancellation,
                 None,
+                None,
             ) {
                 Ok(facts) => (expanded, facts),
                 Err(_) if !cancellation.is_some_and(RequestCancellation::is_cancelled) => {
@@ -146,6 +147,7 @@ fn extend_target(
                         &original,
                         &selection,
                         cancellation,
+                        None,
                         None,
                     )
                     .map_err(refused)?;
@@ -161,6 +163,7 @@ fn extend_target(
                 &original,
                 &selection,
                 cancellation,
+                None,
                 None,
             )
             .map_err(refused)?;
