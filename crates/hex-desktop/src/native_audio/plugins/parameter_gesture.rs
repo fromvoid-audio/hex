@@ -410,6 +410,8 @@ impl Plugins {
                     origin,
                     steps,
                     cancellation,
+                    &self.observed_parameters,
+                    &mut self.cached_constructor_bases,
                 )?;
                 self.sources
                     .iter_mut()

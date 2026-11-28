@@ -78,6 +78,8 @@ impl Plugins {
                 .host
                 .as_ref()
                 .ok_or("qualified vst3 helper unavailable")?;
+            let observed = &self.observed_parameters;
+            let constructor_cache = &mut self.cached_constructor_bases;
             let current = |control: &PublicationControl| {
                 let playing = control.status.playing.load(Acquire);
                 control
@@ -86,7 +88,7 @@ impl Plugins {
                     .map(|(source, epoch)| (source, (epoch, playing)))
             };
             let before = current(control);
-            let extend = |control: &mut PublicationControl| {
+            let mut extend = |control: &mut PublicationControl| {
                 parameter_gesture::metadata::extend_authored(
                     host,
                     control,
@@ -95,6 +97,8 @@ impl Plugins {
                     id,
                     hint,
                     cancellation,
+                    observed,
+                    constructor_cache,
                 )
             };
             let selection = match extend(control) {

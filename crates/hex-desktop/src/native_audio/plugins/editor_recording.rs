@@ -160,6 +160,8 @@ impl Plugins {
                             parameter,
                             None,
                             cancellation,
+                            &self.observed_parameters,
+                            &mut self.cached_constructor_bases,
                         )?;
                         self.record_extended_authored(binding, selection)?;
                         read_base(control)?.ok_or("vst3 editor parameter has no exact base")?
