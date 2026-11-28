@@ -137,7 +137,7 @@ impl gpui::Render for NumericControl {
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
             self.focus_blur = Some(cx.on_blur(&focus, window, |control, _, cx| {
-                if control.press.is_some() {
+                if control.press.is_some() || control.pending_busy_press.is_some() {
                     control.cancel(cx);
                 } else {
                     control.finish_text_edit_on_blur(cx);
@@ -149,9 +149,11 @@ impl gpui::Render for NumericControl {
             self.window_activation =
                 Some(cx.observe_window_activation(window, |control, window, cx| {
                     if !window.is_window_active()
-                        && control.press.is_some_and(|press| {
+                        && (control.press.is_some_and(|press| {
                             matches!(press.target, PressTarget::Value | PressTarget::Fader)
-                        })
+                        }) || control.pending_busy_press.is_some_and(|press| {
+                            matches!(press.target, PressTarget::Value | PressTarget::Fader)
+                        }))
                     {
                         control.cancel(cx);
                     }
@@ -174,6 +176,7 @@ impl gpui::Render for NumericControl {
                 .h(px(crate::MICRO_DIAL_HEIGHT))
                 .track_focus(&self.focus)
                 .key_context(key_context)
+                .on_mouse_down(MouseButton::Left, self.control_mouse_down_listener(cx))
                 .child(
                     div()
                         .absolute()
@@ -559,7 +562,7 @@ impl gpui::Render for NumericControl {
                 })
                 .unwrap_or(false)
         });
-        if self.press.is_some() || self.text_mouse.is_some() {
+        if self.press.is_some() || self.pending_busy_press.is_some() || self.text_mouse.is_some() {
             root.child(GestureCaptureElement { entity })
         } else {
             root
@@ -634,16 +637,18 @@ impl Element for GestureCaptureElement {
         let hidden = control.press.is_some_and(|press| {
             press.dragging && matches!(press.target, PressTarget::Value | PressTarget::Fader)
         }) && window.is_window_active();
-        let cursor = if hidden {
-            CursorStyle::Hidden
-        } else if control
-            .press
-            .is_some_and(|press| matches!(press.target, PressTarget::Control | PressTarget::Fader))
-        {
-            CursorStyle::PointingHand
-        } else {
-            CursorStyle::Arrow
-        };
+        let cursor =
+            if hidden {
+                CursorStyle::Hidden
+            } else if control.press.is_some_and(|press| {
+                matches!(press.target, PressTarget::Control | PressTarget::Fader)
+            }) || control.pending_busy_press.is_some_and(|press| {
+                matches!(press.target, PressTarget::Control | PressTarget::Fader)
+            }) {
+                CursorStyle::PointingHand
+            } else {
+                CursorStyle::Arrow
+            };
         window.renew_pointer_capture(self.entity.entity_id(), cursor);
     }
 }
