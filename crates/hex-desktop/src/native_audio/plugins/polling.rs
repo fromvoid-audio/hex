@@ -369,7 +369,9 @@ impl Plugins {
                     .recover_native_source_preparation(source.binding)
                     .is_some()
                 {
-                    self.sources.remove(index);
+                    let removed = self.sources.remove(index);
+                    self.cached_canonical_bases
+                        .retain(|entry| entry.binding() != removed.binding);
                     reclaimed += 1;
                     continue;
                 }

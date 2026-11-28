@@ -2,6 +2,52 @@
 //! preparation state-machine helpers for `Plugins`.
 use super::*;
 
+pub(super) struct CachedCanonicalBases {
+    selection: AuthoredSelection,
+    facts: hex_audio::plugin_effects::CapturedCanonicalBases,
+}
+
+impl CachedCanonicalBases {
+    pub(super) fn binding(&self) -> Binding {
+        self.facts.binding()
+    }
+}
+
+fn same_authored_selection(left: &AuthoredSelection, right: &AuthoredSelection) -> bool {
+    left.covers(Some(right))
+        && right.covers(Some(left))
+        && left.dense_parameter() == right.dense_parameter()
+}
+
+#[allow(clippy::too_many_arguments)] // Exact binding, state, rate and selection cache identity.
+fn cached_canonical_bases_matches(
+    cached_selection: &AuthoredSelection,
+    cached_binding: Binding,
+    cached_state: &NativeDeviceState,
+    cached_sample_rate: u32,
+    binding: Binding,
+    state: &NativeDeviceState,
+    sample_rate: u32,
+    selection: &AuthoredSelection,
+) -> bool {
+    cached_binding == binding
+        && cached_sample_rate == sample_rate
+        && cached_state.processing_eq(state)
+        && same_authored_selection(cached_selection, selection)
+}
+
+fn restore_cached_canonical_bases(
+    cache: &mut Vec<CachedCanonicalBases>,
+    canonical: Vec<hex_audio::plugin_effects::CapturedCanonicalBases>,
+    selections: Vec<AuthoredSelection>,
+) {
+    for (facts, selection) in canonical.into_iter().zip(selections) {
+        let binding = facts.binding();
+        cache.retain(|entry| entry.binding() != binding);
+        cache.push(CachedCanonicalBases { selection, facts });
+    }
+}
+
 impl Plugins {
     pub fn ready(&self) -> bool {
         // Session queries this only for its held insertion. No Root binding yet
@@ -611,96 +657,138 @@ impl Plugins {
                 }
             }
         };
+        self.cached_canonical_bases.retain(|entry| {
+            self.sources
+                .iter()
+                .any(|source| source.binding == entry.binding() && !source.retiring)
+        });
         let mut canonical = Vec::new();
         canonical
             .try_reserve_exact(bindings.len())
             .map_err(|_| "vst3 canonical facts capacity unavailable")?;
-        input.visit_plugin_devices(|destination, device, state| {
-            let Some(source) = self.sources.iter().rev().find(|source| {
-                bindings.contains(&source.binding)
-                    && source.owner == destination.owner()
-                    && source.device == device
-            }) else {
-                return Ok(());
-            };
-            if !edits::original_state(control, source.binding, cancellation)?.processing_eq(state) {
-                let selection = match edits::armed_selection(control, source.binding, cancellation)?
-                {
-                    Some(selection) => selection,
-                    None => AuthoredSelection::for_no_parameters(
-                        Hosting::saved_identity_on_control(state)?.class.bytes(),
-                    )?,
+        let mut canonical_selections = Vec::new();
+        canonical_selections
+            .try_reserve_exact(bindings.len())
+            .map_err(|_| "vst3 canonical selection capacity unavailable")?;
+        let prepared = (|| -> Result<PreparedRevision, String> {
+            input.visit_plugin_devices(|destination, device, state| {
+                let Some(source_binding) = self.sources.iter().rev().find_map(|source| {
+                    (bindings.contains(&source.binding)
+                        && source.owner == destination.owner()
+                        && source.device == device)
+                        .then_some(source.binding)
+                }) else {
+                    return Ok(());
                 };
-                canonical.push(edits::canonical_bases(
-                    self.host
-                        .as_ref()
-                        .ok_or("qualified vst3 helper unavailable")?,
-                    control,
-                    source.binding,
-                    state,
-                    &selection,
-                    cancellation,
-                    self.restored_canonical_source(input.context()),
-                )?);
-            }
-            Ok(())
-        })?;
-        for &binding in &bindings {
-            let revision = loop {
-                edits::check_cancel(cancellation)?;
-                match control.reserve_native_source_program_revision_on_control(binding) {
-                    Err(reason)
-                        if reason == "native preparation is busy"
-                            || reason == "native source is busy" =>
-                    {
-                        edits::poll_control(control)
-                    }
-                    result => break result?,
-                }
-            };
-            if let Some(gesture) = self
-                .parameter_gesture
-                .as_mut()
-                .filter(|gesture| gesture.binding == binding && gesture.commit.is_some())
-            {
-                gesture.next_program = Some(revision);
-            }
-        }
-        loop {
-            if movement
-                .is_some_and(|route| control.status.recording_source() != Some(route.applied))
-            {
-                return Err("original vst3 move source is no longer installed".into());
-            }
-            match Hosting::prepare_with_canonical_bases_on_control(
-                control,
-                &bindings,
-                &unavailable,
-                &canonical,
-                None,
-                prepare,
-            ) {
-                Err(error)
-                    if input.preparing_edit()
-                        && matches!(
-                            error.as_str(),
-                            "native effect preparation is busy" | "native effect selection is busy"
-                        ) =>
+                if !edits::original_state(control, source_binding, cancellation)?
+                    .processing_eq(state)
                 {
-                    // Root has not borrowed/called the compiler while its Work
-                    // or bank is contended by original-source reclamation.
+                    let selection =
+                        match edits::armed_selection(control, source_binding, cancellation)? {
+                            Some(selection) => selection,
+                            None => AuthoredSelection::for_no_parameters(
+                                Hosting::saved_identity_on_control(state)?.class.bytes(),
+                            )?,
+                        };
+                    let cached_index = self.cached_canonical_bases.iter().position(|entry| {
+                        cached_canonical_bases_matches(
+                            &entry.selection,
+                            entry.facts.binding(),
+                            entry.facts.canonical_state(),
+                            entry.facts.sample_rate(),
+                            source_binding,
+                            state,
+                            input.sample_rate(),
+                            &selection,
+                        ) && control.native_source_approves_processing_state_on_control(
+                            source_binding,
+                            entry.facts.canonical_state(),
+                        ) == Some(true)
+                    });
+                    let facts = if let Some(index) = cached_index {
+                        self.cached_canonical_bases.swap_remove(index).facts
+                    } else {
+                        edits::canonical_bases(
+                            self.host
+                                .as_ref()
+                                .ok_or("qualified vst3 helper unavailable")?,
+                            control,
+                            source_binding,
+                            state,
+                            &selection,
+                            cancellation,
+                            self.restored_canonical_source(input.context()),
+                        )?
+                    };
+                    canonical.push(facts);
+                    canonical_selections.push(selection);
+                }
+                Ok(())
+            })?;
+            for &binding in &bindings {
+                let revision = loop {
                     edits::check_cancel(cancellation)?;
-                    edits::poll_control(control);
-                }
-                Ok(prepared) => {
-                    if let Some(route) = movement {
-                        self.hosted_move = Some(route);
+                    match control.reserve_native_source_program_revision_on_control(binding) {
+                        Err(reason)
+                            if reason == "native preparation is busy"
+                                || reason == "native source is busy" =>
+                        {
+                            edits::poll_control(control)
+                        }
+                        result => break result?,
                     }
-                    return Ok(Some(prepared));
+                };
+                if let Some(gesture) = self
+                    .parameter_gesture
+                    .as_mut()
+                    .filter(|gesture| gesture.binding == binding && gesture.commit.is_some())
+                {
+                    gesture.next_program = Some(revision);
                 }
-                Err(error) => return Err(error),
             }
-        }
+            loop {
+                if movement
+                    .is_some_and(|route| control.status.recording_source() != Some(route.applied))
+                {
+                    return Err("original vst3 move source is no longer installed".into());
+                }
+                match Hosting::prepare_with_canonical_bases_on_control(
+                    control,
+                    &bindings,
+                    &unavailable,
+                    &canonical,
+                    None,
+                    prepare,
+                ) {
+                    Err(error)
+                        if input.preparing_edit()
+                            && matches!(
+                                error.as_str(),
+                                "native effect preparation is busy"
+                                    | "native effect selection is busy"
+                            ) =>
+                    {
+                        // Root has not borrowed/called the compiler while its Work
+                        // or bank is contended by original-source reclamation.
+                        edits::check_cancel(cancellation)?;
+                        edits::poll_control(control);
+                    }
+                    Ok(prepared) => {
+                        if let Some(route) = movement {
+                            self.hosted_move = Some(route);
+                        }
+                        return Ok(prepared);
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        })();
+        restore_cached_canonical_bases(
+            &mut self.cached_canonical_bases,
+            canonical,
+            canonical_selections,
+        );
+        prepared.map(Some)
     }
 }
 
@@ -849,4 +937,99 @@ pub(super) fn off_document_preparation(
             }
             None => candidate.project_generation == 0 && candidate.editor_revision == 0,
         }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    fn test_state(class: [u8; 16], component: &[u8]) -> NativeDeviceState {
+        hex_plugin_state::encode(hex_plugin_state::State {
+            identity: hex_plugin_state::Identity {
+                class: hex_plugin_state::ClassId::new(class).unwrap(),
+                binary: hex_plugin_state::BinaryIdentity {
+                    executable_sha256: [2; 32],
+                    info_sha256: [3; 32],
+                },
+            },
+            component: Some(component),
+            controller: Some(&[]),
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn cached_canonical_bases_matches_exact_binding_state_rate_and_selection_only() {
+        let class = [7; 16];
+        let other_class = [8; 16];
+        let binding = Binding {
+            root: 1,
+            instance: 20,
+            graph: 2,
+            epoch: 1,
+        };
+        let other_binding = Binding {
+            epoch: 2,
+            ..binding
+        };
+        let state_a = test_state(class, &[1, 2, 3]);
+        let state_b = test_state(class, &[1, 2, 4]);
+        let empty_sel = AuthoredSelection::for_no_parameters(class).unwrap();
+        let other_empty = AuthoredSelection::for_no_parameters(other_class).unwrap();
+        let armed_one = AuthoredSelection::from_targets([(0, Some(class))])
+            .unwrap()
+            .unwrap();
+        let armed_two = AuthoredSelection::from_targets([(0, Some(class)), (6, Some(class))])
+            .unwrap()
+            .unwrap();
+        let dense_sel =
+            AuthoredSelection::from_targets_and_dense([(0, Some(class))], Some((0, class)))
+                .unwrap()
+                .unwrap();
+
+        // Exact match hits for both empty and armed selections.
+        assert!(cached_canonical_bases_matches(
+            &empty_sel, binding, &state_a, 44_100, binding, &state_a, 44_100, &empty_sel
+        ));
+        assert!(cached_canonical_bases_matches(
+            &armed_one, binding, &state_a, 44_100, binding, &state_a, 44_100, &armed_one
+        ));
+        // Binding, sample rate, or state mismatch misses.
+        assert!(!cached_canonical_bases_matches(
+            &armed_one,
+            binding,
+            &state_a,
+            44_100,
+            other_binding,
+            &state_a,
+            44_100,
+            &armed_one
+        ));
+        assert!(!cached_canonical_bases_matches(
+            &armed_one, binding, &state_a, 44_100, binding, &state_a, 48_000, &armed_one
+        ));
+        assert!(!cached_canonical_bases_matches(
+            &armed_one, binding, &state_a, 44_100, binding, &state_b, 44_100, &armed_one
+        ));
+        // Selection extension, shrinking, class change, or dense change misses.
+        assert!(!cached_canonical_bases_matches(
+            &armed_one, binding, &state_a, 44_100, binding, &state_a, 44_100, &armed_two
+        ));
+        assert!(!cached_canonical_bases_matches(
+            &armed_two, binding, &state_a, 44_100, binding, &state_a, 44_100, &armed_one
+        ));
+        assert!(!cached_canonical_bases_matches(
+            &empty_sel,
+            binding,
+            &state_a,
+            44_100,
+            binding,
+            &state_a,
+            44_100,
+            &other_empty
+        ));
+        assert!(!cached_canonical_bases_matches(
+            &armed_one, binding, &state_a, 44_100, binding, &state_a, 44_100, &dense_sel
+        ));
+    }
 }
