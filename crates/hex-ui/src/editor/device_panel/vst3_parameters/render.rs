@@ -191,15 +191,16 @@ pub(in crate::editor) fn render_body(
                 .flex_shrink_0()
                 .child(control.into_slot_element())
                 .when(follow_automated, automation_tint::mark)
-                .when_some(follow_target, |item, (query, parameter)| {
-                    item.capture_any_mouse_down(cx.listener(
-                        move |view, event: &gpui::MouseDownEvent, _, cx| {
-                            if event.button == gpui::MouseButton::Left {
-                                select_host_automation_lane(view, query, parameter, cx);
-                            }
-                        },
-                    ))
-                })
+                .capture_any_mouse_down(cx.listener(
+                    move |view, event: &gpui::MouseDownEvent, _, cx| {
+                        if event.button == gpui::MouseButton::Left
+                            && !recover_stranded_vst3_gesture(view, cx)
+                            && let Some((query, parameter)) = follow_target
+                        {
+                            select_host_automation_lane(view, query, parameter, cx);
+                        }
+                    },
+                ))
         },
     );
     let controls = div()
@@ -375,15 +376,33 @@ pub(in crate::editor) fn render_body(
                                                     .children(knob)
                                                     .children(mapping)
                                                     .when(automated, automation_tint::mark)
-                                                    .when(row.automation_class.is_some(), |item| {
+                                                    .capture_any_mouse_down({
                                                         let press_editor = row_editor.clone();
-                                                        item.capture_any_mouse_down(move |event, _, app| {
-                                                            if event.button == gpui::MouseButton::Left {
-                                                                let _ = press_editor.update(app, |view, cx| {
-                                                                    select_host_automation_lane(view, query, row_id, cx);
-                                                                });
+                                                        let has_automation =
+                                                            row.automation_class.is_some();
+                                                        move |event, _, app| {
+                                                            if event.button
+                                                                == gpui::MouseButton::Left
+                                                            {
+                                                                let _ = press_editor.update(
+                                                                    app,
+                                                                    |view, cx| {
+                                                                        if !recover_stranded_vst3_gesture(
+                                                                            view, cx,
+                                                                        ) && has_automation
+                                                                        {
+                                                                            select_host_automation_lane(
+                                                                                view, query,
+                                                                                row_id, cx,
+                                                                            );
+                                                                        }
+                                                                    },
+                                                                );
                                                             }
-                                                        }).on_mouse_down(
+                                                        }
+                                                    })
+                                                    .when(row.automation_class.is_some(), |item| {
+                                                        item.on_mouse_down(
                                                             gpui::MouseButton::Right,
                                                             move |event, window, app| {
                                                                 let _ = row_editor.update(
@@ -508,6 +527,37 @@ pub(in crate::editor) fn follow_display(
         Some(row),
         status,
     )
+}
+
+/// Cancel a stranded refused VST3 commit when the user clicks a hosted control
+/// instead of leaving every knob permanently locked out.
+pub(in crate::editor) fn recover_stranded_vst3_gesture(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+) -> bool {
+    if !view.device_panel.gesture.is_recovery_pending()
+        || !view
+            .device_panel
+            .gesture
+            .snapshot()
+            .is_some_and(|snapshot| {
+                matches!(
+                    snapshot.target,
+                    hex_session::device_gesture::GestureTarget::PluginParameter { .. }
+                )
+            })
+    {
+        return false;
+    }
+    if !view.device_panel.gesture.has_pending_requests()
+        && !view.device_panel.gesture.has_pending_terminal()
+    {
+        let _ = view.cancel_device_gesture();
+        view.wake_poll();
+    }
+    view.status = "previous vst3 edit is canceling · drag again when it finishes".into();
+    cx.notify();
+    true
 }
 
 pub(in crate::editor) fn select_host_automation_lane(

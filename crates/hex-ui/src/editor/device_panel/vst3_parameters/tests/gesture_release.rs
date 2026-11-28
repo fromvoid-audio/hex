@@ -1020,3 +1020,202 @@ fn vst3_toggle_stepped_live_format_and_commit_without_updating_flash(
         );
     });
 }
+
+#[gpui::test]
+fn inflight_commit_locks_released_knob_and_stranded_commit_recovers_on_click(
+    cx: &mut gpui::TestAppContext,
+) {
+    use crate::editor::{clip_drag_ui_test, device_panel::DevicePanelOwner};
+    use gpui::{Modifiers, MouseButton, VisualTestContext};
+    use hex_session::device_gesture::{GestureAck, GesturePhase};
+
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, _backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let root = client.output_identity().unwrap();
+    let (project, track, device) = parameter_project();
+    let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        window.replace_root(cx, |_, cx| Card {
+            editor: editor.clone(),
+            device,
+            _observe: cx.observe(&editor, |_, _, cx| cx.notify()),
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root,
+        instance: device.value(),
+        graph: 1,
+        epoch: 1,
+    };
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "headless".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.selected_track = Some(track);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        view.device_panel.selected_device = Some(device);
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        ensure_panel(view, device, cx);
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        panel.cache_loading = false;
+        panel.source = Some(binding);
+        panel.result = Some(Arc::new(vec![
+            layout_row(0.25, true, 1),
+            PluginParameterRow {
+                id: 8,
+                name: "mix".into(),
+                value: "0.50".into(),
+                normalized: 0.5,
+                default_normalized: 0.5,
+                steps: 0,
+                editable: true,
+                page_first: 0,
+                metadata_revision: 1,
+                editor_sequence: 0,
+                automation_class: None,
+            },
+        ]));
+        panel.refilter(false);
+        cx.notify();
+    });
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let knob_7_selector =
+        Box::leak(format!("vst3-knob-{}-7-knob", device.value()).into_boxed_str());
+    let knob_7 = visual.debug_bounds(knob_7_selector).unwrap().center();
+    let drag_end = gpui::point(knob_7.x, knob_7.y - px(24.0));
+    visual.simulate_mouse_down(knob_7, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(drag_end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(drag_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    // Repaint while Commit is still in flight; the released knob must be Busy so
+    // re-dragging it cannot visually spin and snap back with silently dropped events.
+    let committed_preview = editor.read_with(&visual, |view, cx| {
+        assert!(view.device_panel.gesture.has_pending_terminal());
+        let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
+            .control
+            .as_numeric()
+            .unwrap()
+            .read(cx);
+        let value = control.value();
+        assert!(value > 0.25, "initial drag must have advanced knob 7");
+        value
+    });
+    let redrag_end = gpui::point(knob_7.x, knob_7.y + px(40.0));
+    visual.simulate_mouse_down(knob_7, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(redrag_end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(redrag_end, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
+            .control
+            .as_numeric()
+            .unwrap()
+            .read(cx);
+        assert_eq!(
+            control.value(),
+            committed_preview,
+            "re-dragging the released knob while its commit is in flight must not phantom-spin"
+        );
+    });
+
+    // Now refuse the Commit with preview_retained=true (stranded commit).
+    let key = editor.update(&mut visual, |view, cx| {
+        let snapshot = view.device_panel.gesture.snapshot().unwrap();
+        assert!(view.device_panel.gesture.acknowledge(&GestureAck {
+            key: snapshot.key,
+            phase: GesturePhase::Begin,
+            sequence: 0,
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        }));
+        while let Some(request) = view.device_panel.gesture.next_request() {
+            let phase = request.phase();
+            let seq = request.sequence();
+            view.device_panel.gesture.mark_submitted();
+            if phase == GesturePhase::Commit {
+                assert!(view.acknowledge_device_gesture_with_snapshot(
+                    &GestureAck {
+                        key: snapshot.key,
+                        phase,
+                        sequence: seq,
+                        accepted: false,
+                        preview_retained: true,
+                        source_lost: false,
+                        reason: Some("vst3 edit playback refused".into()),
+                    },
+                    Some(snapshot),
+                ));
+                break;
+            }
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key: snapshot.key,
+                phase,
+                sequence: seq,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+        }
+        assert!(view.device_panel.gesture.is_recovery_pending());
+        assert!(view.device_panel.gesture.has_stranded_commit());
+        assert!(!view.device_panel.gesture.has_pending_requests());
+        cx.notify();
+        snapshot.key
+    });
+    visual.run_until_parked();
+
+    // Clicking an unrelated non-automated parameter row (row 8) while stranded
+    // must immediately initiate Cancel instead of deadlocking all knobs forever.
+    let knob_8_selector =
+        Box::leak(format!("vst3-knob-{}-8-knob", device.value()).into_boxed_str());
+    let knob_8 = visual.debug_bounds(knob_8_selector).unwrap().center();
+    visual.simulate_mouse_down(knob_8, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(knob_8, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    editor.update(&mut visual, |view, cx| {
+        assert_eq!(
+            view.status,
+            "previous vst3 edit is canceling · drag again when it finishes"
+        );
+        let (phase, seq) = view
+            .device_panel
+            .gesture
+            .terminal()
+            .expect("clicking a vst3 row while stranded must submit Cancel");
+        assert_eq!(phase, GesturePhase::Cancel);
+        assert!(view.acknowledge_device_gesture(&GestureAck {
+            key,
+            phase: GesturePhase::Cancel,
+            sequence: seq,
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        }));
+        assert!(!view.device_panel.gesture.is_recovery_pending());
+        assert!(view.device_panel.gesture.snapshot().is_none());
+        cx.notify();
+    });
+    output.publication.close();
+}
