@@ -263,12 +263,44 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
         return;
     };
     let active = super::super::chain_ids(&state.project, owner);
-    let next = active.into_iter().find_map(|device| {
-        let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let next = next_refresh_target(
+        active,
+        owner,
+        &view.device_panel.vst3_parameters.panels,
+        view.device_panel.vst3_parameters.last_touched_device,
+        now,
+        |device| refreshable_device(view, device, source),
+    );
+    if let Some((device, page)) = next {
+        if let Some(first) = page
+            && let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device)
+        {
+            panel.next_page = first.saturating_add(PAGE_SIZE as u16);
+        }
+        submit_query(view, device, page, source, cx);
+    }
+}
+
+pub(super) fn next_refresh_target(
+    mut active: Vec<DeviceId>,
+    owner: DevicePanelOwner,
+    panels: &HashMap<DeviceId, Panel>,
+    last_touched_device: Option<DeviceId>,
+    now: Instant,
+    mut refreshable: impl FnMut(DeviceId) -> bool,
+) -> Option<(DeviceId, Option<u16>)> {
+    if let Some(last) = last_touched_device
+        && let Some(position) = active.iter().position(|device| *device == last)
+    {
+        active.remove(position);
+        active.insert(0, last);
+    }
+    active.into_iter().find_map(|device| {
+        let panel = panels.get(&device)?;
         if panel.owner != owner || panel.cache_loading || now < panel.next_query_at {
             return None;
         }
-        if panel.retry_count > MAX_AUTOMATIC_RETRIES || !refreshable_device(view, device, source) {
+        if panel.retry_count > MAX_AUTOMATIC_RETRIES || !refreshable(device) {
             return None;
         }
         let mut visible_pages = panel.visible_pages.clone();
@@ -288,15 +320,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
             panel.rows().is_some_and(<[_]>::is_empty),
         )?;
         Some((device, page))
-    });
-    if let Some((device, page)) = next {
-        if let Some(first) = page
-            && let Some(panel) = view.device_panel.vst3_parameters.panels.get_mut(&device)
-        {
-            panel.next_page = first.saturating_add(PAGE_SIZE as u16);
-        }
-        submit_query(view, device, page, source, cx);
-    }
+    })
 }
 
 /// Dropping a cached control also drops its event subscription. Cancel only

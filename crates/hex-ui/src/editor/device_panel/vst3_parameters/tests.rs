@@ -1591,3 +1591,116 @@ fn vst3_sidechain_control_exposes_eligible_sources_and_excludes_self(
         assert!(row.is_some(), "vst3 effect must expose sidechain selector");
     });
 }
+
+#[cfg(feature = "ui-test-support")]
+#[gpui::test]
+fn last_touched_vst3_device_refreshes_ahead_of_earlier_chain_devices(
+    cx: &mut gpui::TestAppContext,
+) {
+    use hex_lattice_contract::{DeviceTypeId, NativeDeviceState};
+    use hex_project::{Command, Created, Editor, Project};
+
+    let mut model = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::AddMidiTrack {
+            name: "owner".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track");
+    };
+    let make_vst3 = |tag: u8| {
+        let mut payload = vec![0; 96];
+        payload[..4].copy_from_slice(b"HXVS");
+        payload[4] = 1;
+        payload[8..24].fill(tag);
+        payload[24..88].fill(tag.wrapping_add(1));
+        NativeDeviceState::new(DeviceTypeId::from_static("hex.vst3"), 1, payload).unwrap()
+    };
+    let Created::Device(dev_a) = model
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: make_vst3(2),
+        })
+        .unwrap()
+    else {
+        panic!("dev_a");
+    };
+    let Created::Device(dev_b) = model
+        .execute(Command::InsertDevice {
+            track,
+            before: None,
+            state: make_vst3(4),
+        })
+        .unwrap()
+    else {
+        panic!("dev_b");
+    };
+
+    let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+        cx,
+        model.project().clone(),
+        Arc::default(),
+    );
+    editor.update(cx, |view, cx| {
+        let owner = DevicePanelOwner::Track(track);
+        view.device_panel.owner = Some(owner);
+        view.device_panel.active = true;
+        ensure_panel(view, dev_a, cx);
+        ensure_panel(view, dev_b, cx);
+        for device in [dev_a, dev_b] {
+            let panel = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&device)
+                .unwrap();
+            panel.cache_loading = false;
+            panel.result = Some(Arc::new(vec![layout_row(0.5, true, 1)]));
+            panel.visible_pages.insert(0);
+            panel.mark_values_stale();
+        }
+        let now = Instant::now();
+        let chain = vec![dev_a, dev_b];
+
+        // Without a last-touched device, chain order refreshes dev_a first.
+        let default_next = lifecycle::next_refresh_target(
+            chain.clone(),
+            owner,
+            &view.device_panel.vst3_parameters.panels,
+            None,
+            now,
+            |_| true,
+        );
+        assert_eq!(default_next, Some((dev_a, Some(0))));
+
+        // When dev_b was last touched and both panels are stale, dev_b refreshes first.
+        let prioritized_next = lifecycle::next_refresh_target(
+            chain.clone(),
+            owner,
+            &view.device_panel.vst3_parameters.panels,
+            Some(dev_b),
+            now,
+            |_| true,
+        );
+        assert_eq!(prioritized_next, Some((dev_b, Some(0))));
+
+        // Once dev_b is no longer due, refresh falls through to dev_a.
+        view.device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&dev_b)
+            .unwrap()
+            .next_query_at = now + PAGE_REFRESH_INTERVAL;
+        let fallback_next = lifecycle::next_refresh_target(
+            chain,
+            owner,
+            &view.device_panel.vst3_parameters.panels,
+            Some(dev_b),
+            now,
+            |_| true,
+        );
+        assert_eq!(fallback_next, Some((dev_a, Some(0))));
+    });
+}

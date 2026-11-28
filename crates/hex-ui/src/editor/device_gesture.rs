@@ -366,6 +366,7 @@ impl EditorView {
             && (terminal || ack.phase == GesturePhase::Begin && !ack.accepted)
         {
             super::device_panel::vst3_parameters::refresh_after_gesture(self, committed_display);
+            self.wake_poll();
         }
         if terminal {
             self.settle_catalog_barriers(ack);
