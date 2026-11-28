@@ -239,6 +239,7 @@ pub(crate) struct Plugins {
     scratch_capacity: usize,
     pub(crate) pool_held: bool,
     sources: Vec<Source>,
+    cached_canonical_bases: Vec<preparation::CachedCanonicalBases>,
     paused_monitor_sources: Vec<Binding>,
     pending: Option<Pending>,
     editor_ops: Vec<editor::EditorPending>,
@@ -396,6 +397,7 @@ impl Plugins {
             self.restore = None;
         }
         self.sources.clear();
+        self.cached_canonical_bases.clear();
         self.installed_removals_checked = None;
         self.pool_held = false;
     }
@@ -466,6 +468,7 @@ impl Plugins {
         self.configured = false;
         self.scratch_capacity = 0;
         self.observed_parameters.clear();
+        self.cached_canonical_bases.clear();
         if let Some(gesture) = self.parameter_gesture.as_mut() {
             gesture.recording_output_closed();
         }

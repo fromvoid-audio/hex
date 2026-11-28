@@ -524,6 +524,7 @@ impl Plugins {
         });
         let mut changed_state = false;
         let mut reintroduced = false;
+        let mut matched_predecessor = false;
         if input.preparing_edit()
             && let Some(desired) = desired.filter(|source| {
                 source.context().project_generation == input.context().project_generation
@@ -547,6 +548,7 @@ impl Plugins {
             previous.visit_plugin_devices(|old_owner, old_device, old| {
                 if old_device == device {
                     let same_processor = old_owner.owner() == owner && old.processing_eq(state);
+                    matched_predecessor |= same_processor;
                     changed_state |= !same_processor;
                     // Play can reach the callback after preparation has begun.
                     // A lane-only edit can keep the existing instrument in either
@@ -557,6 +559,7 @@ impl Plugins {
                 Ok(())
             })?;
         }
+        let unchanged_in_predecessor = matched_predecessor && !changed_state && !reintroduced;
         // The latest accepted preparation for an equal state is the current
         // device's source; older matching instances can still own old tails.
         let reload_this = input.reload_plugin_device() == Some(device);
@@ -613,10 +616,13 @@ impl Plugins {
             // retained source may reuse the exact worker whose sequenced
             // capture became canonical during a UI/editor gesture. The
             // original prepared state can predate that capture.
-            if ((retain_instrument
-                || !input.preparing_edit()
-                || self.restored_canonical_source(input.context()).is_some())
-                && captured_state_approved(control, source.binding, state, cancellation)?)
+            if (allows_approved_captured_state_reuse(
+                retain_instrument,
+                input.preparing_edit(),
+                self.restored_canonical_source(input.context()).is_some(),
+                unchanged_in_predecessor,
+                source.accepted,
+            ) && captured_state_approved(control, source.binding, state, cancellation)?)
                 || original_state(control, source.binding, cancellation)?.processing_eq(state)
             {
                 return Ok(Some(source.binding));
@@ -1227,9 +1233,49 @@ pub(super) fn canonical_bases(
     }
 }
 
+pub(super) const fn allows_approved_captured_state_reuse(
+    retain_instrument: bool,
+    preparing_edit: bool,
+    restored_canonical_source: bool,
+    unchanged_in_predecessor: bool,
+    source_accepted: bool,
+) -> bool {
+    retain_instrument
+        || !preparing_edit
+        || restored_canonical_source
+        || (unchanged_in_predecessor && source_accepted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_captured_state_reuse_keeps_unchanged_effects_and_blocks_changed_or_unaccepted() {
+        // Unchanged accepted VST3 effect whose canonical state came from an
+        // earlier sequenced capture must reuse its worker on unrelated edits.
+        assert!(allows_approved_captured_state_reuse(
+            false, true, false, true, true
+        ));
+        // Unaccepted staged source cannot reuse via unchanged-predecessor rule.
+        assert!(!allows_approved_captured_state_reuse(
+            false, true, false, true, false
+        ));
+        // Changed or reintroduced effect must not bypass sequenced/fresh guards.
+        assert!(!allows_approved_captured_state_reuse(
+            false, true, false, false, true
+        ));
+        // Existing instrument, non-edit compile, and restored canonical paths stay enabled.
+        assert!(allows_approved_captured_state_reuse(
+            true, true, false, false, false
+        ));
+        assert!(allows_approved_captured_state_reuse(
+            false, false, false, false, false
+        ));
+        assert!(allows_approved_captured_state_reuse(
+            false, true, true, false, false
+        ));
+    }
 
     #[test]
     fn source_reuse_requires_the_same_dense_reservation_independently_of_sparse_coverage() {
