@@ -372,6 +372,8 @@ impl Plugins {
                     let removed = self.sources.remove(index);
                     self.cached_canonical_bases
                         .retain(|entry| entry.binding() != removed.binding);
+                    self.cached_constructor_bases
+                        .retain(|entry| entry.binding() != removed.binding);
                     reclaimed += 1;
                     continue;
                 }

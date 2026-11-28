@@ -8,15 +8,61 @@ pub(super) struct CachedCanonicalBases {
 }
 
 impl CachedCanonicalBases {
+    pub(super) fn new(
+        selection: AuthoredSelection,
+        facts: hex_audio::plugin_effects::CapturedCanonicalBases,
+    ) -> Self {
+        Self { selection, facts }
+    }
+
     pub(super) fn binding(&self) -> Binding {
         self.facts.binding()
     }
+
+    pub(super) fn selection(&self) -> &AuthoredSelection {
+        &self.selection
+    }
+
+    pub(super) fn facts(&self) -> &hex_audio::plugin_effects::CapturedCanonicalBases {
+        &self.facts
+    }
 }
 
-fn same_authored_selection(left: &AuthoredSelection, right: &AuthoredSelection) -> bool {
-    left.covers(Some(right))
-        && right.covers(Some(left))
-        && left.dense_parameter() == right.dense_parameter()
+pub(super) fn expand_selection_with_observed(
+    class: [u8; 16],
+    required_ids: &[u32],
+    dense: Option<u32>,
+    observed: &[parameters::ObservedInventory],
+    binding: Binding,
+    page_hint: Option<u16>,
+) -> Option<AuthoredSelection> {
+    if required_ids.is_empty() {
+        return None;
+    }
+    let mut ids: Vec<u32> = required_ids.to_vec();
+    // Bounded to the existing foreign-automation target budget (`64`).
+    const MAX_EXPANDED_TARGETS: usize = 64;
+    if ids.len() < MAX_EXPANDED_TARGETS
+        && let Some(inventory) = observed.iter().find(|inv| inv.binding == binding)
+    {
+        for row in &inventory.rows {
+            if ids.len() >= MAX_EXPANDED_TARGETS {
+                break;
+            }
+            if page_hint.is_some_and(|page| row.page_first != page) {
+                continue;
+            }
+            if row.editable && row.automation_class == Some(class) && !ids.contains(&row.id) {
+                ids.push(row.id);
+            }
+        }
+    }
+    AuthoredSelection::from_targets_and_dense(
+        ids.into_iter().map(|id| (id, Some(class))),
+        dense.map(|id| (id, class)),
+    )
+    .ok()
+    .flatten()
 }
 
 #[allow(clippy::too_many_arguments)] // Exact binding, state, rate and selection cache identity.
@@ -33,19 +79,17 @@ fn cached_canonical_bases_matches(
     cached_binding == binding
         && cached_sample_rate == sample_rate
         && cached_state.processing_eq(state)
-        && same_authored_selection(cached_selection, selection)
+        && cached_selection.covers(Some(selection))
 }
 
-fn restore_cached_canonical_bases(
+pub(super) fn store_cached_canonical_bases(
     cache: &mut Vec<CachedCanonicalBases>,
-    canonical: Vec<hex_audio::plugin_effects::CapturedCanonicalBases>,
-    selections: Vec<AuthoredSelection>,
+    selection: AuthoredSelection,
+    facts: hex_audio::plugin_effects::CapturedCanonicalBases,
 ) {
-    for (facts, selection) in canonical.into_iter().zip(selections) {
-        let binding = facts.binding();
-        cache.retain(|entry| entry.binding() != binding);
-        cache.push(CachedCanonicalBases { selection, facts });
-    }
+    let binding = facts.binding();
+    cache.retain(|entry| entry.binding() != binding);
+    cache.push(CachedCanonicalBases::new(selection, facts));
 }
 
 impl Plugins {
@@ -662,14 +706,15 @@ impl Plugins {
                 .iter()
                 .any(|source| source.binding == entry.binding() && !source.retiring)
         });
+        self.cached_constructor_bases.retain(|entry| {
+            self.sources
+                .iter()
+                .any(|source| source.binding == entry.binding() && !source.retiring)
+        });
         let mut canonical = Vec::new();
         canonical
             .try_reserve_exact(bindings.len())
             .map_err(|_| "vst3 canonical facts capacity unavailable")?;
-        let mut canonical_selections = Vec::new();
-        canonical_selections
-            .try_reserve_exact(bindings.len())
-            .map_err(|_| "vst3 canonical selection capacity unavailable")?;
         let prepared = (|| -> Result<PreparedRevision, String> {
             input.visit_plugin_devices(|destination, device, state| {
                 let Some(source_binding) = self.sources.iter().rev().find_map(|source| {
@@ -683,15 +728,24 @@ impl Plugins {
                 if !edits::original_state(control, source_binding, cancellation)?
                     .processing_eq(state)
                 {
-                    let selection =
-                        match edits::armed_selection(control, source_binding, cancellation)? {
-                            Some(selection) => selection,
-                            None => AuthoredSelection::for_no_parameters(
-                                Hosting::saved_identity_on_control(state)?.class.bytes(),
-                            )?,
-                        };
-                    let cached_index = self.cached_canonical_bases.iter().position(|entry| {
-                        cached_canonical_bases_matches(
+                    let metadata = edits::source_metadata(control, source_binding, cancellation)?;
+                    let class = metadata.selection().cid;
+                    let armed_ids: Vec<u32> =
+                        metadata.authored_base_values().map(|(id, _)| id).collect();
+                    let dense = metadata.dense_parameter();
+                    let selection = match AuthoredSelection::from_targets_and_dense(
+                        armed_ids.iter().copied().map(|id| (id, Some(class))),
+                        dense.map(|id| (id, class)),
+                    )
+                    .map_err(str::to_owned)?
+                    {
+                        Some(selection) => selection,
+                        None => AuthoredSelection::for_no_parameters(
+                            Hosting::saved_identity_on_control(state)?.class.bytes(),
+                        )?,
+                    };
+                    let cached = self.cached_canonical_bases.iter().find_map(|entry| {
+                        (cached_canonical_bases_matches(
                             &entry.selection,
                             entry.facts.binding(),
                             entry.facts.canonical_state(),
@@ -703,25 +757,79 @@ impl Plugins {
                         ) && control.native_source_approves_processing_state_on_control(
                             source_binding,
                             entry.facts.canonical_state(),
-                        ) == Some(true)
+                        ) == Some(true))
+                        .then(|| entry.facts.project_selection(&selection).ok())
+                        .flatten()
                     });
-                    let facts = if let Some(index) = cached_index {
-                        self.cached_canonical_bases.swap_remove(index).facts
+                    let facts = if let Some(facts) = cached {
+                        facts
                     } else {
-                        edits::canonical_bases(
-                            self.host
-                                .as_ref()
-                                .ok_or("qualified vst3 helper unavailable")?,
-                            control,
+                        let host = self
+                            .host
+                            .as_ref()
+                            .ok_or("qualified vst3 helper unavailable")?;
+                        let restored = self.restored_canonical_source(input.context());
+                        let expanded = expand_selection_with_observed(
+                            class,
+                            &armed_ids,
+                            dense,
+                            &self.observed_parameters,
                             source_binding,
-                            state,
-                            &selection,
-                            cancellation,
-                            self.restored_canonical_source(input.context()),
-                        )?
+                            None,
+                        )
+                        .unwrap_or_else(|| selection.clone());
+                        let (captured_selection, captured_facts) = if expanded != selection {
+                            match edits::canonical_bases(
+                                host,
+                                control,
+                                source_binding,
+                                state,
+                                &expanded,
+                                cancellation,
+                                restored,
+                            ) {
+                                Ok(facts) => (expanded, facts),
+                                Err(_)
+                                    if !cancellation.is_some_and(
+                                        hex_session::service::RequestCancellation::is_cancelled,
+                                    ) =>
+                                {
+                                    let facts = edits::canonical_bases(
+                                        host,
+                                        control,
+                                        source_binding,
+                                        state,
+                                        &selection,
+                                        cancellation,
+                                        restored,
+                                    )?;
+                                    (selection.clone(), facts)
+                                }
+                                Err(error) => return Err(error),
+                            }
+                        } else {
+                            let facts = edits::canonical_bases(
+                                host,
+                                control,
+                                source_binding,
+                                state,
+                                &selection,
+                                cancellation,
+                                restored,
+                            )?;
+                            (selection.clone(), facts)
+                        };
+                        let projected = captured_facts
+                            .project_selection(&selection)
+                            .map_err(str::to_owned)?;
+                        store_cached_canonical_bases(
+                            &mut self.cached_canonical_bases,
+                            captured_selection,
+                            captured_facts,
+                        );
+                        projected
                     };
                     canonical.push(facts);
-                    canonical_selections.push(selection);
                 }
                 Ok(())
             })?;
@@ -783,11 +891,6 @@ impl Plugins {
                 }
             }
         })();
-        restore_cached_canonical_bases(
-            &mut self.cached_canonical_bases,
-            canonical,
-            canonical_selections,
-        );
         prepared.map(Some)
     }
 }
@@ -1011,12 +1114,15 @@ mod cache_tests {
         assert!(!cached_canonical_bases_matches(
             &armed_one, binding, &state_a, 44_100, binding, &state_b, 44_100, &armed_one
         ));
-        // Selection extension, shrinking, class change, or dense change misses.
+        // Selection extension or class change misses; superset selection hits via projection.
         assert!(!cached_canonical_bases_matches(
             &armed_one, binding, &state_a, 44_100, binding, &state_a, 44_100, &armed_two
         ));
-        assert!(!cached_canonical_bases_matches(
+        assert!(cached_canonical_bases_matches(
             &armed_two, binding, &state_a, 44_100, binding, &state_a, 44_100, &armed_one
+        ));
+        assert!(cached_canonical_bases_matches(
+            &armed_one, binding, &state_a, 44_100, binding, &state_a, 44_100, &empty_sel
         ));
         assert!(!cached_canonical_bases_matches(
             &empty_sel,
@@ -1028,8 +1134,84 @@ mod cache_tests {
             44_100,
             &other_empty
         ));
-        assert!(!cached_canonical_bases_matches(
+        assert!(cached_canonical_bases_matches(
             &armed_one, binding, &state_a, 44_100, binding, &state_a, 44_100, &dense_sel
         ));
+    }
+
+    #[test]
+    fn expand_selection_with_observed_includes_only_matching_editable_page_targets() {
+        let class = [7; 16];
+        let other_class = [8; 16];
+        let binding = Binding {
+            root: 1,
+            instance: 20,
+            graph: 2,
+            epoch: 1,
+        };
+        let mut project =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
+        let hex_project::Created::Device(device) = project
+            .execute(hex_project::Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device expected");
+        };
+        let row =
+            |id, page_first, editable, automation_class| hex_session::service::PluginParameterRow {
+                id,
+                name: format!("p{id}"),
+                value: "0.0".into(),
+                normalized: 0.0,
+                default_normalized: 0.0,
+                steps: 0,
+                editable,
+                automation_class,
+                page_first,
+                metadata_revision: 1,
+                editor_sequence: 0,
+            };
+        let observed = [parameters::ObservedInventory {
+            query: hex_session::service::PluginParameterQuery {
+                context: AudioSourceContext {
+                    project_generation: 1,
+                    editor_revision: 1,
+                },
+                device,
+                output_identity: 1,
+                request_id: 1,
+                page_first: Some(0),
+            },
+            binding,
+            rows: vec![
+                row(0, 0, true, Some(class)),
+                row(1, 0, true, Some(class)),
+                row(2, 0, false, Some(class)),
+                row(3, 0, true, None),
+                row(4, 0, true, Some(other_class)),
+                row(64, 64, true, Some(class)),
+            ],
+        }];
+        let expanded_page =
+            expand_selection_with_observed(class, &[1], None, &observed, binding, Some(0)).unwrap();
+        assert!(expanded_page.contains(class, 0));
+        assert!(expanded_page.contains(class, 1));
+        assert!(!expanded_page.contains(class, 2));
+        assert!(!expanded_page.contains(class, 3));
+        assert!(!expanded_page.contains(class, 4));
+        assert!(!expanded_page.contains(class, 64));
+
+        let expanded_all =
+            expand_selection_with_observed(class, &[1], None, &observed, binding, None).unwrap();
+        assert!(expanded_all.contains(class, 0));
+        assert!(expanded_all.contains(class, 1));
+        assert!(expanded_all.contains(class, 64));
+        assert!(!expanded_all.contains(class, 2));
     }
 }
