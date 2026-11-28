@@ -166,7 +166,12 @@ pub(in crate::editor) fn render_body(
         .and(row)
         .filter(|_| panel.pending_touch.is_none() && panel.queued_touch.is_none())
         .map(|row| (panel.query, row.id));
-    let control = follow.or_else(|| panel.placeholder_knob.clone());
+    let control = follow.or_else(|| {
+        panel
+            .placeholder_knob
+            .clone()
+            .map(ParameterControl::Numeric)
+    });
     let control = control.map_or_else(
         || {
             div()
@@ -175,18 +180,16 @@ pub(in crate::editor) fn render_body(
                 .flex_shrink_0()
         },
         |control| {
-            control.update(cx, |control, cx| {
-                let _ = control.set_external_style(
-                    automation_tint::style(theme::control_style(), follow_automated),
-                    cx,
-                );
-            });
+            control.set_external_style(
+                automation_tint::style(theme::control_style(), follow_automated),
+                cx,
+            );
             div()
                 .debug_selector(|| "vst3-last-touched-knob".to_string())
                 .w(px(hex_widgets::MICRO_DIAL_WIDTH))
                 .h(px(hex_widgets::MICRO_DIAL_HEIGHT))
                 .flex_shrink_0()
-                .child(control)
+                .child(control.into_slot_element())
                 .when(follow_automated, automation_tint::mark)
                 .when_some(follow_target, |item, (query, parameter)| {
                     item.capture_any_mouse_down(cx.listener(
@@ -318,17 +321,18 @@ pub(in crate::editor) fn render_body(
                                                     row_placeholder(view, device, row, cx)
                                                 };
                                                 if let Some(knob) = &knob {
-                                                    knob.update(cx, |control, cx| {
-                                                        let _ = control.set_external_style(
-                                                            automation_tint::style(theme::control_style(), automated),
-                                                            cx,
-                                                        );
-                                                    });
+                                                    knob.set_external_style(
+                                                        automation_tint::style(
+                                                            theme::control_style(),
+                                                            automated,
+                                                        ),
+                                                        cx,
+                                                    );
                                                 }
                                                 let mapping = super::super::modulators::vst3_target_overlay(
                                                     view, cx, device, row, "row",
                                                 );
-                                                (knob, mapping)
+                                                (knob.map(ParameterControl::into_slot_element), mapping)
                                             })
                                             .unwrap_or_default();
                                         let row_id = row.id;
@@ -423,7 +427,7 @@ pub(in crate::editor) fn follow_display(
     device: DeviceId,
     cx: &mut Context<EditorView>,
 ) -> (
-    Option<Entity<NumericControl>>,
+    Option<ParameterControl>,
     Option<PluginParameterRow>,
     Option<&'static str>,
 ) {
@@ -432,7 +436,7 @@ pub(in crate::editor) fn follow_display(
     };
     let active = view.device_panel.gesture.snapshot();
     if let Some((id, knob)) = panel.follow_knob.as_ref()
-        && knob.control.read(cx).is_interacting()
+        && knob.control.is_interacting(cx)
         && active.is_none_or(|gesture| knob.owns(gesture.key))
     {
         let row = panel
@@ -473,16 +477,16 @@ pub(in crate::editor) fn follow_display(
                 .then(|| knob.pending_value(active))
                 .flatten()
         });
+        let value = pending.unwrap_or(row.normalized);
+        let display = panel.display_for_value(&row, value).map(str::to_owned);
         let control = panel
             .follow_knob
             .as_ref()
             .filter(|(current, knob)| *current == id && knob.matches_descriptor(&row))
             .map(|(_, knob)| knob.control.clone());
         if let Some(control) = &control {
-            control.update(cx, |control, cx| {
-                let _ = control.set_external_value(pending.unwrap_or(row.normalized), cx);
-                set_refresh_availability(control, &row, cx);
-            });
+            control.set_external_state(row.steps, value, display.as_deref(), cx);
+            control.set_refresh_availability(&row, cx);
         }
         let status = if restoring || row.metadata_revision == 0 || panel.source.is_none() {
             "refreshing last touched parameter"
@@ -670,7 +674,9 @@ pub(in crate::editor) fn test_touch_state(
                     .follow_knob
                     .as_ref()
                     .filter(|(id, _)| *id == parameter)
-                    .map_or(row.normalized, |(_, knob)| knob.control.read(cx).value());
+                    .map_or(row.normalized, |(_, knob)| {
+                        knob.control.normalized_value(row.steps, cx)
+                    });
                 (parameter, displayed)
             })
     });

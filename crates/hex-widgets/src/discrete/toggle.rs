@@ -126,6 +126,19 @@ impl Toggle {
         self.checked
     }
 
+    pub fn label(&self) -> &str {
+        self.label.as_ref()
+    }
+
+    /// Update caller-owned label text without recreating the focused toggle.
+    pub fn set_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
+        let label = label.into();
+        if self.label != label {
+            self.label = label;
+            cx.notify();
+        }
+    }
+
     /// Update caller-owned styling without recreating the focused control.
     pub fn set_external_style(
         &mut self,
@@ -485,5 +498,50 @@ impl gpui::Render for Toggle {
             root = root.w_full();
         }
         root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::AppContext;
+
+    #[gpui::test]
+    fn set_label_updates_without_altering_checked_or_availability(cx: &mut gpui::TestAppContext) {
+        let style = ControlStyle {
+            background: 0x202020,
+            surface: 0x303030,
+            raised: 0x383838,
+            rail: 0x282828,
+            border: 0x505050,
+            text: 0xe0e0e0,
+            muted: 0xaaaaaa,
+            accent: 0x55ddee,
+            accent_text: 0x202020,
+            numeric_fill: 0x31515a,
+            hover_text: 0xe0e0e0,
+            focus_marker: 0xaaaaaa,
+            dial_rail: 0x000000,
+            hover: 0x404040,
+            selection: 0x3350a0,
+            invalid: 0xff554c,
+            font_size: 10.0,
+            text_case: crate::TextCase::Preserve,
+        };
+        let config = ToggleConfig::new("vst3-toggle-test", "off", false, style)
+            .unwrap()
+            .with_appearance(ToggleAppearance::CompactButton);
+        let toggle = cx.new(|cx| Toggle::from_config(cx, config));
+        toggle.update(cx, |toggle, cx| {
+            assert_eq!(toggle.label(), "off");
+            assert!(!toggle.checked());
+            toggle.set_checked(true, cx);
+            toggle.set_label("on", cx);
+            toggle.set_availability(crate::ControlAvailability::Busy, cx);
+            assert!(toggle.checked());
+            assert_eq!(toggle.label(), "on");
+            assert!(toggle.availability.painted_enabled());
+            assert!(!toggle.availability.interactive());
+        });
     }
 }

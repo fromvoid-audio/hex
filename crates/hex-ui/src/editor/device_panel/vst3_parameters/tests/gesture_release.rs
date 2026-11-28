@@ -274,6 +274,8 @@ fn typed_value_case(
     editor.update(&mut visual, |view, cx| {
         view.device_panel.vst3_parameters.panels[&device].knobs[&7]
             .control
+            .as_numeric()
+            .unwrap()
             .update(cx, |control, cx| control.set_deferred_text(false, cx));
     });
     let value = visual.debug_bounds(selector).unwrap().center();
@@ -281,6 +283,8 @@ fn typed_value_case(
     editor.read_with(&visual, |view, cx| {
         let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
             .control
+            .as_numeric()
+            .unwrap()
             .read(cx);
         assert!(control.is_editing(), "value field must start a text edit");
     });
@@ -289,6 +293,8 @@ fn typed_value_case(
     editor.read_with(&visual, |view, cx| {
         let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
             .control
+            .as_numeric()
+            .unwrap()
             .read(cx);
         assert_eq!(control.display_text(), "0.75");
     });
@@ -296,6 +302,8 @@ fn typed_value_case(
     editor.read_with(&visual, |view, cx| {
         let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
             .control
+            .as_numeric()
+            .unwrap()
             .read(cx);
         assert!(!control.is_editing(), "enter must commit the numeric field");
     });
@@ -305,6 +313,8 @@ fn typed_value_case(
         editor.read_with(&visual, |view, cx| {
             let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
                 .control
+                .as_numeric()
+                .unwrap()
                 .read(cx);
             assert_eq!(
                 control.value(),
@@ -323,6 +333,8 @@ fn typed_value_case(
         editor.read_with(&visual, |view, cx| {
             let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
                 .control
+                .as_numeric()
+                .unwrap()
                 .read(cx);
             assert_eq!(
                 control.value(),
@@ -351,6 +363,8 @@ fn typed_value_case(
         editor.read_with(&visual, |view, cx| {
             let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
                 .control
+                .as_numeric()
+                .unwrap()
                 .read(cx);
             assert_eq!(
                 control.value(),
@@ -406,6 +420,8 @@ fn typed_value_case(
         editor.read_with(&visual, |view, cx| {
             let control = view.device_panel.vst3_parameters.panels[&device].knobs[&8]
                 .control
+                .as_numeric()
+                .unwrap()
                 .read(cx);
             assert!(!control.is_interacting());
             assert_eq!(control.value(), 0.6);
@@ -427,6 +443,8 @@ fn typed_value_case(
     editor.read_with(&visual, |view, cx| {
         let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
             .control
+            .as_numeric()
+            .unwrap()
             .read(cx);
         assert_eq!(
             control.value(),
@@ -549,6 +567,8 @@ fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_
         editor.update(cx, |view, cx| {
             let control = view.device_panel.vst3_parameters.panels[&device].knobs[&7]
                 .control
+                .as_numeric()
+                .unwrap()
                 .clone();
             assert!(control.read(cx).is_editing(), "vst3 knob must be editing");
             assert!(view.device_panel.has_pending_draft(cx));
@@ -581,8 +601,8 @@ fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_
             .knobs
             .get_mut(&7)
             .unwrap();
-        let control = knob.control.clone();
-        knob._text_observation = cx.observe(&control, |_, _, _| {});
+        let control = knob.control.as_numeric().unwrap().clone();
+        knob._text_observation = Some(cx.observe(&control, |_, _, _| {}));
     });
     visual.simulate_input("0.5");
     visual.simulate_keystrokes("enter");
@@ -590,7 +610,7 @@ fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
             let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&7];
-            let control = knob.control.clone();
+            let control = knob.control.as_numeric().unwrap().clone();
             let origin = knob.origin.get();
             let request = control
                 .update(cx, |c, _| c.take_deferred_text_request())
@@ -657,5 +677,346 @@ fn vst3_knob_text_draft_conversion_and_plugin_gesture_protect_fold_finalize_and_
             );
             view.device_panel.gesture.reset();
         });
+    });
+}
+
+#[test]
+fn vst3_step_and_toggle_conversion_helpers_snap_without_fractional_values() {
+    assert!(!is_toggle_parameter(0));
+    assert!(is_toggle_parameter(1));
+    assert!(!is_toggle_parameter(5));
+    assert!(!toggle_checked(0.49));
+    assert!(toggle_checked(0.5));
+    assert_eq!(toggle_label(false, None), "off");
+    assert_eq!(toggle_label(true, None), "on");
+    assert_eq!(toggle_label(true, Some("Active")), "Active");
+
+    for step in 0..=5_u32 {
+        let normalized = f64::from(step) / 5.0;
+        assert_eq!(step_index_from_normalized(5, normalized), step);
+        assert_eq!(
+            control_value_from_normalized(5, normalized),
+            f64::from(step)
+        );
+        assert!((normalized_from_control_value(5, f64::from(step)) - normalized).abs() < 1e-12);
+    }
+    assert_eq!(control_value_from_normalized(5, 0.39), 2.0);
+    assert!((normalized_from_control_value(5, 2.0) - 0.4).abs() < 1e-12);
+}
+
+#[gpui::test]
+fn vst3_toggle_stepped_live_format_and_commit_without_updating_flash(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, _backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let root = client.output_identity().unwrap();
+    let (project, track, device) = parameter_project();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        window.replace_root(cx, |_, cx| Card {
+            editor: editor.clone(),
+            device,
+            _observe: cx.observe(&editor, |_, _, cx| cx.notify()),
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root,
+        instance: device.value(),
+        graph: 1,
+        epoch: 1,
+    };
+    let toggle_row = PluginParameterRow {
+        id: 10,
+        name: "Auto".into(),
+        value: "off".into(),
+        normalized: 0.0,
+        default_normalized: 0.0,
+        steps: 1,
+        ..layout_row(0.0, true, 1)
+    };
+    let stepped_row = PluginParameterRow {
+        id: 20,
+        name: "Voice Stack".into(),
+        value: "1".into(),
+        normalized: 0.0,
+        default_normalized: 0.0,
+        steps: 5,
+        ..layout_row(0.0, true, 1)
+    };
+    let applied_source = AppliedAudioSource {
+        context: AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 0,
+        },
+        audio_revision: 1,
+        output_identity: root,
+    };
+    let context = editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "headless".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.selected_track = Some(track);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        view.device_panel.selected_device = Some(device);
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        ensure_panel(view, device, cx);
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        panel.cache_loading = false;
+        panel.source = Some(binding);
+        panel.last_touched = Some(10);
+        panel.result = Some(Arc::new(vec![toggle_row.clone(), stepped_row.clone()]));
+        panel.record_row_displays(&[toggle_row.clone(), stepped_row.clone()]);
+        panel.refilter(false);
+        cx.notify();
+        panel.query.context
+    });
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    // 1. Boolean (`steps == 1`) parameter renders as a Toggle, flips directly
+    //    to 1.0 on click, and commits without flashing "updating".
+    let toggle_selector = Box::leak(format!("vst3-toggle-{}-10", device.value()).into_boxed_str());
+    assert!(
+        visual.debug_bounds(toggle_selector).is_some(),
+        "steps == 1 must render as a Toggle control"
+    );
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("vst3-knob-{}-10-knob", device.value()).into_boxed_str()
+            ))
+            .is_none(),
+        "steps == 1 must not render as a dial"
+    );
+    let toggle_center = visual.debug_bounds(toggle_selector).unwrap().center();
+    visual.simulate_mouse_down(toggle_center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle_center, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    editor.update(&mut visual, |view, cx| {
+        let panel = &view.device_panel.vst3_parameters.panels[&device];
+        let toggle = panel.knobs[&10].control.as_toggle().unwrap().read(cx);
+        assert!(toggle.checked());
+        assert_eq!(toggle.label(), "on");
+        let snapshot = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("toggle click must start and commit a gesture");
+        assert_eq!(snapshot.plugin_value.unwrap().normalized(), 1.0);
+        assert!(view.device_panel.gesture.has_pending_terminal());
+        assert!(view.device_panel.gesture.acknowledge(&GestureAck {
+            key: snapshot.key,
+            phase: GesturePhase::Begin,
+            sequence: 0,
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        }));
+        let terminal = view.device_panel.gesture.next_request().unwrap();
+        view.device_panel.gesture.mark_submitted();
+        assert!(view.acknowledge_device_gesture(&GestureAck {
+            key: snapshot.key,
+            phase: GesturePhase::Commit,
+            sequence: terminal.sequence(),
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        }));
+        let panel = &view.device_panel.vst3_parameters.panels[&device];
+        let stale_toggle = &panel.rows().unwrap()[0];
+        assert_eq!(stale_toggle.normalized, 1.0);
+        assert_eq!(
+            stale_toggle.value, "on",
+            "post-commit stale row must retain formatted label without flashing updating"
+        );
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("vst3-follow-toggle-{}-10", device.value()).into_boxed_str()
+            ))
+            .is_some(),
+        "follow slot must also render a Toggle for steps == 1"
+    );
+
+    // 2. Stepped (`steps == 5`) parameter snaps strictly to integer steps and
+    //    applies live Format results without raw floats or "updating" flash.
+    editor.update(&mut visual, |view, cx| {
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        panel.source = Some(binding);
+        let refreshed = vec![
+            PluginParameterRow {
+                normalized: 1.0,
+                value: "on".into(),
+                metadata_revision: 2,
+                ..toggle_row.clone()
+            },
+            PluginParameterRow {
+                metadata_revision: 2,
+                ..stepped_row.clone()
+            },
+        ];
+        panel.record_row_displays(&refreshed);
+        panel.result = Some(Arc::new(refreshed));
+        panel.refilter(false);
+        cx.notify();
+    });
+    visual.run_until_parked();
+
+    let stepped_selector =
+        Box::leak(format!("vst3-knob-{}-20-knob", device.value()).into_boxed_str());
+    let down = visual.debug_bounds(stepped_selector).unwrap().center();
+    let drag_to = gpui::point(down.x, down.y - px(48.0));
+    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(drag_to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    let dragged_step = editor.update(&mut visual, |view, cx| {
+        let panel = &view.device_panel.vst3_parameters.panels[&device];
+        let control = panel.knobs[&20].control.as_numeric().unwrap().read(cx);
+        let step = control.value();
+        assert!((1.0..=5.0).contains(&step));
+        assert_eq!(step.fract(), 0.0, "stepped control must snap to integers");
+        assert_eq!(
+            control.presented_text(),
+            "1",
+            "must hold previous plugin-formatted label until Format replies instead of raw float"
+        );
+        assert!(!view.device_panel.vst3_parameters.has_pending_text_edit(cx));
+        let normalized = normalized_from_control_value(5, step);
+        let formatted_label = format!("{}", (step as u32) + 1);
+        let format_query = PluginParameterConversionQuery {
+            context,
+            device,
+            output_identity: root,
+            request_id: 99,
+            source: binding,
+            parameter: 20,
+            operation: PluginParameterConversion::Format(normalized),
+        };
+        view.device_panel.vst3_parameters.live_format = Some(PendingFormat {
+            query: format_query.clone(),
+            source: AppliedAudioSource {
+                context,
+                ..applied_source
+            },
+            steps: 5,
+        });
+        apply_conversion_result(
+            view,
+            PluginParameterConversionResult {
+                query: format_query,
+                value: Ok(hex_session::service::PluginParameterConvertedValue {
+                    normalized,
+                    display: Some(formatted_label.clone()),
+                }),
+            },
+            context.editor_revision,
+            cx,
+        );
+        // Simulate live format result with refresh_source absent in headless unit test:
+        // verify apply_live_format_result / cache directly on the panel too.
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        panel.cache_step_label(20, 5, normalized, &formatted_label);
+        panel.drag_preview = Some(DragPreview {
+            source: binding,
+            parameter: 20,
+            normalized,
+            display: formatted_label.clone(),
+        });
+        let row_control = panel.knobs[&20].control.clone();
+        row_control.set_external_display_for_current(&formatted_label, cx);
+        let control = panel.knobs[&20].control.as_numeric().unwrap().read(cx);
+        assert_eq!(control.presented_text(), formatted_label);
+        assert_eq!(
+            panel.display_text(&panel.rows().unwrap()[1]),
+            formatted_label
+        );
+        assert!(view.error.is_none());
+        (step, normalized, formatted_label)
+    });
+
+    visual.simulate_mouse_up(drag_to, MouseButton::Left, Modifiers::default());
+    editor.update(&mut visual, |view, cx| {
+        let snapshot = view.device_panel.gesture.snapshot().unwrap();
+        assert!((snapshot.plugin_value.unwrap().normalized() - dragged_step.1).abs() < 1e-12);
+        assert!(view.device_panel.gesture.acknowledge(&GestureAck {
+            key: snapshot.key,
+            phase: GesturePhase::Begin,
+            sequence: 0,
+            accepted: true,
+            preview_retained: false,
+            source_lost: false,
+            reason: None,
+        }));
+        while let Some(request) = view.device_panel.gesture.next_request() {
+            let phase = request.phase();
+            let seq = request.sequence();
+            view.device_panel.gesture.mark_submitted();
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key: snapshot.key,
+                phase,
+                sequence: seq,
+                accepted: true,
+                preview_retained: false,
+                source_lost: false,
+                reason: None,
+            }));
+            if phase == GesturePhase::Commit {
+                break;
+            }
+        }
+        let panel = &view.device_panel.vst3_parameters.panels[&device];
+        let stale_stepped = &panel.rows().unwrap()[1];
+        assert_eq!(
+            stale_stepped.value, dragged_step.2,
+            "post-commit stale stepped row must retain plugin step label without flashing updating"
+        );
+        assert_ne!(stale_stepped.value, "updating");
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let control = view.device_panel.vst3_parameters.panels[&device].knobs[&20]
+            .control
+            .as_numeric()
+            .unwrap()
+            .read(cx);
+        assert_eq!(
+            control.presented_text(),
+            dragged_step.2,
+            "control must retain formatted step label across post-commit refresh"
+        );
     });
 }
