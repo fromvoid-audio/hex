@@ -216,6 +216,7 @@ constexpr int active_aux_outputs_variant=172, double_aux_outputs_variant=173;
 constexpr int channel_output_variant=174, invalid_output_channel_variant=175,
     invalid_output_value_variant=176, invalid_output_second_value_variant=177, system_output_variant=178;
 constexpr int invalid_output_name_variant=179;
+constexpr int quiescent_restore_variant=180;
 static bool has_note_output(int variant) {
     return (variant>=output_notes_variant && variant<=unsupported_output_event_variant) ||
         (variant>=channel_output_variant && variant<=system_output_variant);
@@ -817,7 +818,9 @@ public:
         std::memcpy(id,restore_controller_id,16);return kResultOk;
     }
     tresult PLUGIN_API setState(IBStream* stream) override {
-        if(!control() || !initialized || active || arranged || setup || processing || !stream)return kResultFalse;
+        if(!control() || !initialized || active ||
+           (fault!=quiescent_restore_variant && (arranged || setup)) ||
+           processing || !stream) return kResultFalse;
         ++restoration.component_set;trace(16);
         if(fault==38)return kResultFalse;
         if(fault==39)throw std::runtime_error("original component state exception");
@@ -1598,7 +1601,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>3) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>invalid_output_name_variant) return false;next_fault=value;
+        if (value>quiescent_restore_variant) return false;next_fault=value;
     }
     if(!module_event('E')) return false;
     trace(1,0);

@@ -14,6 +14,7 @@ pub struct Quiescent {
     capture_sequence: u64,
     flush_sequence: u64,
     reactivate_sequence: u64,
+    restore_sequence: u64,
 }
 impl Prepared {
     /// Check the actual child and cancellation state before transferring this
@@ -144,7 +145,7 @@ impl Prepared {
         Ok(values)
     }
 
-    fn refuse_epoch_retained(self, cause: Error) -> PreparationFailure {
+    pub(super) fn refuse_epoch_retained(self, cause: Error) -> PreparationFailure {
         PreparationFailure::native(cause, self.lease, self.limits.retirement)
     }
     /// Consume the unique serialized owner after its last completed exchange.
@@ -221,6 +222,7 @@ impl Prepared {
                 capture_sequence: 0,
                 flush_sequence: 0,
                 reactivate_sequence: 0,
+                restore_sequence: 0,
             }),
             Err(cause) => Err(self.refuse_epoch_retained(cause)),
         }
@@ -452,8 +454,94 @@ impl Quiescent {
     pub fn facts(&self) -> Facts {
         self.facts
     }
+    pub fn event_input_channels(&self) -> u8 {
+        self.instance.ready.event_input_channels
+    }
     pub fn configuration(&self) -> &Configuration {
         &self.instance.config
+    }
+    /// Restore a validated canonical state envelope on this stopped scratch
+    /// helper without restarting the child process. Refusal or cancellation
+    /// retains the cancelled lease in `PreparationFailure` for disposal.
+    pub fn restore_state_retained_while_on_control(
+        mut self,
+        state: NativeDeviceState,
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<Self, PreparationFailure> {
+        let result = (|| {
+            if is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            self.instance.require_live_epoch()?;
+            if self.instance.parameter_page.is_some()
+                || self.instance.has_pending_control_controller_on_control()
+            {
+                return Err(Error::Protocol("controller page is still pending"));
+            }
+            let operation = self
+                .restore_sequence
+                .checked_add(1)
+                .ok_or(Error::Protocol("restore operation exhausted"))?;
+            let request = protocol::restore_state_request(
+                &self.instance.config,
+                self.instance.sequence,
+                operation,
+                &state,
+            )?;
+            let mut next_config = self.instance.config.clone();
+            next_config.restore = Some(state);
+            let until = end_after(self.instance.limits.startup)?;
+            let token = self.instance.lease.cancellation.clone();
+            let mut check = || {
+                token.check()?;
+                if is_cancelled() {
+                    Err(Error::Cancelled)
+                } else {
+                    Ok(())
+                }
+            };
+            self.instance
+                .lease
+                .channel
+                .send(&request, until, &mut check)?;
+            self.instance
+                .lease
+                .channel
+                .read(&mut self.instance.packet, until, &mut check)?;
+            if self.instance.packet.magic() == b"HXVIER01" {
+                return Err(Error::Worker(protocol::error(
+                    self.instance.packet.body()?,
+                    self.instance.config.binding,
+                )?));
+            }
+            if self.instance.packet.magic() != b"HXVIWR01" {
+                self.instance.packet.shrink_to_pcm();
+                return Err(Error::Protocol("missing quiescent restore acknowledgement"));
+            }
+            let facts = protocol::restored_facts(
+                self.instance.packet.body()?,
+                &next_config,
+                self.instance.sequence,
+                operation,
+            )?;
+            self.instance.packet.shrink_to_pcm();
+            self.instance.require_live_epoch()?;
+            check()?;
+            Ok((next_config, facts, operation))
+        })();
+        match result {
+            Ok((next_config, facts, operation)) => {
+                self.instance.config = next_config;
+                self.instance.authored_parameter_metadata = None;
+                self.instance.ready.algorithmic_latency_frames = facts.algorithmic_latency_frames;
+                self.instance.ready.tail_frames = facts.tail_frames;
+                self.instance.ready.restored = facts.restored;
+                self.facts = facts;
+                self.restore_sequence = operation;
+                Ok(self)
+            }
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
     }
     /// Same retained native backing while processing is quiescent. Old copied
     /// callback/worker queues belong to their separate joining control owner.

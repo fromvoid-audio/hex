@@ -77,6 +77,13 @@ public:
         if (!control() || !valid() || !exclusive() || maximum>capacity) return false;
         bytes.clear();limit=maximum;position=0;read_only=false;overflow_bytes=0;return true;
     }
+    bool reset_read_only_on_control(const unsigned char* source,size_t count) {
+        if (!control() || !valid() || !exclusive() || count>capacity || (count && !source)) return false;
+        limit=count;position=0;read_only=true;overflow_bytes=0;
+        if (!resize_payload(count)) return false;
+        if (count) std::copy_n(source,count,bytes.begin());
+        return true;
+    }
     bool rewind_read_only_on_control() {
         if (!control() || !valid() || !exclusive()) return false;
         read_only=true;position=0;limit=bytes.size();return true;

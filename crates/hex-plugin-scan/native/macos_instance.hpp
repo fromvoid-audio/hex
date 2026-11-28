@@ -187,6 +187,57 @@ public:
         restored=true;return true;
     }
 
+    // Quiescent state restoration for a stopped, non-processing helper instance.
+    // Follows VST3 setActive(false) -> setState -> setComponentState ->
+    // controller->setState -> refresh -> setActive(true). Any foreign refusal
+    // quarantines this owner so a partially restored instance is never reused.
+    bool restore_quiescent_state_on_control(const CapturedState& state) {
+        if (![NSThread isMainThread] || !opened || !component_initialized ||
+            !configured || !active || processing.load() || processing_fault.load() ||
+            quarantined.load() || !state.component ||
+            state.component_bytes>StateStream::capacity ||
+            state.controller_bytes>StateStream::capacity-state.component_bytes ||
+            (!state.controller && state.controller_bytes) || (state.controller && !controller) ||
+            state.bytes.size()!=state.component_bytes+state.controller_bytes)
+            return false;
+        if (component->setActive(false)!=kResultOk) return refuse_cleanup();
+        active=false;
+        const auto* component_ptr=state.component_bytes ? state.bytes.data() : nullptr;
+        if (!restore_component_stream) {
+            restore_component_stream=new(std::nothrow) StateStream(component_ptr,state.component_bytes);
+            if (!restore_component_stream || !restore_component_stream->valid())
+                return refuse_cleanup();
+        } else if (!restore_component_stream->reset_read_only_on_control(component_ptr,state.component_bytes)) {
+            return refuse_cleanup();
+        }
+        if (host->apply_saved_state([&] { return component->setState(restore_component_stream); })!=kResultOk ||
+            !restore_component_stream->valid() || !restore_component_stream->exclusive())
+            return refuse_cleanup();
+        if (controller) {
+            if (!sync_controller_component_state(restore_component_stream)) return refuse_cleanup();
+            if (state.controller) {
+                const auto* controller_ptr=state.controller_bytes ? state.bytes.data()+state.component_bytes : nullptr;
+                if (!restore_controller_stream) {
+                    restore_controller_stream=new(std::nothrow) StateStream(controller_ptr,state.controller_bytes);
+                    if (!restore_controller_stream || !restore_controller_stream->valid())
+                        return refuse_cleanup();
+                } else if (!restore_controller_stream->reset_read_only_on_control(controller_ptr,state.controller_bytes)) {
+                    return refuse_cleanup();
+                }
+                if (host->apply_saved_state([&] { return controller->setState(restore_controller_stream); })!=kResultOk ||
+                    !restore_controller_stream->valid() || !restore_controller_stream->exclusive())
+                    return refuse_cleanup();
+            }
+            if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
+                host->refusal_flags())
+                return refuse_cleanup();
+        }
+        if (component->setActive(true)!=kResultOk) return refuse_cleanup();
+        active=true;
+        restored=true;
+        return true;
+    }
+
     // Prepare only a fresh inactive owner. SDK arrangement refusal may itself
     // mutate foreign state; an existing active owner is never reconfigured or
     // described as rolled back. Its control owner prepares a separate candidate
