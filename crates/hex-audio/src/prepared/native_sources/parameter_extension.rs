@@ -56,6 +56,40 @@ impl PublicationControl {
         Ok(result)
     }
 
+    /// Verify a previously captured constructor-state `CapturedCanonicalBases`
+    /// against the live owner's immutable constructor state and rebind a
+    /// verified subset projection to the current `native_parameter_source`.
+    pub fn rebind_constructor_bases_on_control(
+        &self,
+        facts: &CapturedCanonicalBases,
+        selection: &crate::plugin_effects::AuthoredSelection,
+        playing: bool,
+    ) -> Result<CapturedCanonicalBases, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native extension output is closing");
+        }
+        let Some((source, epoch)) = self.status.native_parameter_source(playing) else {
+            return Err("native extension source changed");
+        };
+        if self.output_identity() != Some(source.output_identity)
+            || facts.binding().root != source.output_identity
+        {
+            return Err("native extension source changed");
+        }
+        if !self
+            .candidate_root
+            .matches_native_constructor_bases(facts)?
+        {
+            return Err("native extension requires exact isolated constructor bases");
+        }
+        if self.status.closing.load(Acquire)
+            || self.status.native_parameter_source(playing) != Some((source, epoch))
+        {
+            return Err("native extension source changed");
+        }
+        facts.with_rebound_source((source, epoch, playing), selection)
+    }
+
     /// Consume an abandoned SDK operation without publishing graph-visible
     /// capabilities. Native's bounded validation cache may already contain the
     /// target. After output close, original Root disposal owns its late work.

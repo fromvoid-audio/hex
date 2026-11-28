@@ -40,8 +40,27 @@ impl Custody {
             _ => Err("native extension owner differs"),
         })
     }
+    pub(in crate::candidate_custody) fn matches_constructor_bases(
+        &self,
+        facts: &CapturedCanonicalBases,
+    ) -> Result<bool, &'static str> {
+        self.with_live_capture(facts.binding(), |owner| match owner {
+            Owner::Effect(owner) => Ok(owner.matches_constructor_bases(facts)),
+            Owner::Loaned(owner) => Ok(owner.matches_constructor_bases(facts)),
+            _ => Err("native extension owner differs"),
+        })
+    }
 }
 impl CandidateRoot {
+    pub(crate) fn matches_native_constructor_bases(
+        &self,
+        facts: &CapturedCanonicalBases,
+    ) -> Result<bool, &'static str> {
+        self.require_native_source_control_open()?;
+        let matched = self.0.eligible.matches_constructor_bases(facts)?;
+        self.require_native_source_control_open()?;
+        Ok(matched)
+    }
     pub(crate) fn begin_native_parameter_extension(
         &self,
         binding: Binding,

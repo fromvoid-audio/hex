@@ -5,17 +5,23 @@ use crate::plugin_worker::{
     NativeWorkerAuthoredParameterProgress as Progress, NativeWorkerControllerQuery,
 };
 
+pub(super) fn matches_constructor(
+    configuration: &Configuration,
+    facts: &CapturedCanonicalBases,
+) -> bool {
+    facts.binding() == configuration.binding
+        && facts.prepared() == configuration.prepared
+        && facts.sample_rate() == configuration.sample_rate
+        && facts.canonical_state().processing_eq(&configuration.state)
+}
+
 pub(super) fn extended(
     configuration: &Configuration,
     facts: &CapturedCanonicalBases,
     id: u32,
     steps: u32,
 ) -> Result<automation::SourceCapabilities, &'static str> {
-    if facts.binding() != configuration.binding
-        || facts.prepared() != configuration.prepared
-        || facts.sample_rate() != configuration.sample_rate
-        || !facts.canonical_state().processing_eq(&configuration.state)
-    {
+    if !matches_constructor(configuration, facts) {
         return Err("native extension requires exact isolated constructor bases");
     }
     let class = Hosting::saved_identity_on_control(&configuration.state)
@@ -72,6 +78,10 @@ pub(super) fn bases(
 }
 
 impl NativeEffect {
+    pub(crate) fn matches_constructor_bases(&self, facts: &CapturedCanonicalBases) -> bool {
+        matches_constructor(&self.callback.configuration, facts)
+    }
+
     pub(crate) fn begin_parameter_extension(
         &mut self,
         class: hex_plugin_state::ClassId,
