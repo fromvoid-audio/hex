@@ -115,6 +115,8 @@ pub struct ManualBaseCapture {
     original_binding: Option<Binding>,
     warm_key: crate::candidate_custody::WarmScratchKey,
     warm_acquired: bool,
+    skipped_restore: bool,
+    last_busy: bool,
     fallback_to_cold: bool,
     restore_state: Option<NativeDeviceState>,
     cold_fallback: Option<Box<ColdFallback>>,
@@ -263,12 +265,20 @@ impl Hosting {
             output_channels: 2,
             presentation: original.presentation,
         };
-        let (scratch, warm_acquired, restore_state, cold_fallback, phase) =
-            if let Some(scratch) = output.acquire_warm_scratch_native_source_on_control(warm_key) {
+        let (scratch, warm_acquired, skipped_restore, restore_state, cold_fallback, phase) =
+            if let Some(acquired) =
+                output.acquire_warm_scratch_native_source_on_control(warm_key, Some(canonical))
+            {
+                let (restore_state, phase) = if acquired.matches_restored_state {
+                    (None, Phase::Flush)
+                } else {
+                    (Some(canonical.clone()), Phase::Restore)
+                };
                 (
-                    scratch,
+                    acquired.binding,
                     true,
-                    Some(canonical.clone()),
+                    acquired.matches_restored_state,
+                    restore_state,
                     Some(Box::new(ColdFallback {
                         hosting: self.clone(),
                         metadata: original.metadata,
@@ -280,7 +290,7 @@ impl Hosting {
                         state: canonical.clone(),
                         flushes: flushes.clone(),
                     })),
-                    Phase::Restore,
+                    phase,
                 )
             } else {
                 let scratch = self.begin_on_control(
@@ -294,7 +304,7 @@ impl Hosting {
                     Some(canonical.clone()),
                     None,
                 )?;
-                (scratch, false, None, None, Phase::Prepare)
+                (scratch, false, false, None, None, Phase::Prepare)
             };
         let before_fingerprint = state_approval::state_fingerprint(canonical);
         let manual_point_id = (!flushes.exact_readback
@@ -308,6 +318,8 @@ impl Hosting {
             original_binding: Some(binding),
             warm_key,
             warm_acquired,
+            skipped_restore,
+            last_busy: false,
             fallback_to_cold: false,
             restore_state,
             cold_fallback,
@@ -410,12 +422,20 @@ impl Hosting {
             output_channels: 2,
             presentation: original.presentation,
         };
-        let (scratch, warm_acquired, restore_state, cold_fallback, phase) =
-            if let Some(scratch) = output.acquire_warm_scratch_native_source_on_control(warm_key) {
+        let (scratch, warm_acquired, skipped_restore, restore_state, cold_fallback, phase) =
+            if let Some(acquired) =
+                output.acquire_warm_scratch_native_source_on_control(warm_key, Some(captured))
+            {
+                let (restore_state, phase) = if acquired.matches_restored_state {
+                    (None, Phase::Flush)
+                } else {
+                    (Some(captured.clone()), Phase::Restore)
+                };
                 (
-                    scratch,
+                    acquired.binding,
                     true,
-                    Some(captured.clone()),
+                    acquired.matches_restored_state,
+                    restore_state,
                     Some(Box::new(ColdFallback {
                         hosting: self.clone(),
                         metadata: original.metadata,
@@ -427,7 +447,7 @@ impl Hosting {
                         state: captured.clone(),
                         flushes: flushes.clone(),
                     })),
-                    Phase::Restore,
+                    phase,
                 )
             } else {
                 let scratch = self.begin_on_control(
@@ -441,7 +461,7 @@ impl Hosting {
                     Some(captured.clone()),
                     None,
                 )?;
-                (scratch, false, None, None, Phase::Prepare)
+                (scratch, false, false, None, None, Phase::Prepare)
             };
         Ok(ManualBaseCapture {
             binding: scratch,
@@ -450,6 +470,8 @@ impl Hosting {
             original_binding: None,
             warm_key,
             warm_acquired,
+            skipped_restore,
+            last_busy: false,
             fallback_to_cold: false,
             restore_state,
             cold_fallback,
@@ -465,6 +487,25 @@ impl Hosting {
 }
 
 impl ManualBaseCapture {
+    pub fn warm_reused(&self) -> bool {
+        self.warm_acquired
+    }
+
+    pub fn skipped_restore(&self) -> bool {
+        self.skipped_restore
+    }
+
+    /// True when the next `poll_on_control` step runs synchronously on an
+    /// already-quiescent scratch slot or approves a completed capture, so
+    /// control callers can continue immediately without sleep backoff.
+    pub fn poll_step_is_ready(&self) -> bool {
+        !self.last_busy
+            && matches!(
+                self.phase,
+                Phase::Restore | Phase::Flush | Phase::Capture | Phase::Approve(_)
+            )
+    }
+
     fn interruption(
         source: Option<(AppliedAudioSource, u64, bool)>,
         status: &crate::prepared::Status,
@@ -495,6 +536,7 @@ impl ManualBaseCapture {
         {
             return None;
         }
+        self.last_busy = false;
         if let Phase::Approve(captured) = &self.phase {
             if let Some(error) = Self::interruption(self.source, &output.status, is_cancelled) {
                 self.phase = Phase::Finished;
@@ -502,6 +544,7 @@ impl ManualBaseCapture {
             }
             let result = output.approve_native_manual_base_on_control(captured);
             if matches!(result, Err("native preparation is busy")) {
+                self.last_busy = true;
                 return None;
             }
             let result = Self::interruption(self.source, &output.status, is_cancelled)
@@ -561,6 +604,7 @@ impl ManualBaseCapture {
                         Ok(scratch) => {
                             self.binding = scratch;
                             self.warm_acquired = false;
+                            self.skipped_restore = false;
                             self.restore_state = None;
                             self.flushes = cold.flushes;
                             self.flushed_normalized = None;
@@ -683,6 +727,7 @@ impl ManualBaseCapture {
                         && output.park_warm_scratch_native_source_on_control(
                             self.binding,
                             self.warm_key,
+                            false,
                         )
                     {
                         parked_state = Some(state);
@@ -704,7 +749,9 @@ impl ManualBaseCapture {
                 self.phase = Phase::Retire(Some(Err(error)));
             }
             (None, Ok(phase)) => self.phase = phase,
-            (None, Err("native preparation is busy")) => {}
+            (None, Err("native preparation is busy" | "native source is busy")) => {
+                self.last_busy = true;
+            }
             (None, Err(error)) => {
                 if self.warm_acquired && self.cold_fallback.is_some() {
                     output.disable_warm_scratch_native_source_on_control(

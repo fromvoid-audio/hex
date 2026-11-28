@@ -191,6 +191,25 @@ impl ParameterPage {
     pub fn as_slice(&self) -> &[ControllerParameter] {
         &self.values[..usize::from(self.len)]
     }
+
+    #[cfg(test)]
+    pub(crate) fn from_test_slice(
+        revision: u64,
+        total: u16,
+        first: u16,
+        slice: &[ControllerParameter],
+    ) -> Self {
+        let mut page = Self {
+            revision,
+            total,
+            first,
+            ..Self::default()
+        };
+        let count = slice.len().min(PARAMETER_PAGE_SIZE);
+        page.values[..count].copy_from_slice(&slice[..count]);
+        page.len = count as u8;
+        page
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

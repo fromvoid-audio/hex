@@ -28,9 +28,27 @@ pub(crate) struct WarmScratchKey {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WarmScratchAcquisition {
+    pub(crate) binding: Binding,
+    pub(crate) matches_restored_state: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct WarmScratchSlot {
     pub(super) key: WarmScratchKey,
     pub(super) in_use: bool,
+    pub(super) clean_restored: bool,
+}
+
+fn restored_state_matches_expected(
+    clean_restored: bool,
+    loaded: Option<&NativeDeviceState>,
+    expected: Option<&NativeDeviceState>,
+) -> bool {
+    clean_restored
+        && loaded
+            .zip(expected)
+            .is_some_and(|(loaded, expected)| loaded.processing_eq(expected))
 }
 
 impl Bank {
@@ -94,11 +112,14 @@ impl Bank {
 impl Custody {
     /// Checkout an idle parked warm `Quiescent` scratch helper matching `key`.
     /// Evicts any mismatched idle warm scratch so at most one warm helper
-    /// occupies the pool. Returns `None` if unavailable, busy, or disabled.
+    /// occupies the pool. Reports `matches_restored_state = true` only when
+    /// the parked helper was cleanly restored to `expected_state` with no
+    /// intervening parameter flush. Returns `None` if unavailable, busy, or disabled.
     pub(in crate::candidate_custody) fn acquire_warm_scratch(
         &self,
         key: WarmScratchKey,
-    ) -> Option<Binding> {
+        expected_state: Option<&NativeDeviceState>,
+    ) -> Option<WarmScratchAcquisition> {
         let work = self.work.try_lock().ok()?;
         let (matched, evicted_cancel) = {
             let mut bank = lock(&self.bank);
@@ -142,8 +163,24 @@ impl Custody {
                     && cell.disposal.is_none()
                     && matches!(cell.owner, Some(Owner::Quiescent(_)));
                 if healthy && let Some(binding) = slot.binding {
-                    slot.warm_scratch = Some(WarmScratchSlot { key, in_use: true });
-                    matched = Some(binding);
+                    let loaded_restore = match cell.owner.as_ref() {
+                        Some(Owner::Quiescent(owner)) => owner.configuration().restore.as_ref(),
+                        _ => None,
+                    };
+                    let matches_restored_state = restored_state_matches_expected(
+                        entry.clean_restored,
+                        loaded_restore,
+                        expected_state,
+                    );
+                    slot.warm_scratch = Some(WarmScratchSlot {
+                        key,
+                        in_use: true,
+                        clean_restored: false,
+                    });
+                    matched = Some(WarmScratchAcquisition {
+                        binding,
+                        matches_restored_state,
+                    });
                     break;
                 }
             }
@@ -163,12 +200,15 @@ impl Custody {
     }
 
     /// Park a healthy, non-retiring `Quiescent` scratch slot as this Root's
-    /// single warm scratch helper for `key`. Returns `false` if parking is
-    /// refused (caller must retire and recover the slot normally).
+    /// single warm scratch helper for `key`. Pass `clean_restored = true` only
+    /// when the helper's live state matches its last `restore` envelope with no
+    /// subsequent parameter flush. Returns `false` if parking is refused
+    /// (caller must retire and recover the slot normally).
     pub(in crate::candidate_custody) fn park_warm_scratch(
         &self,
         scratch: Binding,
         key: WarmScratchKey,
+        clean_restored: bool,
     ) -> bool {
         let Ok(mut work) = self.work.try_lock() else {
             return false;
@@ -200,6 +240,7 @@ impl Custody {
                         && config.sample_rate.to_bits() == key.sample_rate_bits
                         && config.input_channels == key.input_channels
                         && config.output_channels == key.output_channels
+                        && (!clean_restored || config.restore.is_some())
                         && slot.facts == Some(owner.facts())
                         && owner.retained_storage_on_control().is_some()
                 }
@@ -245,7 +286,11 @@ impl Custody {
             }
             // Parked warm scratch carries no renewal authority for the original source.
             work.sources.cells[index].renewal = None;
-            bank.sources.slots[index].warm_scratch = Some(WarmScratchSlot { key, in_use: false });
+            bank.sources.slots[index].warm_scratch = Some(WarmScratchSlot {
+                key,
+                in_use: false,
+                clean_restored,
+            });
             (true, evicted)
         };
         drop(work);
@@ -301,9 +346,10 @@ impl CandidateRoot {
     pub(crate) fn acquire_warm_scratch_native_source(
         &self,
         key: WarmScratchKey,
-    ) -> Option<Binding> {
+        expected_state: Option<&NativeDeviceState>,
+    ) -> Option<WarmScratchAcquisition> {
         self.require_native_source_control_open().ok()?;
-        let result = self.0.eligible.acquire_warm_scratch(key);
+        let result = self.0.eligible.acquire_warm_scratch(key, expected_state);
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }
@@ -312,11 +358,15 @@ impl CandidateRoot {
         &self,
         scratch: Binding,
         key: WarmScratchKey,
+        clean_restored: bool,
     ) -> bool {
         if self.require_native_source_control_open().is_err() {
             return false;
         }
-        let parked = self.0.eligible.park_warm_scratch(scratch, key);
+        let parked = self
+            .0
+            .eligible
+            .park_warm_scratch(scratch, key, clean_restored);
         crate::lifecycle::request_candidate_cleanup(self);
         parked
     }
@@ -350,10 +400,10 @@ impl CandidateRoot {
         is_cancelled: &mut dyn FnMut() -> bool,
     ) -> Result<Option<hex_plugin_host::native::AuthoredParameterMetadata>, &'static str> {
         self.require_native_source_control_open()?;
-        let result = self
-            .0
-            .eligible
-            .read_quiescent_authored_metadata(binding, class, ids, is_cancelled);
+        let result =
+            self.0
+                .eligible
+                .read_quiescent_authored_metadata(binding, class, ids, is_cancelled);
         crate::lifecycle::request_candidate_cleanup(self);
         self.require_native_source_control_open()?;
         result
@@ -403,18 +453,23 @@ mod tests {
         bank.slots[0].warm_scratch = Some(WarmScratchSlot {
             key: key_a,
             in_use: false,
+            clean_restored: true,
         });
         bank.slots[1].phase = Phase::Accepted;
         bank.slots[1].warm_scratch = Some(WarmScratchSlot {
             key: key_b,
             in_use: true,
+            clean_restored: false,
         });
 
         let _ = bank.evict_warm_scratch_for_original(key_a.original_binding);
         assert!(bank.slots[0].warm_scratch.is_none());
         assert!(bank.slots[0].retiring);
         assert!(bank.slots[0].auto_reap);
-        assert_eq!(bank.slots[1].warm_scratch.map(|entry| entry.key), Some(key_b));
+        assert_eq!(
+            bank.slots[1].warm_scratch.map(|entry| entry.key),
+            Some(key_b)
+        );
 
         // In-use warm scratch for key_b is detached (cannot re-park) without forcing auto_reap.
         let _ = bank.evict_warm_scratch_for_original(key_b.original_binding);
@@ -439,7 +494,11 @@ mod tests {
         bank.slots[0].binding = Some(key.original_binding);
         bank.slots[0].identity = Some(identity);
         bank.slots[1].phase = Phase::Accepted;
-        bank.slots[1].warm_scratch = Some(WarmScratchSlot { key, in_use: false });
+        bank.slots[1].warm_scratch = Some(WarmScratchSlot {
+            key,
+            in_use: false,
+            clean_restored: true,
+        });
 
         let _ = bank.disable_warm_scratch_for_original(key.original_binding);
         assert!(bank.slots[0].warm_scratch_disabled);
@@ -460,6 +519,7 @@ mod tests {
         bank.slots[0].warm_scratch = Some(WarmScratchSlot {
             key: key_a,
             in_use: false,
+            clean_restored: false,
         });
         assert!(bank.evict_idle_warm_scratch(|k| k == key_b).is_none());
         assert!(bank.slots[0].warm_scratch.is_some());
@@ -468,6 +528,45 @@ mod tests {
         assert!(bank.slots[0].warm_scratch.is_none());
         assert!(bank.slots[0].retiring);
         assert!(bank.slots[0].auto_reap);
+    }
+
+    #[test]
+    fn restored_state_match_requires_clean_flag_and_matching_processing_state() {
+        let encode = |bytes: &[u8]| {
+            hex_plugin_state::encode(hex_plugin_state::State {
+                identity: Identity {
+                    class: ClassId::new([7; 16]).unwrap(),
+                    binary: BinaryIdentity {
+                        executable_sha256: [1; 32],
+                        info_sha256: [2; 32],
+                    },
+                },
+                component: Some(bytes),
+                controller: Some(bytes),
+            })
+            .unwrap()
+        };
+        let state_a = encode(b"state-a");
+        let state_a_copy = encode(b"state-a");
+        let state_b = encode(b"state-b");
+
+        assert!(restored_state_matches_expected(
+            true,
+            Some(&state_a),
+            Some(&state_a_copy),
+        ));
+        assert!(!restored_state_matches_expected(
+            false,
+            Some(&state_a),
+            Some(&state_a_copy),
+        ));
+        assert!(!restored_state_matches_expected(
+            true,
+            Some(&state_a),
+            Some(&state_b),
+        ));
+        assert!(!restored_state_matches_expected(true, Some(&state_a), None));
+        assert!(!restored_state_matches_expected(true, None, Some(&state_a)));
     }
 
     #[test]

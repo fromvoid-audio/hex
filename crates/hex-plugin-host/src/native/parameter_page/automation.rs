@@ -239,6 +239,12 @@ impl Selection {
         for parameter in page.as_slice() {
             self.accept_parameter(parameter)?;
         }
+        // The helper's main-lane refresh already validates ID uniqueness across
+        // the complete controller inventory, so stop once every requested ID
+        // has been collected instead of scanning remaining untouched pages.
+        if self.parameters.iter().all(|p| p.steps.is_some()) {
+            return Ok(None);
+        }
         // The decoder bounds the whole extent to MAX_CONTROLLER_PARAMETERS.
         let first = page.first + page.as_slice().len() as u16;
         Ok((first < page.total).then_some(ParameterPageQuery {
@@ -385,5 +391,45 @@ mod tests {
         renewed.retain_initial_values(&metadata);
         assert_eq!(renewed.parameters[0].normalized, Some(value.to_bits()));
         assert_eq!(renewed.parameters[1].normalized, None);
+    }
+
+    #[test]
+    fn selection_accept_stops_early_once_all_requested_ids_are_found() {
+        let page = ParameterPage::from_test_slice(
+            3,
+            128,
+            0,
+            &[
+                protocol::ControllerParameter {
+                    id: 0,
+                    flags: 1,
+                    step_count: 0,
+                    normalized: 0.25,
+                    ..Default::default()
+                },
+                protocol::ControllerParameter {
+                    id: 7,
+                    flags: 1,
+                    step_count: 1,
+                    normalized: 1.0,
+                    ..Default::default()
+                },
+            ],
+        );
+
+        // All requested IDs present on page 0 -> stop immediately without scanning remaining pages.
+        let mut found = Selection::new(&[0, 7]).unwrap();
+        assert_eq!(found.accept(&page).unwrap(), None);
+
+        // Missing ID -> continue to the next page at revision 3.
+        let mut missing = Selection::new(&[0, 99]).unwrap();
+        assert_eq!(
+            missing.accept(&page).unwrap(),
+            Some(ParameterPageQuery {
+                first: 2,
+                revision: 3,
+                conversion: None,
+            })
+        );
     }
 }
