@@ -28,7 +28,9 @@ mod parameter_extension;
 mod program;
 mod references;
 mod state_approval;
+mod warm_scratch;
 pub(crate) use ordinary::OrdinaryNativeReferences;
+pub(crate) use warm_scratch::WarmScratchKey;
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) use references::References;
@@ -201,6 +203,9 @@ struct Slot {
     cancellation_requested: bool,
     endpoint_loaned: bool,
     endpoint_return: Option<Arc<EndpointSignal>>,
+    warm_scratch: Option<warm_scratch::WarmScratchSlot>,
+    warm_scratch_disabled: bool,
+    auto_reap: bool,
 }
 impl Slot {
     fn vacant() -> Self {
@@ -220,6 +225,9 @@ impl Slot {
             cancellation_requested: false,
             endpoint_loaned: false,
             endpoint_return: None,
+            warm_scratch: None,
+            warm_scratch_disabled: false,
+            auto_reap: false,
         }
     }
     // One Root-owned in-flight request per source. Mark only after the actual
@@ -258,7 +266,7 @@ impl Bank {
                     && s.phase != Phase::Vacant
                     && s.phase != Phase::Complete
                     && !publication.references_native_source(index))
-                || (abandoned && s.phase == Phase::Complete)
+                || ((abandoned || s.auto_reap) && s.phase == Phase::Complete)
         })
     }
     pub(super) fn request_unreferenced_returns(&self, publication: &publication::Bank) {
@@ -275,6 +283,7 @@ impl Bank {
     pub(super) fn close(&mut self, cancellations: &mut Cancellations) {
         for (slot, target) in self.slots.iter_mut().zip(cancellations) {
             if slot.phase != Phase::Vacant {
+                slot.warm_scratch = None;
                 slot.retiring = true;
                 if let Some(signal) = &slot.endpoint_return {
                     signal.request_return();
@@ -488,12 +497,21 @@ impl Custody {
             {
                 return Err("native preparation exceeds known peak data reservation");
             }
-            let index = bank
+            let Some(index) = bank
                 .sources
                 .slots
                 .iter()
                 .position(|s| s.phase == Phase::Vacant)
-                .ok_or("native preparation cells are full")?;
+            else {
+                // Evict any idle parked warm scratch slot so normal source
+                // preparation never stalls behind a cached scratch helper.
+                let evicted = bank.sources.evict_idle_warm_scratch(|_| true);
+                drop(bank);
+                if let Some(cancel) = evicted {
+                    cancel.cancel_on_control();
+                }
+                return Err("native preparation cells are full");
+            };
             let binding = Binding {
                 root: bank.root,
                 instance: identity.device_id(),
@@ -642,7 +660,7 @@ impl Custody {
         let Ok(_work) = self.work.try_lock() else {
             return false;
         };
-        let cancellation = {
+        let (cancellation, warm_eviction) = {
             let mut bank = lock(&self.bank);
             let Some(index) = bank.sources.index(binding) else {
                 return false;
@@ -652,6 +670,7 @@ impl Custody {
             if matches!(slot.phase, Phase::Complete | Phase::Failed) {
                 return false;
             }
+            slot.warm_scratch = None;
             slot.retiring = true;
             if !referenced
                 && let Some(signal) = &slot.endpoint_return
@@ -659,13 +678,18 @@ impl Custody {
             {
                 signal.request_return();
             }
-            if slot.processor.is_none() {
+            let own_cancel = if slot.processor.is_none() {
                 slot.request_cancellation()
             } else {
                 None
-            }
+            };
+            let warm_eviction = bank.sources.evict_warm_scratch_for_original(binding);
+            (own_cancel, warm_eviction)
         };
         if let Some(cancellation) = cancellation {
+            cancellation.cancel_on_control();
+        }
+        if let Some(cancellation) = warm_eviction {
             cancellation.cancel_on_control();
         }
         true
@@ -830,11 +854,12 @@ impl Custody {
                     }
                 }
             }
-            if abandoned
-                && !cell.pending
-                && cell.first_panic.is_none()
-                && lock(&self.bank).sources.slots[index].phase == Phase::Complete
-            {
+            let auto_recover = {
+                let bank = lock(&self.bank);
+                let slot = &bank.sources.slots[index];
+                (abandoned || slot.auto_reap) && slot.phase == Phase::Complete
+            };
+            if auto_recover && !cell.pending && cell.first_panic.is_none() {
                 let cancellation = lock(&self.bank).sources.slots[index].cancellation.take();
                 cell.pending = true;
                 let result = catch_unwind(AssertUnwindSafe(|| {

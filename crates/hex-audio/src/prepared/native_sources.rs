@@ -431,32 +431,44 @@ pub(super) enum NativeEpochRuntimeTarget {
     Ordinary(AppliedAudioSource),
 }
 
-impl PublicationControl {
-    pub(crate) fn canonical_source_matches_on_control(
+impl Status {
+    pub(crate) fn canonical_source_matches(
         &self,
         (source, epoch, playing): (AppliedAudioSource, u64, bool),
         fence: Option<StoppedEditFence>,
     ) -> bool {
-        if !self.native_custody
-            || self.output_identity() != Some(source.output_identity)
-            || self.status.closing.load(Acquire)
-        {
+        if self.closing.load(Acquire) {
             return false;
         }
         match fence {
-            None => self.status.native_parameter_source(playing) == Some((source, epoch)),
+            None => self.native_parameter_source(playing) == Some((source, epoch)),
             Some(fence) => {
                 !playing
-                    && !self.status.playing.load(Acquire)
-                    && self.status.pending_stop_marker.load(Acquire) == 0
-                    && self.status.transport_epoch.load(Acquire) == epoch
-                    && self.status.sampler_edit.ready_transport_epoch.load(Acquire) == epoch
-                    && self.status.applied_revision.load(Acquire) == source.audio_revision
-                    && self.status.sampler_edit.ordinary_native_epoch_active()
-                    && self.status.sampler_edit.matches_source(fence, source)
-                    && self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+                    && !self.playing.load(Acquire)
+                    && self.pending_stop_marker.load(Acquire) == 0
+                    && self.transport_epoch.load(Acquire) == epoch
+                    && self.sampler_edit.ready_transport_epoch.load(Acquire) == epoch
+                    && self.applied_revision.load(Acquire) == source.audio_revision
+                    && self.sampler_edit.ordinary_native_epoch_active()
+                    && self.sampler_edit.matches_source(fence, source)
             }
         }
+    }
+}
+
+impl PublicationControl {
+    pub(crate) fn canonical_source_matches_on_control(
+        &self,
+        source: (AppliedAudioSource, u64, bool),
+        fence: Option<StoppedEditFence>,
+    ) -> bool {
+        if !self.native_custody || self.output_identity() != Some(source.0.output_identity) {
+            return false;
+        }
+        self.status.canonical_source_matches(source, fence)
+            && fence.is_none_or(|fence| {
+                self.stopped_edit_fence_state(fence) == StoppedEditFenceState::Ready
+            })
     }
 
     pub(crate) fn native_fenced_base_capture_source(
@@ -1531,6 +1543,75 @@ impl PublicationControl {
         )?;
         if self.status.closing.load(Acquire) {
             return Err("native parameter output is closing");
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn acquire_warm_scratch_native_source_on_control(
+        &mut self,
+        key: crate::candidate_custody::WarmScratchKey,
+    ) -> Option<Binding> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return None;
+        }
+        self.candidate_root.acquire_warm_scratch_native_source(key)
+    }
+
+    pub(crate) fn park_warm_scratch_native_source_on_control(
+        &mut self,
+        scratch: Binding,
+        key: crate::candidate_custody::WarmScratchKey,
+    ) -> bool {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return false;
+        }
+        self.candidate_root
+            .park_warm_scratch_native_source(scratch, key)
+    }
+
+    pub(crate) fn disable_warm_scratch_native_source_on_control(&mut self, original: Binding) {
+        if self.native_custody {
+            self.candidate_root
+                .disable_warm_scratch_native_source(original);
+        }
+    }
+
+    pub(crate) fn restore_native_source_state_on_control(
+        &mut self,
+        binding: Binding,
+        state: NativeDeviceState,
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<(hex_plugin_host::protocol::Facts, u16, u8)>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native restore output is closing");
+        }
+        let result = self
+            .candidate_root
+            .restore_native_source_state(binding, state, is_cancelled)?;
+        if self.status.closing.load(Acquire) {
+            return Err("native restore output is closing");
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn read_quiescent_authored_metadata_on_control(
+        &mut self,
+        binding: Binding,
+        class: hex_plugin_state::ClassId,
+        ids: &[u32],
+        is_cancelled: &mut dyn FnMut() -> bool,
+    ) -> Result<Option<hex_plugin_host::native::AuthoredParameterMetadata>, &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native metadata output is closing");
+        }
+        let result = self.candidate_root.read_quiescent_authored_metadata(
+            binding,
+            class,
+            ids,
+            is_cancelled,
+        )?;
+        if self.status.closing.load(Acquire) {
+            return Err("native metadata output is closing");
         }
         Ok(result)
     }

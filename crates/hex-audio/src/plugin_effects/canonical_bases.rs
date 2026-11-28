@@ -9,9 +9,21 @@ use crate::{
 
 enum Phase {
     Prepare,
+    Restore,
+    ReadQuiescent,
     Retire(Result<(), String>),
     Verify,
     Finished,
+}
+
+struct ColdFallback {
+    hosting: Hosting,
+    metadata: EffectSourceMetadata,
+    owner: hex_lattice::ProcessorChainOwner,
+    device_id: u64,
+    graph: u64,
+    rate: u32,
+    profile: PluginProfile,
 }
 
 /// Immutable observations, not worker/endpoint or publication authority.
@@ -104,6 +116,10 @@ impl CapturedCanonicalBases {
 pub struct CanonicalBasesCapture {
     scratch: Binding,
     original: Binding,
+    warm_key: crate::candidate_custody::WarmScratchKey,
+    warm_acquired: bool,
+    fallback_to_cold: bool,
+    cold_fallback: Option<Box<ColdFallback>>,
     identity: ProcessorInstanceIdentity,
     source: (AppliedAudioSource, u64, bool),
     fence: Option<StoppedEditFence>,
@@ -177,20 +193,54 @@ impl Hosting {
             }
             None => output.native_base_capture_source(source, binding, canonical, playing)?,
         };
-        let scratch = self.begin_on_control(
-            output,
-            original.metadata.selection(),
-            original.identity.owner(),
-            original.identity.device_id(),
-            binding.graph,
-            rate,
-            original.profile,
-            Some(canonical.clone()),
-            None,
-        )?;
+        let warm_key = crate::candidate_custody::WarmScratchKey {
+            original_binding: binding,
+            identity,
+            sample_rate_bits: f64::from(rate).to_bits(),
+            input_channels: match original.profile {
+                PluginProfile::Effect => 2,
+                PluginProfile::Instrument => 0,
+            },
+            output_channels: 2,
+            presentation: original.presentation,
+        };
+        let (scratch, warm_acquired, cold_fallback, phase) =
+            if let Some(scratch) = output.acquire_warm_scratch_native_source_on_control(warm_key) {
+                (
+                    scratch,
+                    true,
+                    Some(Box::new(ColdFallback {
+                        hosting: self.clone(),
+                        metadata: original.metadata,
+                        owner: original.identity.owner(),
+                        device_id: original.identity.device_id(),
+                        graph: binding.graph,
+                        rate,
+                        profile: original.profile,
+                    })),
+                    Phase::Restore,
+                )
+            } else {
+                let scratch = self.begin_on_control(
+                    output,
+                    original.metadata.selection(),
+                    original.identity.owner(),
+                    original.identity.device_id(),
+                    binding.graph,
+                    rate,
+                    original.profile,
+                    Some(canonical.clone()),
+                    None,
+                )?;
+                (scratch, false, None, Phase::Prepare)
+            };
         Ok(CanonicalBasesCapture {
             scratch,
             original: binding,
+            warm_key,
+            warm_acquired,
+            fallback_to_cold: false,
+            cold_fallback,
             identity: original.identity,
             source: (source, epoch, playing),
             fence,
@@ -201,7 +251,7 @@ impl Hosting {
             sample_rate: rate,
             steps: [0; MAX_FOREIGN_AUTOMATION_TARGETS],
             values: [None; MAX_FOREIGN_AUTOMATION_TARGETS],
-            phase: Phase::Prepare,
+            phase,
         })
     }
 }
@@ -252,6 +302,10 @@ impl CanonicalBasesCapture {
         if matches!(progress, Some(Progress::Retiring | Progress::Complete))
             && !matches!(self.phase, Phase::Retire(_))
         {
+            if self.warm_acquired && self.cold_fallback.is_some() {
+                output.disable_warm_scratch_native_source_on_control(self.original);
+                self.fallback_to_cold = true;
+            }
             self.phase = Phase::Retire(Err("native canonical base preparation refused".into()));
         }
         if matches!(self.phase, Phase::Retire(_)) {
@@ -262,6 +316,42 @@ impl CanonicalBasesCapture {
                 return None;
             }
             let report = output.recover_native_source_preparation(self.scratch)?;
+            if self.fallback_to_cold {
+                self.fallback_to_cold = false;
+                if is_cancelled() || !self.source_matches(output) {
+                    self.cold_fallback = None;
+                    self.phase = Phase::Finished;
+                    return Some(Err("native canonical base query cancelled".into()));
+                }
+                if let (Some(cold), Some(canonical)) =
+                    (self.cold_fallback.take(), self.canonical.as_ref())
+                {
+                    match cold.hosting.begin_on_control(
+                        output,
+                        cold.metadata.selection(),
+                        cold.owner,
+                        cold.device_id,
+                        cold.graph,
+                        cold.rate,
+                        cold.profile,
+                        Some(canonical.clone()),
+                        None,
+                    ) {
+                        Ok(scratch) => {
+                            self.scratch = scratch;
+                            self.warm_acquired = false;
+                            self.steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
+                            self.values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+                            self.phase = Phase::Prepare;
+                            return None;
+                        }
+                        Err(error) => {
+                            self.phase = Phase::Finished;
+                            return Some(Err(error));
+                        }
+                    }
+                }
+            }
             let Phase::Retire(result) = std::mem::replace(&mut self.phase, Phase::Finished) else {
                 return None;
             };
@@ -277,25 +367,128 @@ impl CanonicalBasesCapture {
             self.phase = Phase::Verify;
             return None;
         }
-        let next = match progress {
-            Some(Progress::Facts(_)) => {
+        let status = std::sync::Arc::clone(&output.status);
+        let source_desc = self.source;
+        let fence = self.fence;
+        let mut interrupted = false;
+        let mut cancelled = || {
+            if !interrupted {
+                interrupted =
+                    is_cancelled() || !status.canonical_source_matches(source_desc, fence);
+            }
+            interrupted
+        };
+        let next = match (&self.phase, progress) {
+            (Phase::Prepare, Some(Progress::Facts(_))) => {
                 output.complete_native_source_preparation(self.scratch, self.presentation)
             }
-            Some(Progress::Prepared { .. }) => output.start_native_effect_with_authored_selection(
-                self.scratch,
-                (!self.selection.parameters().1.is_empty()).then_some(&self.selection),
-            ),
-            Some(Progress::Effect { prepared }) => self
-                .read_bases(output, prepared)
-                .map(|()| self.phase = Phase::Retire(Ok(()))),
+            (Phase::Prepare, Some(Progress::Prepared { .. })) => output
+                .start_native_effect_with_authored_selection(
+                    self.scratch,
+                    (!self.selection.parameters().1.is_empty()).then_some(&self.selection),
+                ),
+            (Phase::Prepare, Some(Progress::Effect { prepared })) => {
+                self.read_bases(output, prepared).map(|()| {
+                    if !is_cancelled()
+                        && self.source_matches(output)
+                        && let Ok(quiesced) = output
+                            .quiesce_native_source_preparation(self.scratch, self.scratch.graph)
+                    {
+                        self.scratch = quiesced;
+                        if output
+                            .park_warm_scratch_native_source_on_control(self.scratch, self.warm_key)
+                        {
+                            self.phase = Phase::Verify;
+                            return;
+                        }
+                    }
+                    self.phase = Phase::Retire(Ok(()));
+                })
+            }
+            (Phase::Restore, Some(Progress::Facts(_))) => {
+                let Some(canonical) = self.canonical.clone() else {
+                    self.phase =
+                        Phase::Retire(Err("native canonical base state is unavailable".into()));
+                    return None;
+                };
+                output
+                    .restore_native_source_state_on_control(self.scratch, canonical, &mut cancelled)
+                    .and_then(|restored| {
+                        let (facts, quantum, input_channels) =
+                            restored.ok_or("native canonical base warm restore refused")?;
+                        let sibling = prepared_from_quiescent_facts(
+                            self.original,
+                            quantum,
+                            input_channels,
+                            facts,
+                        )?;
+                        if sibling != self.prepared {
+                            return Err("native canonical base processing metadata differs");
+                        }
+                        if self.selection.parameters().1.is_empty() {
+                            if !interrupted
+                                && !is_cancelled()
+                                && self.source_matches(output)
+                                && output.park_warm_scratch_native_source_on_control(
+                                    self.scratch,
+                                    self.warm_key,
+                                )
+                            {
+                                self.phase = Phase::Verify;
+                            } else {
+                                self.phase = Phase::Retire(Ok(()));
+                            }
+                        } else {
+                            self.phase = Phase::ReadQuiescent;
+                        }
+                        Ok(())
+                    })
+            }
+            (Phase::ReadQuiescent, Some(Progress::Facts(_))) => {
+                let metadata = {
+                    let (class, ids) = self.selection.parameters();
+                    output.read_quiescent_authored_metadata_on_control(
+                        self.scratch,
+                        class,
+                        ids,
+                        &mut cancelled,
+                    )
+                };
+                metadata.and_then(|metadata| {
+                    let metadata =
+                        metadata.ok_or("native canonical base metadata is unavailable")?;
+                    let (values, steps) =
+                        extract_quiescent_bases(self.selection.parameters().1, &metadata)?;
+                    self.values = values;
+                    self.steps = steps;
+                    if !interrupted
+                        && !is_cancelled()
+                        && self.source_matches(output)
+                        && output
+                            .park_warm_scratch_native_source_on_control(self.scratch, self.warm_key)
+                    {
+                        self.phase = Phase::Verify;
+                    } else {
+                        self.phase = Phase::Retire(Ok(()));
+                    }
+                    Ok(())
+                })
+            }
             _ => return None,
         };
-        if let Err(error) = next
+        if interrupted {
+            self.fallback_to_cold = false;
+            self.phase = Phase::Retire(Err("native canonical base query cancelled".into()));
+        } else if let Err(error) = next
             && !matches!(
                 error,
                 "native preparation is busy" | "native source is busy"
             )
         {
+            if self.warm_acquired && self.cold_fallback.is_some() {
+                output.disable_warm_scratch_native_source_on_control(self.original);
+                self.fallback_to_cold = true;
+            }
             self.phase = Phase::Retire(Err(error.into()));
         }
         None
@@ -429,6 +622,70 @@ fn compatible(
     sibling
         .with_binding(binding)
         .is_ok_and(|sibling| sibling == original)
+}
+
+fn prepared_from_quiescent_facts(
+    binding: Binding,
+    quantum: u16,
+    input_channels: u8,
+    facts: hex_plugin_host::protocol::Facts,
+) -> Result<PreparedForeignProcessor, &'static str> {
+    let prepared = PreparedForeignProcessor::new(
+        quantum,
+        facts.algorithmic_latency_frames,
+        u32::from(quantum) * 2,
+    )
+    .map(|prepared| {
+        let prepared = if input_channels == 0 {
+            prepared.with_instrument_profile()
+        } else {
+            prepared
+        };
+        prepared.with_output_tail(if facts.tail_frames == u32::MAX {
+            hex_lattice::OutputTail::Unbounded
+        } else {
+            hex_lattice::OutputTail::Finite {
+                max_tail_frames: u64::from(facts.tail_frames) + u64::from(quantum) * 2,
+            }
+        })
+    })
+    .and_then(|prepared| prepared.with_binding(binding))
+    .map_err(|_| "native canonical base latency overflow")?;
+    if prepared.total_latency_frames() > hex_engine::compensation::MAX_COMPENSATION_FRAMES {
+        return Err("native canonical base latency exceeds graph limit");
+    }
+    Ok(prepared)
+}
+
+fn extract_quiescent_bases(
+    expected: &[u32],
+    metadata: &hex_plugin_host::native::AuthoredParameterMetadata,
+) -> Result<
+    (
+        automation::CanonicalParameterBases,
+        [u32; MAX_FOREIGN_AUTOMATION_TARGETS],
+    ),
+    &'static str,
+> {
+    let mut values = [None; MAX_FOREIGN_AUTOMATION_TARGETS];
+    let mut steps = [0; MAX_FOREIGN_AUTOMATION_TARGETS];
+    if expected.len() > values.len() {
+        return Err("native canonical base selection exceeds capacity");
+    }
+    for ((value_slot, step_slot), &id) in values.iter_mut().zip(steps.iter_mut()).zip(expected) {
+        let value = metadata
+            .initial_normalized(id)
+            .ok_or("native canonical base value missing")?;
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+            return Err("native canonical base value differs");
+        }
+        let step_count = metadata
+            .step_count(id)
+            .ok_or("native canonical parameter capability missing")?;
+        *value_slot = Some((id, value.to_bits()));
+        *step_slot = step_count;
+    }
+    Ok((values, steps))
 }
 
 fn copy_values(
@@ -588,5 +845,58 @@ mod tests {
         let rebound = facts.with_rebound_source(next_source, &subset).unwrap();
         assert_eq!(rebound.source(), next_source);
         assert_eq!(rebound.parameters().count(), 2);
+    }
+
+    #[test]
+    fn quiescent_facts_reconstruct_exact_prepared_profile_and_reject_overflow() {
+        let binding = Binding {
+            root: 1,
+            instance: 20,
+            graph: 2,
+            epoch: 3,
+        };
+        let facts = hex_plugin_host::protocol::Facts {
+            note_expression: Default::default(),
+            algorithmic_latency_frames: 64,
+            tail_frames: 128,
+            presentation_available: true,
+            restored: true,
+        };
+        let expected_instrument = PreparedForeignProcessor::new(64, 64, 128)
+            .unwrap()
+            .with_instrument_profile()
+            .with_output_tail(hex_lattice::OutputTail::Finite {
+                max_tail_frames: 128 + 128,
+            })
+            .with_binding(binding)
+            .unwrap();
+        assert_eq!(
+            prepared_from_quiescent_facts(binding, 64, 0, facts).unwrap(),
+            expected_instrument
+        );
+        assert_ne!(
+            prepared_from_quiescent_facts(binding, 64, 2, facts).unwrap(),
+            expected_instrument
+        );
+
+        let infinite = hex_plugin_host::protocol::Facts {
+            tail_frames: u32::MAX,
+            ..facts
+        };
+        let expected_infinite = PreparedForeignProcessor::new(64, 64, 128)
+            .unwrap()
+            .with_output_tail(hex_lattice::OutputTail::Unbounded)
+            .with_binding(binding)
+            .unwrap();
+        assert_eq!(
+            prepared_from_quiescent_facts(binding, 64, 2, infinite).unwrap(),
+            expected_infinite
+        );
+
+        let excessive_latency = hex_plugin_host::protocol::Facts {
+            algorithmic_latency_frames: hex_engine::compensation::MAX_COMPENSATION_FRAMES,
+            ..facts
+        };
+        assert!(prepared_from_quiescent_facts(binding, 64, 2, excessive_latency).is_err());
     }
 }
