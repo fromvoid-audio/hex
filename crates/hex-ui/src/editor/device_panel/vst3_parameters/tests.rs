@@ -577,7 +577,7 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
     editor.read_with(&visual, |view, cx| {
         let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&8];
         assert_eq!(knob.control.entity_id(), other_control);
-        let control = knob.control.read(cx);
+        let control = knob.control.as_numeric().unwrap().read(cx);
         assert!(!control.is_interacting());
         assert_eq!(control.value(), 0.35);
         assert_eq!(view.device_panel.gesture.snapshot().unwrap().key, active);
@@ -608,13 +608,13 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
     editor.read_with(&visual, |view, cx| {
         let knob = &view.device_panel.vst3_parameters.panels[&device].knobs[&8];
         assert_eq!(knob.control.entity_id(), other_control);
-        assert!(knob.control.read(cx).is_interacting());
+        assert!(knob.control.is_interacting(cx));
     });
     visual.simulate_mouse_up(other_dial, gpui::MouseButton::Left, modifiers);
     visual.run_until_parked();
     let (previous_control, previous_value) = editor.update(&mut visual, |view, cx| {
         let control = follow_display(view, device, cx).0.unwrap();
-        (control.entity_id(), control.read(cx).value())
+        (control.entity_id(), control.normalized_value(0, cx))
     });
     editor.update(&mut visual, |view, cx| {
         let panel = view
@@ -667,7 +667,15 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
             .panels
             .get(&device)
             .unwrap();
-        let control = panel.follow_knob.as_ref().unwrap().1.control.read(cx);
+        let control = panel
+            .follow_knob
+            .as_ref()
+            .unwrap()
+            .1
+            .control
+            .as_numeric()
+            .unwrap()
+            .read(cx);
         assert!(
             !control.is_interacting(),
             "pending display must not start a gesture"
@@ -778,7 +786,7 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
             panel.follow_knob.as_ref().unwrap().1.control.entity_id(),
             follow_control_before_renewal
         );
-        assert_eq!(panel.knobs[&7].control.read(cx).value(), 0.8);
+        assert_eq!(panel.knobs[&7].control.normalized_value(0, cx), 0.8);
         assert_eq!(
             panel
                 .follow_knob
@@ -786,8 +794,7 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
                 .unwrap()
                 .1
                 .control
-                .read(cx)
-                .value(),
+                .normalized_value(0, cx),
             0.8
         );
     });
@@ -811,8 +818,8 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
             .panels
             .get(&device)
             .unwrap();
-        assert!(!panel.knobs[&7].control.read(cx).is_interacting());
-        assert_eq!(panel.knobs[&7].control.read(cx).value(), 0.8);
+        assert!(!panel.knobs[&7].control.is_interacting(cx));
+        assert_eq!(panel.knobs[&7].control.normalized_value(0, cx), 0.8);
         assert!(view.device_panel.gesture.snapshot().is_none());
     });
     visual.simulate_mouse_up(stale_dial, gpui::MouseButton::Left, modifiers);
@@ -933,7 +940,11 @@ fn vst3_header_and_list_bounds_stay_fixed_across_touch_states(cx: &mut gpui::Tes
             .panels
             .get(&device)
             .unwrap();
-        let control = panel.row_placeholders[&124].control.read(cx);
+        let control = panel.row_placeholders[&124]
+            .control
+            .as_numeric()
+            .unwrap()
+            .read(cx);
         assert!(!control.is_interacting());
         assert_eq!(control.value(), 0.35);
         assert!(view.device_panel.gesture.snapshot().is_none());
@@ -1205,7 +1216,7 @@ fn repeated_native_performs_keep_the_inflight_touch_and_established_target(
         let query = panel.query;
         panel.observe_value(touch, 14, Some(PluginParameterValue::new(0.9).unwrap()));
         let control = knob(view, device, query, &row, cx).unwrap();
-        assert_eq!(control.read(cx).value(), 0.9);
+        assert_eq!(control.normalized_value(0, cx), 0.9);
         let panel = view
             .device_panel
             .vst3_parameters

@@ -98,6 +98,9 @@ pub(in crate::editor) fn ensure_panel(
             priority_page: None,
             queued_touch: None,
             live_values: HashMap::new(),
+            formatted_steps: HashMap::new(),
+            format_unsupported: BTreeSet::new(),
+            drag_preview: None,
             pending_touch: None,
             pending_touch_request: None,
             last_touched: None,
@@ -174,15 +177,100 @@ pub(in crate::editor) fn install_conversion_result(
     result: PluginParameterConversionResult,
     revision: u64,
 ) {
-    if view
-        .device_panel
-        .vst3_parameters
+    let state = &view.device_panel.vst3_parameters;
+    let matches_parse = state
         .conversion
         .as_ref()
-        .is_some_and(|pending| pending.query == result.query)
-    {
+        .is_some_and(|pending| pending.query == result.query);
+    let matches_format = state
+        .live_format
+        .as_ref()
+        .is_some_and(|pending| pending.query == result.query);
+    if matches_parse || matches_format {
         view.device_panel.vst3_parameters.conversion_result = Some((result, revision));
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(in crate::editor) fn request_live_format(
+    view: &mut EditorView,
+    device: DeviceId,
+    source: hex_lattice_contract::ForeignProcessorBinding,
+    output_identity: u64,
+    context: AudioSourceContext,
+    parameter: u32,
+    steps: u32,
+    normalized: f64,
+    cx: &mut Context<EditorView>,
+) {
+    view.device_panel.vst3_parameters.queued_format = Some(QueuedFormat {
+        device,
+        source,
+        output_identity,
+        context,
+        parameter,
+        steps,
+        normalized,
+    });
+    pump_live_format(view, cx);
+}
+
+pub(in crate::editor) fn pump_live_format(view: &mut EditorView, cx: &mut Context<EditorView>) {
+    if view.device_panel.vst3_parameters.conversion.is_some()
+        || view.device_panel.vst3_parameters.live_format.is_some()
+    {
+        return;
+    }
+    let Some(queued) = view.device_panel.vst3_parameters.queued_format.take() else {
+        return;
+    };
+    let Some(applied_source) = refresh_source(view) else {
+        return;
+    };
+    if current_context(view) != Some(queued.context)
+        || applied_source.output_identity != queued.output_identity
+        || !refreshable_device(view, queued.device, applied_source)
+    {
+        return;
+    }
+    let still_current = view
+        .device_panel
+        .vst3_parameters
+        .panels
+        .get(&queued.device)
+        .is_some_and(|panel| {
+            panel.source == Some(queued.source)
+                && panel.query.context == queued.context
+                && panel.query.output_identity == queued.output_identity
+                && !panel.format_unsupported.contains(&queued.parameter)
+        });
+    if !still_current {
+        return;
+    }
+    let Some(request_id) = view.device_panel.vst3_parameters.serial.checked_add(1) else {
+        return;
+    };
+    let query = PluginParameterConversionQuery {
+        context: queued.context,
+        device: queued.device,
+        output_identity: queued.output_identity,
+        request_id,
+        source: queued.source,
+        parameter: queued.parameter,
+        operation: PluginParameterConversion::Format(queued.normalized),
+    };
+    if !view.enqueue(Request::QueryPluginParameterConversion(query.clone())) {
+        // Keep queued for the next tick if the service mailbox is momentarily full.
+        view.device_panel.vst3_parameters.queued_format = Some(queued);
+        return;
+    }
+    view.device_panel.vst3_parameters.serial = request_id;
+    view.device_panel.vst3_parameters.live_format = Some(PendingFormat {
+        query,
+        source: applied_source,
+        steps: queued.steps,
+    });
+    cx.notify();
 }
 
 pub(in crate::editor) fn conversion_target_current(
@@ -266,10 +354,13 @@ pub(in crate::editor) fn submit_conversion(
     let reject = |view: &mut EditorView, reason, cx: &mut Context<EditorView>| {
         refuse_conversion(view, &control, &request.id, reason, cx);
     };
-    if view.device_panel.vst3_parameters.conversion.is_some() {
+    if view.device_panel.vst3_parameters.conversion.is_some()
+        || view.device_panel.vst3_parameters.live_format.is_some()
+    {
         reject(view, "vst3 controller is busy · try again", cx);
         return;
     }
+    view.device_panel.vst3_parameters.queued_format = None;
     let Ok(text) = PluginParameterText::new(&request.text) else {
         reject(view, "vst3 parameter text is too long or invalid", cx);
         return;
@@ -326,6 +417,20 @@ pub(in crate::editor) fn apply_conversion_result(
     revision: u64,
     cx: &mut Context<EditorView>,
 ) {
+    if view
+        .device_panel
+        .vst3_parameters
+        .live_format
+        .as_ref()
+        .is_some_and(|pending| pending.query == result.query)
+    {
+        let Some(pending) = view.device_panel.vst3_parameters.live_format.take() else {
+            return;
+        };
+        apply_live_format_result(view, pending, result, revision, cx);
+        pump_live_format(view, cx);
+        return;
+    }
     let Some(pending) = view.device_panel.vst3_parameters.conversion.take() else {
         return;
     };
@@ -347,10 +452,40 @@ pub(in crate::editor) fn apply_conversion_result(
     }
     match result.value {
         Ok(value) => {
+            let steps = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get(&pending.query.device)
+                .and_then(|panel| {
+                    panel
+                        .rows()?
+                        .iter()
+                        .find(|row| row.id == pending.query.parameter)
+                        .map(|row| row.steps)
+                })
+                .unwrap_or(0);
+            let control_value = control_value_from_normalized(steps, value.normalized);
+            if let Some(display) = value.display.as_deref()
+                && !display.is_empty()
+                && let Some(panel) = view
+                    .device_panel
+                    .vst3_parameters
+                    .panels
+                    .get_mut(&pending.query.device)
+            {
+                panel.cache_step_label(pending.query.parameter, steps, value.normalized, display);
+                panel.drag_preview = Some(DragPreview {
+                    source: pending.query.source,
+                    parameter: pending.query.parameter,
+                    normalized: value.normalized,
+                    display: display.to_owned(),
+                });
+            }
             if let Err(error) = pending.control.update(cx, |control, cx| {
                 control.resolve_deferred_text(
                     &pending.draft,
-                    Some(value.normalized),
+                    Some(control_value),
                     value.display.as_deref(),
                     cx,
                 )
@@ -362,6 +497,93 @@ pub(in crate::editor) fn apply_conversion_result(
             }
         }
         Err(reason) => refuse_conversion(view, &pending.control, &pending.draft, &reason, cx),
+    }
+}
+
+fn apply_live_format_result(
+    view: &mut EditorView,
+    pending: PendingFormat,
+    result: PluginParameterConversionResult,
+    revision: u64,
+    cx: &mut Context<EditorView>,
+) {
+    let query = &pending.query;
+    if revision != query.context.editor_revision
+        || current_context(view) != Some(query.context)
+        || refresh_source(view) != Some(pending.source)
+    {
+        return;
+    }
+    match result.value {
+        Ok(converted) => {
+            let Some(display) = converted.display.filter(|text| !text.is_empty()) else {
+                return;
+            };
+            let (row_control, follow_control) = {
+                let Some(panel) = view
+                    .device_panel
+                    .vst3_parameters
+                    .panels
+                    .get_mut(&query.device)
+                    .filter(|panel| {
+                        panel.source == Some(query.source)
+                            && panel.query.context == query.context
+                            && panel.query.output_identity == query.output_identity
+                    })
+                else {
+                    return;
+                };
+                panel.cache_step_label(
+                    query.parameter,
+                    pending.steps,
+                    converted.normalized,
+                    &display,
+                );
+                let normalized = panel
+                    .active_drag_preview(query.parameter)
+                    .map_or(converted.normalized, |preview| preview.normalized);
+                if panel.active_drag_preview(query.parameter).is_some() {
+                    panel.drag_preview = Some(DragPreview {
+                        source: query.source,
+                        parameter: query.parameter,
+                        normalized,
+                        display: display.clone(),
+                    });
+                }
+                let row_control = panel
+                    .knobs
+                    .get(&query.parameter)
+                    .map(|knob| knob.control.clone());
+                let follow_control = panel
+                    .follow_knob
+                    .as_ref()
+                    .filter(|(id, _)| *id == query.parameter)
+                    .map(|(_, knob)| knob.control.clone());
+                (row_control, follow_control)
+            };
+            if let Some(control) = row_control {
+                control.set_external_display_for_current(&display, cx);
+            }
+            if let Some(control) = follow_control {
+                control.set_external_display_for_current(&display, cx);
+            }
+            cx.notify();
+        }
+        Err(reason) if reason == "vst3 parameter formatting unsupported" => {
+            if let Some(panel) = view
+                .device_panel
+                .vst3_parameters
+                .panels
+                .get_mut(&query.device)
+                .filter(|panel| panel.source == Some(query.source))
+            {
+                if panel.format_unsupported.len() >= MAX_UNSUPPORTED_FORMAT_ENTRIES {
+                    panel.format_unsupported.clear();
+                }
+                panel.format_unsupported.insert(query.parameter);
+            }
+        }
+        Err(_) => {}
     }
 }
 
@@ -417,6 +639,7 @@ pub(in crate::editor) fn apply_result(
     panel.reconcile_live_values(source, &rows);
     if panel.descriptor_signature != result.descriptor_signature {
         panel.live_values.clear();
+        panel.clear_format_caches();
     }
     let Some(descriptor_signature) = result.descriptor_signature else {
         panel.result = None;
@@ -424,6 +647,7 @@ pub(in crate::editor) fn apply_result(
         panel.descriptor_signature = None;
         panel.total = None;
         panel.knobs.clear();
+        panel.clear_format_caches();
         record_error(
             panel,
             "vst3 parameter descriptor signature unavailable".into(),
@@ -442,6 +666,7 @@ pub(in crate::editor) fn apply_result(
                 .map(|row| row.page_first)
         });
         panel.cache_error = None;
+        panel.clear_format_caches();
         panel.mark_values_stale();
         panel.pending_touch = pending_touch;
         panel.priority_page = priority_page;
@@ -500,6 +725,7 @@ pub(in crate::editor) fn apply_result(
                 .cloned()
                 .map(|row| (panel.owner, row))
         });
+        panel.record_row_displays(&rows);
         let touched_preview = resolve_pending_touch(panel, source, &rows, None, touch_query);
         panel.result = Some(Arc::new(rows));
         panel.refilter(false);
@@ -544,27 +770,26 @@ pub(in crate::editor) fn apply_result(
             .iter()
             .zip(&rows)
             .any(|(old, new)| old.name != new.name);
+    let mut control_updates = Vec::new();
     for (previous, row) in previous_page.iter().zip(&rows) {
         if previous != row
             && let Some(origin) = parameter_origin(result.query, row)
         {
             let value = panel.display_value(row);
+            let display = panel.display_for_value(row, value).map(str::to_owned);
             if let Some(knob) = panel.knobs.get(&row.id) {
                 knob.origin.set(origin);
-                knob.control.update(cx, |control, cx| {
-                    let _ = control.set_external_value(value, cx);
-                });
+                control_updates.push((knob.control.clone(), row.steps, value, display.clone()));
             }
             if let Some((id, knob)) = panel.follow_knob.as_ref()
                 && *id == row.id
             {
                 knob.origin.set(origin);
-                knob.control.update(cx, |control, cx| {
-                    let _ = control.set_external_value(value, cx);
-                });
+                control_updates.push((knob.control.clone(), row.steps, value, display));
             }
         }
     }
+    panel.record_row_displays(&rows);
     if panel.priority_page == Some(first) && (panel.pending_touch.is_none() || touch_query) {
         panel.priority_page = None;
     }
@@ -602,6 +827,9 @@ pub(in crate::editor) fn apply_result(
             .map(|row| (panel.owner, row))
     });
     let touched_preview = resolve_pending_touch(panel, source, &rows, Some(first), touch_query);
+    for (control, steps, value, display) in control_updates {
+        control.set_external_state(steps, value, display.as_deref(), cx);
+    }
     if let Some((owner, row)) = touched_preview.or(preview) {
         view.remember_touched_vst3(owner, device, &row, cx);
     }

@@ -14,7 +14,8 @@ use hex_session::service::{
 use hex_widgets::{
     ControlAvailability, NumericControl, NumericControlConfig, NumericControlEvent,
     NumericControlPresentation, NumericEventPhase, NumericGestureId, NumericScale, NumericSpec,
-    NumericTextRequest, NumericTextRequestId, TextInput,
+    NumericTextRequest, NumericTextRequestId, TextInput, Toggle, ToggleAppearance, ToggleChanged,
+    ToggleConfig,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -27,6 +28,238 @@ use std::{
 
 const PAGE_REFRESH_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_AUTOMATIC_RETRIES: u8 = 3;
+const MAX_CACHED_STEPS: u32 = 64;
+const MAX_FORMATTED_STEP_ENTRIES: usize = 512;
+const MAX_UNSUPPORTED_FORMAT_ENTRIES: usize = 512;
+
+pub(super) fn is_toggle_parameter(steps: u32) -> bool {
+    steps == 1
+}
+
+pub(super) fn toggle_checked(normalized: f64) -> bool {
+    normalized >= 0.5
+}
+
+pub(super) fn toggle_label(checked: bool, display: Option<&str>) -> &str {
+    match display {
+        Some(text) if !text.is_empty() => text,
+        _ if checked => "on",
+        _ => "off",
+    }
+}
+
+pub(super) fn step_index_from_normalized(steps: u32, normalized: f64) -> u32 {
+    if steps == 0 {
+        return 0;
+    }
+    let max = f64::from(steps);
+    (normalized.clamp(0.0, 1.0) * max).round().clamp(0.0, max) as u32
+}
+
+pub(super) fn control_value_from_normalized(steps: u32, normalized: f64) -> f64 {
+    if steps > 1 {
+        f64::from(step_index_from_normalized(steps, normalized))
+    } else {
+        normalized.clamp(0.0, 1.0)
+    }
+}
+
+pub(super) fn normalized_from_control_value(steps: u32, value: f64) -> f64 {
+    if steps > 1 {
+        let max = f64::from(steps);
+        (value.round().clamp(0.0, max) / max).clamp(0.0, 1.0)
+    } else {
+        value.clamp(0.0, 1.0)
+    }
+}
+
+#[derive(Clone)]
+pub(super) enum ParameterControl {
+    Numeric(Entity<NumericControl>),
+    Toggle(Entity<Toggle>),
+}
+
+impl ParameterControl {
+    pub(super) fn entity_id(&self) -> gpui::EntityId {
+        match self {
+            Self::Numeric(control) => control.entity_id(),
+            Self::Toggle(toggle) => toggle.entity_id(),
+        }
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn as_numeric(&self) -> Option<&Entity<NumericControl>> {
+        match self {
+            Self::Numeric(control) => Some(control),
+            Self::Toggle(_) => None,
+        }
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn as_toggle(&self) -> Option<&Entity<Toggle>> {
+        match self {
+            Self::Toggle(toggle) => Some(toggle),
+            Self::Numeric(_) => None,
+        }
+    }
+
+    pub(super) fn is_interacting(&self, cx: &App) -> bool {
+        match self {
+            Self::Numeric(control) => control.read(cx).is_interacting(),
+            Self::Toggle(_) => false,
+        }
+    }
+
+    pub(super) fn is_editing(&self, cx: &App) -> bool {
+        match self {
+            Self::Numeric(control) => control.read(cx).is_editing(),
+            Self::Toggle(_) => false,
+        }
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    pub(super) fn normalized_value(&self, steps: u32, cx: &App) -> f64 {
+        match self {
+            Self::Numeric(control) => {
+                normalized_from_control_value(steps, control.read(cx).value())
+            }
+            Self::Toggle(toggle) => {
+                if toggle.read(cx).checked() {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+        }
+    }
+
+    pub(super) fn set_external_state(
+        &self,
+        steps: u32,
+        normalized: f64,
+        display: Option<&str>,
+        cx: &mut Context<EditorView>,
+    ) {
+        match self {
+            Self::Numeric(control) => {
+                let value = control_value_from_normalized(steps, normalized);
+                control.update(cx, |control, cx| {
+                    let _ = control.set_external_value(value, cx);
+                    if let Some(display) = display
+                        && !display.is_empty()
+                    {
+                        let _ = control.set_external_display(value, display, cx);
+                    }
+                });
+            }
+            Self::Toggle(toggle) => {
+                let checked = toggle_checked(normalized);
+                let label = toggle_label(checked, display);
+                toggle.update(cx, |toggle, cx| {
+                    toggle.set_checked(checked, cx);
+                    toggle.set_label(theme::text(hex_session::service::text::verbatim(label)), cx);
+                });
+            }
+        }
+    }
+
+    pub(super) fn set_external_display_for_current(
+        &self,
+        display: &str,
+        cx: &mut Context<EditorView>,
+    ) {
+        if display.is_empty() {
+            return;
+        }
+        match self {
+            Self::Numeric(control) => {
+                control.update(cx, |control, cx| {
+                    let value = control.value();
+                    let _ = control.set_external_display(value, display, cx);
+                });
+            }
+            Self::Toggle(toggle) => {
+                toggle.update(cx, |toggle, cx| {
+                    toggle.set_label(
+                        theme::text(hex_session::service::text::verbatim(display)),
+                        cx,
+                    );
+                });
+            }
+        }
+    }
+
+    pub(super) fn set_availability(
+        &self,
+        availability: ControlAvailability,
+        cx: &mut Context<EditorView>,
+    ) {
+        match self {
+            Self::Numeric(control) => {
+                control.update(cx, |control, cx| control.set_availability(availability, cx));
+            }
+            Self::Toggle(toggle) => {
+                toggle.update(cx, |toggle, cx| toggle.set_availability(availability, cx));
+            }
+        }
+    }
+
+    pub(super) fn set_refresh_availability(
+        &self,
+        row: &PluginParameterRow,
+        cx: &mut Context<EditorView>,
+    ) {
+        match self {
+            Self::Numeric(control) => {
+                control.update(cx, |control, cx| set_refresh_availability(control, row, cx));
+            }
+            Self::Toggle(toggle) => {
+                toggle.update(cx, |toggle, cx| {
+                    if row.metadata_revision == 0 || row.editable {
+                        toggle.set_availability(ControlAvailability::Busy, cx);
+                    } else {
+                        toggle.set_enabled(false, cx);
+                    }
+                });
+            }
+        }
+    }
+
+    pub(super) fn set_external_style(
+        &self,
+        style: hex_widgets::ControlStyle,
+        cx: &mut Context<EditorView>,
+    ) {
+        match self {
+            Self::Numeric(control) => {
+                control.update(cx, |control, cx| {
+                    let _ = control.set_external_style(style, cx);
+                });
+            }
+            Self::Toggle(toggle) => {
+                toggle.update(cx, |toggle, cx| {
+                    let _ = toggle.set_external_style(style, cx);
+                });
+            }
+        }
+    }
+
+    pub(super) fn into_slot_element(self) -> gpui::AnyElement {
+        match self {
+            Self::Numeric(control) => control.into_any_element(),
+            Self::Toggle(toggle) => div()
+                .w(px(hex_widgets::MICRO_DIAL_WIDTH))
+                .h(px(hex_widgets::MICRO_DIAL_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .px(px(2.0))
+                .child(toggle)
+                .into_any_element(),
+        }
+    }
+}
 
 mod cache;
 mod row_projection;
@@ -44,6 +277,8 @@ pub(super) struct State {
     in_flight: Option<(PluginParameterQuery, AppliedAudioSource)>,
     deferred_result: Option<(PluginParameterResult, u64)>,
     conversion: Option<PendingConversion>,
+    live_format: Option<PendingFormat>,
+    queued_format: Option<QueuedFormat>,
     conversion_result: Option<(PluginParameterConversionResult, u64)>,
     conversion_error: Option<String>,
     last_touched_device: Option<DeviceId>,
@@ -84,6 +319,27 @@ struct PendingConversion {
     control: Entity<NumericControl>,
     draft: NumericTextRequestId,
 }
+struct PendingFormat {
+    query: PluginParameterConversionQuery,
+    source: AppliedAudioSource,
+    steps: u32,
+}
+#[derive(Clone)]
+struct QueuedFormat {
+    device: DeviceId,
+    source: hex_lattice_contract::ForeignProcessorBinding,
+    output_identity: u64,
+    context: AudioSourceContext,
+    parameter: u32,
+    steps: u32,
+    normalized: f64,
+}
+struct DragPreview {
+    source: hex_lattice_contract::ForeignProcessorBinding,
+    parameter: u32,
+    normalized: f64,
+    display: String,
+}
 #[derive(Clone, PartialEq, Eq)]
 struct ReportedStatus {
     device: u64,
@@ -120,6 +376,9 @@ struct Panel {
     priority_page: Option<u16>,
     queued_touch: Option<TouchObservation>,
     live_values: HashMap<u32, LiveTouchValue>,
+    formatted_steps: HashMap<(u32, u32), String>,
+    format_unsupported: BTreeSet<u32>,
+    drag_preview: Option<DragPreview>,
     pending_touch: Option<TouchObservation>,
     last_touched: Option<u32>,
     touch_unavailable: bool,
@@ -138,21 +397,14 @@ impl Panel {
         self.knobs
             .values()
             .chain(self.follow_knob.iter().map(|(_, knob)| knob))
-            .any(|knob| {
-                knob.control.read_with(cx, |control, _| {
-                    control.is_interacting() || control.is_editing()
-                })
-            })
+            .any(|knob| knob.control.is_interacting(cx) || knob.control.is_editing(cx))
     }
 
     fn has_pending_text_edit(&self, cx: &App) -> bool {
         self.knobs
             .values()
             .chain(self.follow_knob.iter().map(|(_, knob)| knob))
-            .any(|knob| {
-                knob.control
-                    .read_with(cx, |control, _| control.is_editing())
-            })
+            .any(|knob| knob.control.is_editing(cx))
     }
 }
 struct Knob {
@@ -161,11 +413,11 @@ struct Knob {
     name: String,
     default: f64,
     steps: u32,
-    control: Entity<NumericControl>,
+    control: ParameterControl,
     origin: Rc<Cell<PluginParameterOrigin>>,
     drag: Rc<KnobDrag>,
     _subscription: Subscription,
-    _text_observation: Subscription,
+    _text_observation: Option<Subscription>,
 }
 impl Knob {
     fn matches_descriptor(&self, row: &PluginParameterRow) -> bool {
@@ -204,22 +456,19 @@ impl Knob {
         &self,
         query: PluginParameterQuery,
         row: &PluginParameterRow,
-        presentation: (f64, &str),
+        presentation: (f64, Option<&str>),
         enabled: bool,
         active: Option<hex_session::device_gesture::GestureSnapshot>,
         cx: &mut Context<EditorView>,
-    ) -> Option<Entity<NumericControl>> {
+    ) -> Option<ParameterControl> {
         let (value, display) = presentation;
         self.origin.set(parameter_origin(query, row)?);
         let value = self.pending_value(active).unwrap_or(value);
         let busy = active.is_some_and(|gesture| !self.owns(gesture.key));
-        self.control.update(cx, |control, cx| {
-            let _ = control.set_external_value(value, cx);
-            if value == row.normalized {
-                let _ = control.set_external_display(value, display, cx);
-            }
-            control.set_availability(ControlAvailability::for_edit(enabled, busy), cx);
-        });
+        self.control
+            .set_external_state(row.steps, value, display, cx);
+        self.control
+            .set_availability(ControlAvailability::for_edit(enabled, busy), cx);
         Some(self.control.clone())
     }
 }
@@ -227,7 +476,8 @@ impl Knob {
 struct RowPlaceholder {
     name: String,
     default: f64,
-    control: Entity<NumericControl>,
+    steps: u32,
+    control: ParameterControl,
 }
 
 /// Metadata reads keep the control poll active without claiming edit custody.
@@ -235,6 +485,7 @@ pub(in crate::editor) fn query_pending(view: &EditorView) -> bool {
     view.device_panel.vst3_parameters.in_flight.is_some()
         || view.device_panel.vst3_parameters.deferred_result.is_some()
         || view.device_panel.vst3_parameters.conversion.is_some()
+        || view.device_panel.vst3_parameters.live_format.is_some()
         || view
             .device_panel
             .vst3_parameters
@@ -295,7 +546,91 @@ impl Panel {
             .map_or(row.normalized, |live| live.value.normalized())
     }
 
+    fn clear_format_caches(&mut self) {
+        self.formatted_steps.clear();
+        self.format_unsupported.clear();
+        self.drag_preview = None;
+    }
+
+    fn cache_step_label(&mut self, parameter: u32, steps: u32, normalized: f64, display: &str) {
+        if steps == 0 || steps > MAX_CACHED_STEPS || display.is_empty() {
+            return;
+        }
+        let key = (parameter, step_index_from_normalized(steps, normalized));
+        if self.formatted_steps.len() >= MAX_FORMATTED_STEP_ENTRIES
+            && !self.formatted_steps.contains_key(&key)
+        {
+            self.formatted_steps.clear();
+        }
+        self.formatted_steps.insert(key, display.to_owned());
+    }
+
+    fn record_row_displays(&mut self, rows: &[PluginParameterRow]) {
+        for row in rows {
+            if row.metadata_revision != 0 {
+                self.cache_step_label(row.id, row.steps, row.normalized, &row.value);
+            }
+        }
+    }
+
+    fn cached_step_label(&self, parameter: u32, steps: u32, normalized: f64) -> Option<&str> {
+        if steps == 0 || steps > MAX_CACHED_STEPS {
+            return None;
+        }
+        let key = (parameter, step_index_from_normalized(steps, normalized));
+        self.formatted_steps.get(&key).map(String::as_str)
+    }
+
+    fn active_drag_preview(&self, parameter: u32) -> Option<&DragPreview> {
+        self.drag_preview
+            .as_ref()
+            .filter(|preview| preview.parameter == parameter && self.source == Some(preview.source))
+    }
+
+    fn current_drag_or_row_display(&self, parameter: u32) -> Option<&str> {
+        if let Some(preview) = self
+            .active_drag_preview(parameter)
+            .filter(|preview| !preview.display.is_empty())
+        {
+            return Some(preview.display.as_str());
+        }
+        self.rows()?
+            .iter()
+            .find(|row| row.id == parameter)
+            .map(|row| self.display_text(row))
+            .filter(|text| !text.is_empty())
+    }
+
+    fn display_for_value<'a>(
+        &'a self,
+        row: &'a PluginParameterRow,
+        normalized: f64,
+    ) -> Option<&'a str> {
+        if let Some(preview) = self
+            .active_drag_preview(row.id)
+            .filter(|preview| !preview.display.is_empty())
+        {
+            return Some(preview.display.as_str());
+        }
+        if let Some(cached) = self.cached_step_label(row.id, row.steps, normalized) {
+            return Some(cached);
+        }
+        if normalized == row.normalized {
+            let text = self.display_text(row);
+            if !text.is_empty() {
+                return Some(text);
+            }
+        }
+        if is_toggle_parameter(row.steps) {
+            return Some(toggle_label(toggle_checked(normalized), None));
+        }
+        None
+    }
+
     fn painted_value(&self, view: &EditorView, device: DeviceId, row: &PluginParameterRow) -> f64 {
+        if let Some(preview) = self.active_drag_preview(row.id) {
+            return preview.normalized;
+        }
         if let Some(live) = self.live_value(row) {
             return live.value.normalized();
         }
@@ -313,8 +648,13 @@ impl Panel {
     }
 
     fn display_text<'a>(&'a self, row: &'a PluginParameterRow) -> &'a str {
-        // Only the SDK page formats values. Hold its last text while the
-        // immediate knob preview is ahead of the controller observation.
+        // Only the SDK page or read-only Format conversion formats values.
+        if let Some(preview) = self
+            .active_drag_preview(row.id)
+            .filter(|preview| !preview.display.is_empty())
+        {
+            return preview.display.as_str();
+        }
         self.live_value(row)
             .map_or(row.value.as_str(), |live| live.formatted.as_str())
     }
@@ -354,6 +694,20 @@ impl Panel {
 
     fn mark_values_stale_with_commit(&mut self, committed: Option<(u32, f64)>) {
         let total = self.rows().and_then(|rows| u16::try_from(rows.len()).ok());
+        let committed_display = committed.and_then(|(id, value)| {
+            self.active_drag_preview(id)
+                .filter(|preview| !preview.display.is_empty())
+                .map(|preview| preview.display.clone())
+                .or_else(|| {
+                    let row = self.rows()?.iter().find(|row| row.id == id)?;
+                    self.cached_step_label(row.id, row.steps, value)
+                        .map(str::to_owned)
+                        .or_else(|| {
+                            is_toggle_parameter(row.steps)
+                                .then(|| toggle_label(toggle_checked(value), None).to_owned())
+                        })
+                })
+        });
         if let Some(rows) = &self.result {
             self.result = Some(Arc::new(
                 rows.iter()
@@ -368,8 +722,9 @@ impl Panel {
                             && row.id == id
                         {
                             pending.normalized = value;
-                            // The plug-in must supply its own formatted text.
-                            pending.value = "updating".into();
+                            if let Some(display) = committed_display.as_ref() {
+                                pending.value = display.clone();
+                            }
                         }
                         pending
                     })
@@ -383,6 +738,7 @@ impl Panel {
         self.priority_page = None;
         self.queued_touch = None;
         self.live_values.clear();
+        self.drag_preview = None;
         self.pending_touch = None;
         self.pending_touch_request = None;
         // The selected parameter is view intent, not edit authority. Keep its

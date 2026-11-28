@@ -14,11 +14,11 @@ pub(in crate::editor) fn interactions_active(view: &EditorView, cx: &Context<Edi
                 panel
                     .knobs
                     .values()
-                    .any(|knob| knob.control.read(cx).is_interacting())
+                    .any(|knob| knob.control.is_interacting(cx))
                     || panel
                         .follow_knob
                         .as_ref()
-                        .is_some_and(|(_, knob)| knob.control.read(cx).is_interacting())
+                        .is_some_and(|(_, knob)| knob.control.is_interacting(cx))
             })
 }
 
@@ -193,6 +193,7 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
     if let Some((result, revision)) = view.device_panel.vst3_parameters.conversion_result.take() {
         apply_conversion_result(view, result, revision, cx);
     }
+    pump_live_format(view, cx);
     if report_panel_state(view) {
         cx.notify();
     }
@@ -301,6 +302,24 @@ pub(in crate::editor) fn tick(view: &mut EditorView, cx: &mut Context<EditorView
 /// Dropping a cached control also drops its event subscription. Cancel only
 /// the exact pointer edit it owns before relying on GPUI to release capture.
 pub(in crate::editor) fn retire_panel(view: &mut EditorView, device: DeviceId) {
+    if view
+        .device_panel
+        .vst3_parameters
+        .queued_format
+        .as_ref()
+        .is_some_and(|queued| queued.device == device)
+    {
+        view.device_panel.vst3_parameters.queued_format = None;
+    }
+    if view
+        .device_panel
+        .vst3_parameters
+        .live_format
+        .as_ref()
+        .is_some_and(|pending| pending.query.device == device)
+    {
+        view.device_panel.vst3_parameters.live_format = None;
+    }
     let Some(panel) = view.device_panel.vst3_parameters.panels.remove(&device) else {
         return;
     };

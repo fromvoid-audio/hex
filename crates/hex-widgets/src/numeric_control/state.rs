@@ -240,6 +240,11 @@ impl NumericControl {
         &self.text
     }
 
+    /// Exact text painted by this control, including any matching external display.
+    pub fn presented_text(&self) -> String {
+        self.value_string()
+    }
+
     /// Update caller-owned styling without replacing this control or its draft.
     pub fn set_external_style(
         &mut self,
