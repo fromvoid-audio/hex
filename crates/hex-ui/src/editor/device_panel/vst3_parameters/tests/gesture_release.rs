@@ -1219,3 +1219,116 @@ fn inflight_commit_locks_released_knob_and_stranded_commit_recovers_on_click(
     });
     output.publication.close();
 }
+
+#[gpui::test]
+fn toggle_admits_click_after_playback_metadata_revision_advance_before_repaint(
+    cx: &mut gpui::TestAppContext,
+) {
+    let _serial = hex_audio::worker_fixture::serial_output();
+    let (mut output, _backend) =
+        hex_audio::worker_fixture::open_after_retirement(48_000, false).unwrap();
+    let client = output.take_client().unwrap();
+    let root = client.output_identity().unwrap();
+    let (project, track, device) = parameter_project();
+    let (handle, editor) =
+        crate::editor::clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    cx.update_window(handle, |_, window, cx| {
+        window.replace_root(cx, |_, cx| Card {
+            editor: editor.clone(),
+            device,
+            _observe: cx.observe(&editor, |_, _, cx| cx.notify()),
+        });
+    })
+    .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root,
+        instance: device.value(),
+        graph: 1,
+        epoch: 1,
+    };
+    let toggle_row = PluginParameterRow {
+        id: 11,
+        name: "enable".into(),
+        value: "off".into(),
+        normalized: 0.0,
+        default_normalized: 0.0,
+        steps: 1,
+        editable: true,
+        automation_class: Some([2; 16]),
+        page_first: 0,
+        metadata_revision: 10,
+        editor_sequence: 0,
+    };
+    editor.update(&mut visual, |view, cx| {
+        view.audio = Some(crate::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "headless".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.selected_track = Some(track);
+        view.device_panel.owner = Some(DevicePanelOwner::Track(track));
+        view.device_panel.selected_device = Some(device);
+        view.device_panel.active = true;
+        view.audio_detail.clip_view_open = true;
+        ensure_panel(view, device, cx);
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        panel.cache_loading = false;
+        panel.source = Some(binding);
+        panel.result = Some(Arc::new(vec![toggle_row.clone()]));
+        panel.record_row_displays(std::slice::from_ref(&toggle_row));
+        panel.refilter(false);
+        cx.notify();
+    });
+    visual.update(|window, _| window.activate_window());
+    visual.run_until_parked();
+
+    let toggle_selector = Box::leak(format!("vst3-toggle-{}-11", device.value()).into_boxed_str());
+    let toggle_center = visual.debug_bounds(toggle_selector).unwrap().center();
+
+    // Simulate a background playback poll advancing metadata_revision from 10 to 25
+    // before the next paint calls knob.renew (so knob.origin still holds revision 10).
+    editor.update(&mut visual, |view, _| {
+        let panel = view
+            .device_panel
+            .vst3_parameters
+            .panels
+            .get_mut(&device)
+            .unwrap();
+        assert_eq!(panel.knobs[&11].origin.get().metadata_revision, 10);
+        panel.result = Some(Arc::new(vec![PluginParameterRow {
+            metadata_revision: 25,
+            ..toggle_row.clone()
+        }]));
+    });
+
+    // Clicking the toggle must still admit the gesture and advance its origin revision to 25.
+    visual.simulate_mouse_down(toggle_center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle_center, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+
+    editor.update(&mut visual, |view, cx| {
+        let panel = &view.device_panel.vst3_parameters.panels[&device];
+        let toggle = panel.knobs[&11].control.as_toggle().unwrap().read(cx);
+        assert!(
+            toggle.checked(),
+            "toggle click after monotonic revision advance must not revert"
+        );
+        assert_eq!(panel.knobs[&11].origin.get().metadata_revision, 25);
+        let snapshot = view
+            .device_panel
+            .gesture
+            .snapshot()
+            .expect("toggle click must admit gesture");
+        assert_eq!(snapshot.plugin_value.unwrap().normalized(), 1.0);
+        assert!(view.device_panel.gesture.has_pending_terminal());
+    });
+    output.publication.close();
+}

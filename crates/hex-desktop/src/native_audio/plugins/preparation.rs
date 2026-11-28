@@ -787,6 +787,7 @@ impl Plugins {
                                 &expanded,
                                 cancellation,
                                 restored,
+                                self.diagnostics.as_ref(),
                             ) {
                                 Ok(facts) => (expanded, facts),
                                 Err(_)
@@ -802,6 +803,7 @@ impl Plugins {
                                         &selection,
                                         cancellation,
                                         restored,
+                                        self.diagnostics.as_ref(),
                                     )?;
                                     (selection.clone(), facts)
                                 }
@@ -816,6 +818,7 @@ impl Plugins {
                                 &selection,
                                 cancellation,
                                 restored,
+                                self.diagnostics.as_ref(),
                             )?;
                             (selection.clone(), facts)
                         };

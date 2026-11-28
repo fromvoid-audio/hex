@@ -1178,6 +1178,7 @@ pub(super) fn armed_selection(
 }
 
 /// Consume the private query through disposal even after cancellation.
+#[allow(clippy::too_many_arguments)] // Exact canonical source, selection, cancellation, fence, and optional diagnostics handle.
 pub(super) fn canonical_bases(
     host: &Hosting,
     control: &mut PublicationControl,
@@ -1189,7 +1190,9 @@ pub(super) fn canonical_bases(
         hex_audio::prepared::AppliedAudioSource,
         hex_audio::prepared::StoppedEditFence,
     )>,
+    diagnostics: Option<&hex_diagnostics::DiagnosticsHandle>,
 ) -> Result<hex_audio::plugin_effects::CapturedCanonicalBases, String> {
+    let started = std::time::Instant::now();
     let playing = control
         .status
         .playing
@@ -1224,12 +1227,29 @@ pub(super) fn canonical_bases(
             result => break result?,
         }
     };
+    let warm_reused = query.warm_reused();
     loop {
         let mut cancelled = || cancellation.is_some_and(RequestCancellation::is_cancelled);
         if let Some(result) = query.poll_on_control(control, &mut cancelled) {
+            if let Some(log) = diagnostics {
+                let targets = result.as_ref().map_or(0, |facts| facts.values().count());
+                let _ = log.record_typed(
+                    hex_diagnostics::Level::Debug,
+                    hex_diagnostics::Category::Audio,
+                    &format!(
+                        "vst3_scratch v=1 kind=canonical_bases warm={warm_reused} targets={targets} ok={} elapsed_us={}",
+                        result.is_ok(),
+                        started.elapsed().as_micros(),
+                    ),
+                );
+            }
             return result;
         }
-        poll_control(control);
+        if query.poll_step_is_ready() {
+            poll_control_nonblocking(control);
+        } else {
+            poll_control(control);
+        }
     }
 }
 

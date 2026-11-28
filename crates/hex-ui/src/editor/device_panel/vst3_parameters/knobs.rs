@@ -239,25 +239,25 @@ fn can_admit_control_gesture(
     output_identity: u64,
     emitter_id: gpui::EntityId,
     is_follow: bool,
-) -> bool {
+) -> Option<PluginParameterOrigin> {
     if view.audio_pub.stopped_playback_restore.is_some()
         || view.device_panel.gesture.snapshot().is_some()
         || current_context(view) != Some(origin.context)
+        || origin.metadata_revision == 0
     {
-        return false;
+        return None;
     }
-    let Some(panel) = view.device_panel.vst3_parameters.panels.get(&device) else {
-        return false;
-    };
-    let valid_row = panel
+    let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
+    let row_revision = panel
         .rows()
         .and_then(|rows| rows.iter().find(|row| row.id == origin.parameter))
-        .is_some_and(|row| {
+        .filter(|row| {
             row.editable
-                && row.metadata_revision != 0
-                && row.metadata_revision == origin.metadata_revision
+                && row.page_first == origin.page_first
+                && row.metadata_revision >= origin.metadata_revision
                 && row.normalized == origin.initial.normalized()
-        });
+        })
+        .map(|row| row.metadata_revision)?;
     let current_control = panel
         .knobs
         .get(&origin.parameter)
@@ -265,12 +265,15 @@ fn can_admit_control_gesture(
         || panel.follow_knob.as_ref().is_some_and(|(id, knob)| {
             *id == origin.parameter && knob.control.entity_id() == emitter_id
         });
-    panel.source == Some(source)
+    (panel.source == Some(source)
         && panel.query.context == origin.context
         && panel.query.output_identity == output_identity
         && (!is_follow || (panel.pending_touch.is_none() && panel.queued_touch.is_none()))
-        && valid_row
-        && current_control
+        && current_control)
+        .then_some(PluginParameterOrigin {
+            metadata_revision: row_revision,
+            ..origin
+        })
 }
 
 pub(in crate::editor) fn create_knob(
@@ -331,19 +334,19 @@ fn create_toggle(
     let event_drag = Rc::clone(&drag);
     let is_follow = role == "follow";
     let subscription = cx.subscribe(&toggle, move |view, emitter, event: &ToggleChanged, cx| {
-        let origin = event_origin.get();
-        if !can_admit_control_gesture(
+        let Some(origin) = can_admit_control_gesture(
             view,
             device,
-            origin,
+            event_origin.get(),
             source,
             query.output_identity,
             emitter.entity_id(),
             is_follow,
-        ) {
+        ) else {
             emitter.update(cx, |toggle, cx| toggle.set_checked(!event.checked, cx));
             return;
-        }
+        };
+        event_origin.set(origin);
         let normalized = if event.checked { 1.0 } else { 0.0 };
         let next_display = view
             .device_panel
@@ -473,8 +476,10 @@ fn create_numeric_knob(
                             .snapshot()
                             .is_some_and(|active| active.key == *key)
                 });
-            if !continuing_owned
-                && !can_admit_control_gesture(
+            let origin = if continuing_owned {
+                origin
+            } else {
+                let Some(admitted) = can_admit_control_gesture(
                     view,
                     device,
                     origin,
@@ -482,10 +487,12 @@ fn create_numeric_knob(
                     query.output_identity,
                     emitter.entity_id(),
                     is_follow,
-                )
-            {
-                return;
-            }
+                ) else {
+                    return;
+                };
+                event_origin.set(admitted);
+                admitted
+            };
             if let Err(reason) = knob_event(view, origin, event, steps, &event_drag) {
                 view.error = Some(reason.into());
             } else {

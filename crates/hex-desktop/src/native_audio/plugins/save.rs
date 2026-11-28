@@ -297,6 +297,7 @@ impl Plugins {
                             selection,
                             Some(cancellation),
                             None,
+                            self.diagnostics.as_ref(),
                         )?)
                     };
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
