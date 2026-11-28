@@ -462,7 +462,8 @@ impl Editor {
                 state: after,
             })?;
         if previous == candidate {
-            return Err(Invalid("captured device edit has no state change").into());
+            // No-op captured device edits should neither fail nor alter history.
+            return prepare(&self.project, &self.project);
         }
         self.undo
             .try_reserve(1)
@@ -2170,5 +2171,73 @@ mod section_history_tests {
         let mut corrupt = (*editor.project_arc()).clone();
         corrupt.aliases.members.clear();
         assert!(corrupt.validate_aliases().is_err());
+    }
+
+    #[test]
+    fn replace_captured_device_state_treats_identical_capture_as_clean_noop() {
+        let state = |payload: u8| {
+            hex_lattice_contract::NativeDeviceState::new(
+                hex_lattice_contract::DeviceTypeId::from_static("hex.vst3"),
+                1,
+                vec![payload],
+            )
+            .unwrap()
+        };
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: state(1),
+            })
+            .unwrap()
+        else {
+            panic!("device expected");
+        };
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(editor.undo());
+        assert!(editor.can_undo());
+        assert!(editor.can_redo());
+
+        let revision_before = editor.history_revision();
+        let project_before = editor.project_arc();
+        let mut saw_same_pointer = false;
+        let result: Result<u32, Invalid> = editor.replace_captured_device_state(
+            device,
+            state(1),
+            state(1),
+            |source, candidate| {
+                saw_same_pointer = std::ptr::eq(source, candidate);
+                Ok(42)
+            },
+        );
+        assert_eq!(result, Ok(42));
+        assert!(saw_same_pointer);
+        assert!(Arc::ptr_eq(&project_before, &editor.project_arc()));
+        assert_eq!(editor.history_revision(), revision_before);
+        assert!(editor.can_undo());
+        assert!(editor.can_redo());
+
+        // Distinct before/after states still commit and push before onto undo.
+        let mut saw_distinct_pointer = false;
+        let committed: Result<u32, Invalid> = editor.replace_captured_device_state(
+            device,
+            state(2),
+            state(3),
+            |source, candidate| {
+                saw_distinct_pointer = !std::ptr::eq(source, candidate);
+                Ok(99)
+            },
+        );
+        assert_eq!(committed, Ok(99));
+        assert!(saw_distinct_pointer);
+        assert_eq!(editor.project().device(device).unwrap().state(), &state(3));
+        assert!(!editor.can_redo());
+        assert!(editor.undo());
+        assert_eq!(editor.project().device(device).unwrap().state(), &state(2));
     }
 }
