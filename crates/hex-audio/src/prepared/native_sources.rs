@@ -1550,23 +1550,26 @@ impl PublicationControl {
     pub(crate) fn acquire_warm_scratch_native_source_on_control(
         &mut self,
         key: crate::candidate_custody::WarmScratchKey,
-    ) -> Option<Binding> {
+        expected_state: Option<&NativeDeviceState>,
+    ) -> Option<crate::candidate_custody::WarmScratchAcquisition> {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return None;
         }
-        self.candidate_root.acquire_warm_scratch_native_source(key)
+        self.candidate_root
+            .acquire_warm_scratch_native_source(key, expected_state)
     }
 
     pub(crate) fn park_warm_scratch_native_source_on_control(
         &mut self,
         scratch: Binding,
         key: crate::candidate_custody::WarmScratchKey,
+        clean_restored: bool,
     ) -> bool {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return false;
         }
         self.candidate_root
-            .park_warm_scratch_native_source(scratch, key)
+            .park_warm_scratch_native_source(scratch, key, clean_restored)
     }
 
     pub(crate) fn disable_warm_scratch_native_source_on_control(&mut self, original: Binding) {
@@ -1585,9 +1588,9 @@ impl PublicationControl {
         if !self.native_custody || self.status.closing.load(Acquire) {
             return Err("native restore output is closing");
         }
-        let result = self
-            .candidate_root
-            .restore_native_source_state(binding, state, is_cancelled)?;
+        let result =
+            self.candidate_root
+                .restore_native_source_state(binding, state, is_cancelled)?;
         if self.status.closing.load(Acquire) {
             return Err("native restore output is closing");
         }

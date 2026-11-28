@@ -30,7 +30,7 @@ mod references;
 mod state_approval;
 mod warm_scratch;
 pub(crate) use ordinary::OrdinaryNativeReferences;
-pub(crate) use warm_scratch::WarmScratchKey;
+pub(crate) use warm_scratch::{WarmScratchAcquisition, WarmScratchKey};
 mod resources;
 pub(crate) use endpoints::{NativeEndpointBank, NativeEndpointEnvelope};
 pub(super) use references::References;

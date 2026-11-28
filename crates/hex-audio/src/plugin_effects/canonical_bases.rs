@@ -118,6 +118,7 @@ pub struct CanonicalBasesCapture {
     original: Binding,
     warm_key: crate::candidate_custody::WarmScratchKey,
     warm_acquired: bool,
+    last_busy: bool,
     fallback_to_cold: bool,
     cold_fallback: Option<Box<ColdFallback>>,
     identity: ProcessorInstanceIdentity,
@@ -204,41 +205,43 @@ impl Hosting {
             output_channels: 2,
             presentation: original.presentation,
         };
-        let (scratch, warm_acquired, cold_fallback, phase) =
-            if let Some(scratch) = output.acquire_warm_scratch_native_source_on_control(warm_key) {
-                (
-                    scratch,
-                    true,
-                    Some(Box::new(ColdFallback {
-                        hosting: self.clone(),
-                        metadata: original.metadata,
-                        owner: original.identity.owner(),
-                        device_id: original.identity.device_id(),
-                        graph: binding.graph,
-                        rate,
-                        profile: original.profile,
-                    })),
-                    Phase::Restore,
-                )
-            } else {
-                let scratch = self.begin_on_control(
-                    output,
-                    original.metadata.selection(),
-                    original.identity.owner(),
-                    original.identity.device_id(),
-                    binding.graph,
+        let (scratch, warm_acquired, cold_fallback, phase) = if let Some(acquired) =
+            output.acquire_warm_scratch_native_source_on_control(warm_key, None)
+        {
+            (
+                acquired.binding,
+                true,
+                Some(Box::new(ColdFallback {
+                    hosting: self.clone(),
+                    metadata: original.metadata,
+                    owner: original.identity.owner(),
+                    device_id: original.identity.device_id(),
+                    graph: binding.graph,
                     rate,
-                    original.profile,
-                    Some(canonical.clone()),
-                    None,
-                )?;
-                (scratch, false, None, Phase::Prepare)
-            };
+                    profile: original.profile,
+                })),
+                Phase::Restore,
+            )
+        } else {
+            let scratch = self.begin_on_control(
+                output,
+                original.metadata.selection(),
+                original.identity.owner(),
+                original.identity.device_id(),
+                binding.graph,
+                rate,
+                original.profile,
+                Some(canonical.clone()),
+                None,
+            )?;
+            (scratch, false, None, Phase::Prepare)
+        };
         Ok(CanonicalBasesCapture {
             scratch,
             original: binding,
             warm_key,
             warm_acquired,
+            last_busy: false,
             fallback_to_cold: false,
             cold_fallback,
             identity: original.identity,
@@ -257,6 +260,21 @@ impl Hosting {
 }
 
 impl CanonicalBasesCapture {
+    pub fn warm_reused(&self) -> bool {
+        self.warm_acquired
+    }
+
+    /// True when the next `poll_on_control` step runs synchronously on an
+    /// already-quiescent scratch slot or approves a completed capture, so
+    /// control callers can continue immediately without sleep backoff.
+    pub fn poll_step_is_ready(&self) -> bool {
+        !self.last_busy
+            && matches!(
+                self.phase,
+                Phase::Restore | Phase::ReadQuiescent | Phase::Verify
+            )
+    }
+
     crate::include_vst3_sdk_tests! {
         pub(crate) fn awaiting_processing_approval(&self) -> bool {
             matches!(self.phase, Phase::Verify)
@@ -286,6 +304,7 @@ impl CanonicalBasesCapture {
         {
             return None;
         }
+        self.last_busy = false;
         if matches!(self.phase, Phase::Verify) {
             return self.qualify_processing(output, is_cancelled);
         }
@@ -395,9 +414,11 @@ impl CanonicalBasesCapture {
                             .quiesce_native_source_preparation(self.scratch, self.scratch.graph)
                     {
                         self.scratch = quiesced;
-                        if output
-                            .park_warm_scratch_native_source_on_control(self.scratch, self.warm_key)
-                        {
+                        if output.park_warm_scratch_native_source_on_control(
+                            self.scratch,
+                            self.warm_key,
+                            true,
+                        ) {
                             self.phase = Phase::Verify;
                             return;
                         }
@@ -432,6 +453,7 @@ impl CanonicalBasesCapture {
                                 && output.park_warm_scratch_native_source_on_control(
                                     self.scratch,
                                     self.warm_key,
+                                    true,
                                 )
                             {
                                 self.phase = Phase::Verify;
@@ -464,8 +486,11 @@ impl CanonicalBasesCapture {
                     if !interrupted
                         && !is_cancelled()
                         && self.source_matches(output)
-                        && output
-                            .park_warm_scratch_native_source_on_control(self.scratch, self.warm_key)
+                        && output.park_warm_scratch_native_source_on_control(
+                            self.scratch,
+                            self.warm_key,
+                            true,
+                        )
                     {
                         self.phase = Phase::Verify;
                     } else {
@@ -479,17 +504,19 @@ impl CanonicalBasesCapture {
         if interrupted {
             self.fallback_to_cold = false;
             self.phase = Phase::Retire(Err("native canonical base query cancelled".into()));
-        } else if let Err(error) = next
-            && !matches!(
+        } else if let Err(error) = next {
+            if matches!(
                 error,
                 "native preparation is busy" | "native source is busy"
-            )
-        {
-            if self.warm_acquired && self.cold_fallback.is_some() {
-                output.disable_warm_scratch_native_source_on_control(self.original);
-                self.fallback_to_cold = true;
+            ) {
+                self.last_busy = true;
+            } else {
+                if self.warm_acquired && self.cold_fallback.is_some() {
+                    output.disable_warm_scratch_native_source_on_control(self.original);
+                    self.fallback_to_cold = true;
+                }
+                self.phase = Phase::Retire(Err(error.into()));
             }
-            self.phase = Phase::Retire(Err(error.into()));
         }
         None
     }
@@ -527,7 +554,10 @@ impl CanonicalBasesCapture {
             },
         };
         match output.approve_native_canonical_processing_on_control(&facts) {
-            Err("native preparation is busy") => None,
+            Err("native preparation is busy") => {
+                self.last_busy = true;
+                None
+            }
             result => {
                 self.phase = Phase::Finished;
                 let result = result.map_err(str::to_owned).and_then(|state| {

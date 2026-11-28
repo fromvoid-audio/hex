@@ -12,7 +12,8 @@ pub use preparation::{
 pub(crate) mod native_sources;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use native_sources::{
-    EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope, WarmScratchKey,
+    EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope, WarmScratchAcquisition,
+    WarmScratchKey,
 };
 pub(super) mod publication;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]

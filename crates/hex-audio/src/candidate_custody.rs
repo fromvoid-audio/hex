@@ -42,7 +42,8 @@ pub use eligible::{
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub(crate) use eligible::{
-    EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope, WarmScratchKey,
+    EndpointReturnFence, NativeEndpointBank, NativeEndpointEnvelope, WarmScratchAcquisition,
+    WarmScratchKey,
 };
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub use eligible::{
