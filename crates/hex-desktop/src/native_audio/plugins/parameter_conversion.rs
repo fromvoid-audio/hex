@@ -57,6 +57,13 @@ fn current_source(sources: &[Source], query: &PluginParameterConversionQuery) ->
 }
 
 impl Plugins {
+    fn blocked_by_parameter_gesture(&self, query: &PluginParameterConversionQuery) -> bool {
+        self.parameter_gesture.as_ref().is_some_and(|gesture| {
+            !matches!(query.operation, PluginParameterConversion::Format(_))
+                || !gesture.allows_read_only_format(query.source, query.parameter)
+        })
+    }
+
     pub(in crate::native_audio) fn query_parameter_conversion(
         &mut self,
         control: &mut PublicationControl,
@@ -65,7 +72,7 @@ impl Plugins {
         if self.parameter_conversion.is_some()
             || self.editor_holds(query.source)
             || self.restore.is_some()
-            || self.parameter_gesture.is_some()
+            || self.blocked_by_parameter_gesture(&query)
         {
             return Err("vst3 controller is busy · try again".into());
         }
@@ -104,6 +111,33 @@ impl Plugins {
             failure: None,
             output_closed: false,
         });
+        Ok(())
+    }
+
+    /// Drain an in-flight conversion token before a new gesture `Begin` uses
+    /// the controller mailbox. The completed result stays queued for Session.
+    pub(super) fn drain_parameter_conversion_for_control(
+        &mut self,
+        control: &mut PublicationControl,
+        context: AudioSourceContext,
+        cancellation: Option<&hex_session::service::RequestCancellation>,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + Duration::from_millis(150);
+        while self
+            .parameter_conversion
+            .as_ref()
+            .is_some_and(|item| item.result.is_none())
+        {
+            edits::check_cancel(cancellation)?;
+            self.poll_parameter_conversion(control, Some(context));
+            if self.parameter_conversion_ready() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err("vst3 controller is still formatting · try again".into());
+            }
+            edits::poll_control(control);
+        }
         Ok(())
     }
 
@@ -348,6 +382,110 @@ mod tests {
                 .unwrap()
                 .value
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn read_only_format_is_permitted_only_for_active_pre_commit_gesture_target() {
+        use hex_session::device_gesture::{PluginParameterOrigin, PluginParameterValue};
+        use hex_session::service::PluginParameterText;
+
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::Device(device) = project
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: hex_engine::default_native_device_state(
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let context = AudioSourceContext {
+            project_generation: 1,
+            editor_revision: 1,
+        };
+        let binding = Binding {
+            root: 1,
+            instance: 1,
+            graph: 1,
+            epoch: 1,
+        };
+        let origin = PluginParameterOrigin {
+            context,
+            device,
+            parameter: 7,
+            page_first: 0,
+            metadata_revision: 1,
+            initial: PluginParameterValue::new(0.25).unwrap(),
+        };
+        let mut plugins = Plugins {
+            parameter_gesture: Some(super::parameter_gesture::Gesture::test_active(
+                origin, binding, 1, None,
+            )),
+            ..Plugins::default()
+        };
+        let query = |source, parameter, operation| PluginParameterConversionQuery {
+            context,
+            device,
+            output_identity: 1,
+            request_id: 1,
+            source,
+            parameter,
+            operation,
+        };
+
+        assert!(
+            !plugins.blocked_by_parameter_gesture(&query(
+                binding,
+                7,
+                PluginParameterConversion::Format(0.5)
+            )),
+            "read-only Format for the active gesture target must be admitted pre-commit"
+        );
+        assert!(
+            plugins.blocked_by_parameter_gesture(&query(
+                binding,
+                7,
+                PluginParameterConversion::Parse(PluginParameterText::new("0.5").unwrap())
+            )),
+            "Parse must remain blocked during an active gesture"
+        );
+        assert!(
+            plugins.blocked_by_parameter_gesture(&query(
+                binding,
+                8,
+                PluginParameterConversion::Format(0.5)
+            )),
+            "Format for a different parameter must remain blocked"
+        );
+        assert!(
+            plugins.blocked_by_parameter_gesture(&query(
+                Binding {
+                    epoch: 2,
+                    ..binding
+                },
+                7,
+                PluginParameterConversion::Format(0.5)
+            )),
+            "Format for a different source binding must remain blocked"
+        );
+
+        plugins.parameter_gesture = Some(super::parameter_gesture::Gesture::test_active(
+            origin,
+            binding,
+            1,
+            Some((context, 1)),
+        ));
+        assert!(
+            plugins.blocked_by_parameter_gesture(&query(
+                binding,
+                7,
+                PluginParameterConversion::Format(0.5)
+            )),
+            "Format must be blocked once gesture commit has started"
         );
     }
 }
