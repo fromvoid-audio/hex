@@ -269,10 +269,14 @@ impl Callback {
             }
             // Priority Stop/close may arrive after conversion. Never dispatch
             // staged work or expose the copied old audio after this frontier.
-            if self.status.closing.load(Acquire)
-                || self.status.pending_stop_marker.load(Acquire) != 0
-            {
+            if self.status.closing.load(Acquire) {
                 self.revoke_native_effects();
+                self.paused_notes
+                    .reject_paused(input_monitor::MonitorStatus::Stopped);
+                return OutputTransportDelivery::Cancelled;
+            }
+            if self.status.pending_stop_marker.load(Acquire) != 0 {
+                self.revoke_native_effects_for_stop();
                 self.paused_notes
                     .reject_paused(input_monitor::MonitorStatus::Stopped);
                 return OutputTransportDelivery::Cancelled;

@@ -35,8 +35,10 @@ impl Callback {
             self.fence_device_fault();
             return;
         }
-        if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
+        if self.status.closing.load(Acquire) {
             self.revoke_output_transport();
+        } else if self.status.pending_stop_marker.load(Acquire) != 0 {
+            self.revoke_output_transport_for_stop();
         }
         self.sample_preview
             .begin_block(self.status.closing.load(Acquire));

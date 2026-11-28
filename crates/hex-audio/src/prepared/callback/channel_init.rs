@@ -452,8 +452,12 @@ impl Callback {
         }
         // Control may cancel after staging/conversion. Recheck its real owner
         // signals at the last boundary before any request can reach the worker.
-        if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
+        if self.status.closing.load(Acquire) {
             self.revoke_output_transport();
+            return Cancelled;
+        }
+        if self.status.pending_stop_marker.load(Acquire) != 0 {
+            self.revoke_output_transport_for_stop();
             return Cancelled;
         }
         if self.output_transport_cancelled {
