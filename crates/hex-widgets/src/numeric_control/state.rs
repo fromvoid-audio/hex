@@ -23,6 +23,14 @@ pub(super) struct Press {
     pub(super) value_changed: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct PendingBusyPress {
+    pub(super) origin: Point<Pixels>,
+    pub(super) last_position: Point<Pixels>,
+    pub(super) modifiers: gpui::Modifiers,
+    pub(super) target: PressTarget,
+}
+
 /// One reusable knob/slider and its independently editable numeric value.
 #[derive(Clone, Copy)]
 pub(super) struct TextMouseSelection {
@@ -71,6 +79,7 @@ pub struct NumericControl {
     pub(crate) last_bounds: Option<Bounds<Pixels>>,
     pub(crate) last_origin_x: Option<Pixels>,
     pub(super) press: Option<Press>,
+    pub(super) pending_busy_press: Option<PendingBusyPress>,
     pub(super) active_gesture: Option<NumericGestureId>,
     pub(super) text_mouse: Option<TextMouseSelection>,
     pub(crate) text_click: crate::TextClickSelection,
@@ -185,6 +194,7 @@ impl NumericControl {
             last_bounds: None,
             last_origin_x: None,
             press: None,
+            pending_busy_press: None,
             active_gesture: None,
             text_mouse: None,
             text_click: crate::TextClickSelection::default(),
@@ -479,13 +489,42 @@ impl NumericControl {
         }
         if !enabled {
             self.cancel(cx);
+        } else if let Some(pending) = self.pending_busy_press.take() {
+            self.promote_pending_busy_press(pending, cx);
         }
         cx.notify();
+    }
+
+    fn promote_pending_busy_press(&mut self, pending: PendingBusyPress, cx: &mut Context<Self>) {
+        if self.editing.is_editing() || self.press.is_some() {
+            return;
+        }
+        self.press = Some(Press {
+            origin: pending.origin,
+            last_position: pending.origin,
+            start_value: self.draft,
+            integer_pointer_position: None,
+            unit_pointer_value: self.draft,
+            target: pending.target,
+            dragging: false,
+            value_changed: false,
+        });
+        let moved_x = f32::from(pending.last_position.x - pending.origin.x);
+        let moved_y = f32::from(pending.last_position.y - pending.origin.y);
+        if moved_x.hypot(moved_y) >= 3.0 {
+            let synthetic_move = MouseMoveEvent {
+                position: pending.last_position,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: pending.modifiers,
+            };
+            self.pointer_move(&synthetic_move, cx);
+        }
     }
 
     /// Call before removing an active control so its caller can cancel the edit.
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
         self.invalidate_pending_text();
+        self.pending_busy_press = None;
         self.text_mouse = None;
         self.text_click.clear();
         if let Some(press) = self.press.take()
@@ -519,9 +558,26 @@ impl NumericControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.availability.interactive() || event.button != MouseButton::Left {
+        if event.button != MouseButton::Left {
             return;
         }
+        if !self.availability.interactive() {
+            if self.availability == crate::ControlAvailability::Busy
+                && !self.editing.is_editing()
+                && event.click_count == 1
+                && self.capture_pointer(target, window, cx)
+            {
+                self.pending_busy_press = Some(PendingBusyPress {
+                    origin: event.position,
+                    last_position: event.position,
+                    modifiers: event.modifiers,
+                    target,
+                });
+                cx.notify();
+            }
+            return;
+        }
+        self.pending_busy_press = None;
         if matches!(self.kind, NumericControlKind::Knob)
             && matches!(target, PressTarget::Control)
             && event.click_count >= 2
@@ -547,6 +603,7 @@ impl NumericControl {
 
     pub(super) fn reset(&mut self, cx: &mut Context<Self>) {
         self.invalidate_pending_text();
+        self.pending_busy_press = None;
         self.text_mouse = None;
         self.text_click.clear();
         let start = self.draft;
@@ -590,7 +647,15 @@ impl NumericControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+        cx.stop_propagation();
         if !self.availability.interactive() {
+            self.begin_press(PressTarget::Value, event, window, cx);
+            if self.pending_busy_press.is_some() {
+                self.focus.focus(window);
+            }
             return;
         }
         let focused = self.focus.is_focused(window);
@@ -633,6 +698,7 @@ impl NumericControl {
                 self.move_to(offset);
             }
             self.press = None;
+            self.pending_busy_press = None;
             self.active_gesture = None;
             self.text_mouse = Some(TextMouseSelection {
                 anchor,
@@ -657,10 +723,16 @@ impl NumericControl {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if event.button != MouseButton::Left {
+            return;
+        }
+        cx.stop_propagation();
         self.text_mouse = None;
         self.text_click.clear();
         self.begin_press(PressTarget::Control, event, window, cx);
-        self.focus.focus(window);
+        if self.availability.interactive() || self.pending_busy_press.is_some() {
+            self.focus.focus(window);
+        }
     }
 
     pub(super) fn capture_pointer(
@@ -690,7 +762,7 @@ impl NumericControl {
             },
             move |_, cx| {
                 let _ = cancelled.update(cx, |control, cx| {
-                    if control.press.is_some() {
+                    if control.press.is_some() || control.pending_busy_press.is_some() {
                         control.cancel(cx);
                     } else if control.text_mouse.take().is_some() {
                         // Losing a selection anchor must not discard a newer
@@ -735,6 +807,18 @@ impl NumericControl {
                 cx.notify();
             }
             return (true, changed);
+        }
+        if let Some(mut pending) = self.pending_busy_press {
+            if event.pressed_button != Some(MouseButton::Left)
+                || self.availability != crate::ControlAvailability::Busy
+            {
+                self.pending_busy_press = None;
+                return (true, false);
+            }
+            pending.last_position = event.position;
+            pending.modifiers = event.modifiers;
+            self.pending_busy_press = Some(pending);
+            return (true, false);
         }
         let Some(mut press) = self.press else {
             return (false, false);
@@ -851,6 +935,10 @@ impl NumericControl {
             return false;
         }
         if self.text_mouse.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        if self.pending_busy_press.take().is_some() {
             cx.notify();
             return true;
         }

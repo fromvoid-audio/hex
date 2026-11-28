@@ -3072,3 +3072,161 @@ fn reduction_gauge_grows_down_from_zero_and_bounds_invalid_readings(cx: &mut Tes
         assert_eq!(fill.size.height, px(expected_height));
     }
 }
+
+#[gpui::test]
+fn micro_dial_drags_across_full_tile_without_breaking_readout_text_edit(cx: &mut TestAppContext) {
+    let spec = NumericSpec::new(0.0, 1.0, 0.5, NumericScale::Linear, 2, None::<String>).unwrap();
+    let (handle, control) = open_numeric_control_appearance(
+        cx,
+        NumericControlKind::Knob,
+        spec,
+        0.5,
+        NumericControlPresentation::MicroDial,
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(260.0), px(100.0)));
+    visual.run_until_parked();
+    let tile = visual.debug_bounds("test-control").unwrap();
+    let knob = visual.debug_bounds("test-control-knob").unwrap();
+    let readout = visual.debug_bounds("test-control-value").unwrap();
+    let upper_right = point(knob.right() + px(12.0), knob.top() + px(4.0));
+    assert!(tile.contains(&upper_right));
+    assert!(!knob.contains(&upper_right));
+    assert!(!readout.contains(&upper_right));
+
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let capture = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            capture.borrow_mut().push((event.phase, event.value));
+        })
+    });
+
+    visual.simulate_mouse_down(upper_right, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(upper_right.x, upper_right.y - px(24.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(upper_right.x, upper_right.y - px(24.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let value = control.read_with(cx, |c, _| c.value());
+    assert!(value > 0.65, "upper-right MicroDial drag must move value");
+    assert_eq!(
+        events.borrow().first().unwrap().0,
+        crate::NumericEventPhase::Begin
+    );
+    assert_eq!(
+        events.borrow().last().unwrap().0,
+        crate::NumericEventPhase::Commit
+    );
+
+    // Clicking the readout must still enter text edit without bubbling to the tile root.
+    visual.simulate_click(readout.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert!(control.read_with(cx, |c, _| c.is_editing()));
+}
+
+#[gpui::test]
+fn held_mouse_down_during_transient_busy_promotes_into_live_drag_on_available(
+    cx: &mut TestAppContext,
+) {
+    let spec = NumericSpec::new(0.0, 1.0, 0.5, NumericScale::Linear, 2, None::<String>).unwrap();
+    let (handle, control) = open_numeric_control_appearance(
+        cx,
+        NumericControlKind::Knob,
+        spec,
+        0.5,
+        NumericControlPresentation::MicroDial,
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(gpui::size(px(260.0), px(100.0)));
+    visual.run_until_parked();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let capture = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            capture.borrow_mut().push((event.phase, event.value));
+        })
+    });
+
+    let center = visual.debug_bounds("test-control-knob").unwrap().center();
+    control.update(cx, |c, cx| c.suspend_input(cx));
+    visual.run_until_parked();
+
+    // Press and start dragging while Busy: no events, no interaction lock, value stays put.
+    visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(center.x, center.y - px(18.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    control.read_with(cx, |c, _| {
+        assert!(!c.is_interacting());
+        assert_eq!(c.value(), 0.5);
+    });
+    assert!(events.borrow().is_empty());
+
+    // Owner refreshes value while still Busy, then returns control to Available.
+    control.update(cx, |c, cx| {
+        c.set_external_value(0.25, cx).unwrap();
+        c.set_enabled(true, cx);
+    });
+    visual.run_until_parked();
+    assert!(control.read_with(cx, |c, _| c.is_interacting()));
+    let promoted = control.read_with(cx, |c, _| c.value());
+    assert!(
+        promoted > 0.35,
+        "held drag should promote from refreshed value 0.25, got {promoted}"
+    );
+    assert_eq!(
+        events.borrow().first().unwrap().0,
+        crate::NumericEventPhase::Begin
+    );
+
+    // Continued dragging and release commits cleanly.
+    visual.simulate_mouse_move(
+        point(center.x, center.y - px(36.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.simulate_mouse_up(
+        point(center.x, center.y - px(36.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    let committed = control.read_with(cx, |c, _| c.value());
+    assert!(committed > promoted);
+    assert!(!control.read_with(cx, |c, _| c.is_interacting()));
+    assert_eq!(
+        events.borrow().last().unwrap().0,
+        crate::NumericEventPhase::Commit
+    );
+
+    // A Busy -> Disabled transition must clear any pending held press without promoting.
+    events.borrow_mut().clear();
+    control.update(cx, |c, cx| c.suspend_input(cx));
+    visual.run_until_parked();
+    visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(
+        point(center.x, center.y - px(24.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    control.update(cx, |c, cx| c.set_enabled(false, cx));
+    control.update(cx, |c, cx| c.set_enabled(true, cx));
+    visual.simulate_mouse_up(
+        point(center.x, center.y - px(24.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(events.borrow().is_empty());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), committed);
+}
