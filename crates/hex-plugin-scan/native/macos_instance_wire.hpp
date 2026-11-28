@@ -101,6 +101,7 @@ inline bool send(int fd,const char* magic,const Bytes& body) {
     if(!std::memcmp(magic,"HXVIMD03",8)) limit=131072;
     if(!std::memcmp(magic,"HXVIQF04",8)) limit=162+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIAR03",8)) limit=170+hex_instance::StateStream::envelope_capacity;
+    if(!std::memcmp(magic,"HXVIWR01",8)) limit=170+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIRR04",8)) limit=172+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIFA05",8)) limit=146+hex_instance::StateStream::envelope_capacity;
     if(!std::memcmp(magic,"HXVIRD06",8)) limit=87+hex_instance::StateStream::envelope_capacity;
@@ -150,6 +151,23 @@ struct Startup {
         out.insert(out.end(),payload.begin(),payload.end());
     }
 };
+inline bool parse_state_envelope(const Config& config,const Bytes& payload,hex_instance::CapturedState& out) {
+    const auto count=payload.size();
+    if(count<96 || count>hex_instance::StateStream::envelope_capacity) return false;
+    const auto* p=payload.data();
+    if(std::memcmp(p,"HXVS",4) || p[4]!=1 || (p[5]&~3) || !(p[5]&1) || p[6] || p[7] ||
+        std::memcmp(p+8,config.cid.data(),16) || std::memcmp(p+24,config.executable_hash.data(),32) ||
+        std::memcmp(p+56,config.info_hash.data(),32)) return false;
+    const auto component=number(p+88,4),controller=number(p+92,4);
+    if(component>hex_instance::StateStream::capacity || controller>hex_instance::StateStream::capacity-component || (!(p[5]&2) && controller) || count!=96+component+controller)
+        return false;
+    out={};
+    out.component=true;out.controller=(p[5]&2)!=0;
+    out.component_bytes=static_cast<uint32_t>(component);
+    out.controller_bytes=static_cast<uint32_t>(controller);
+    out.bytes.assign(p+96,p+count);
+    return true;
+}
 inline Startup startup(int fd,const Config& config) {
     std::array<uint8_t,12> header{};
     if(read_exact(fd,header.data(),header.size())!=1 ||
@@ -168,17 +186,8 @@ inline Startup startup(int fd,const Config& config) {
     result.report_output_buses=!std::memcmp(header.data(),"HXVIST03",8);
     if(!known) return result;
     result.payload.assign(in.bytes.begin()+in.at,in.bytes.end());
-    const auto* p=result.payload.data();
-    if(std::memcmp(p,"HXVS",4) || p[4]!=1 || (p[5]&~3) || !(p[5]&1) || p[6] || p[7] ||
-        std::memcmp(p+8,config.cid.data(),16) || std::memcmp(p+24,config.executable_hash.data(),32) ||
-        std::memcmp(p+56,config.info_hash.data(),32)) throw std::runtime_error("startup state source envelope refused");
-    const auto component=number(p+88,4),controller=number(p+92,4);
-    if(component>hex_instance::StateStream::capacity || controller>hex_instance::StateStream::capacity-component || (!(p[5]&2) && controller) || count!=96+component+controller)
-        throw std::runtime_error("startup state chunks refused");
-    result.state.component=true;result.state.controller=(p[5]&2)!=0;
-    result.state.component_bytes=static_cast<uint32_t>(component);
-    result.state.controller_bytes=static_cast<uint32_t>(controller);
-    result.state.bytes.assign(p+96,p+count);
+    if(!parse_state_envelope(config,result.payload,result.state))
+        throw std::runtime_error("startup state source envelope refused");
     return result;
 }
 struct Presentation {
@@ -261,10 +270,11 @@ struct Packet {
     std::optional<uint64_t> expected_editor_admission;
     hex_instance::ControllerQuery parameter_query{};
     PresentationPlan resumed_presentation;
+    std::optional<Startup> restore_state;
     // 0 EOF/cancellation, 1 PCM, 2 terminal, 3 quiesce, 4 resume,
     // 5 quiescent capture, 6 live capture start, 7 live capture poll, 8 parameter-only flush,
     // 9 edit receipts, 10 controller page start, 11 controller page poll,
-    // 12 explicit stopped component reactivation, -1 malformed.
+    // 12 explicit stopped component reactivation, 13 quiescent state restore, -1 malformed.
     // The audio lane reads with check_sequence=true; the dedicated control
     // channel reads non-DSP control requests with check_sequence=false.
     int read(int fd,const Config& config,uint64_t sequence,uint64_t frame,bool check_sequence=true,
@@ -290,6 +300,7 @@ struct Packet {
         const bool quiesce=!std::memcmp(p,"HXVQ",4),resume=!std::memcmp(p,"HXVR",4),capture=!std::memcmp(p,"HXVC",4);
         const bool edit_query=!std::memcmp(p,"HXVG",4);
         const bool reactivate=!std::memcmp(p,"HXVA",4);
+        const bool restore=!std::memcmp(p,"HXVW",4);
         const bool page_start=!std::memcmp(p,"HXVM",4),page_poll=!std::memcmp(p,"HXVN",4);
         const bool live_start=!std::memcmp(p,"HXVL",4),live_poll=!std::memcmp(p,"HXVP",4);
         const bool pcm=!std::memcmp(p,"HXVB",4),flush=!std::memcmp(p,"HXVF",4);
@@ -299,6 +310,7 @@ struct Packet {
         output_event_count=0;reply_parameter_count=0;
         reply_parameters_coalesced=false;
         expected_editor_admission.reset();
+        restore_state.reset();
         constexpr uint64_t authored_bit=0x8000;
         authored_parameters=pcm && (wire_version&authored_bit);
         observe_sdk_timing=pcm && (wire_version&sdk_timing_bit);sdk_process_ns=0;
@@ -328,7 +340,7 @@ struct Packet {
         const bool extended_timing=pcm && (version==5 || sliced_timing);
         const bool timed=pcm && (version==4 || extended_timing);
         const bool identified_notes=pcm && (version==3 || timed);
-        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate) ||
+        if((!stop && !quiesce && !resume && !capture && !live_start && !live_poll && !pcm && !flush && !edit_query && !page_start && !page_poll && !reactivate && !restore) ||
             ((pcm || flush || edit_query)?(version!=1 && version!=2 && !flush_idle_edits && !identified_notes && !guarded_flush):
                 (version!=1 && !release_gates))) return -1;
         note_count=static_cast<size_t>(number(p+8,2));
@@ -393,6 +405,20 @@ struct Packet {
             capture_operation=number(p+header_size,8);
             if(guarded_flush) expected_editor_admission=number(p+header_size+8,8);
             return capture_operation && parse_parameters(p+header_size+prefix,1)?8:-1;
+        }
+        if(restore) {
+            if(frames || read_exact(fd,p+header_size,12,true)!=1) return -1;
+            capture_operation=number(p+header_size,8);
+            const auto count=number(p+header_size+8,4);
+            if(!capture_operation || count<96 || count>hex_instance::StateStream::envelope_capacity) return -1;
+            Startup next{};
+            try {
+                next.payload.resize(static_cast<size_t>(count));
+            } catch(const std::bad_alloc&) { return -1; }
+            if(read_exact(fd,next.payload.data(),next.payload.size(),true)!=1) return -1;
+            if(!parse_state_envelope(config,next.payload,next.state)) return -1;
+            restore_state=std::move(next);
+            return 13;
         }
         if(capture || live_start || live_poll || edit_query || reactivate) {
             if(frames || read_exact(fd,p+header_size,8,true)!=1) return -1;

@@ -47,7 +47,7 @@ pub const CONFIG_LIMIT: usize = 8448;
 pub const CONTROL_LIMIT: usize = 8192;
 /// Bounded wire extent for one 64-parameter controller metadata page (`HXVIMD03`).
 pub const PARAMETER_PAGE_LIMIT: usize = 131_072;
-pub const PACKET_LIMIT: usize = 12 + hex_plugin_state::MAX_ENVELOPE_BYTES + 166;
+pub const PACKET_LIMIT: usize = 12 + hex_plugin_state::MAX_ENVELOPE_BYTES + 172;
 pub(crate) fn control_limit(magic: &[u8]) -> usize {
     let prefix = match magic {
         b"HXVICF03" => return CONFIG_LIMIT,
@@ -57,6 +57,7 @@ pub(crate) fn control_limit(magic: &[u8]) -> usize {
         b"HXVIFA05" => 146,
         b"HXVIQF04" => 162,
         b"HXVIAR03" => 170,
+        b"HXVIWR01" => 170,
         b"HXVIRR04" => 172,
         b"HXVIRD06" => 87,
         b"HXVICS02" => 62,
@@ -631,6 +632,35 @@ pub fn reactivate(config: &Configuration, sequence: u64, operation: u64) -> Resu
     Ok(out)
 }
 
+/// Quiescent state restoration for a stopped scratch instance. Validates the
+/// asset-free state envelope against `config.identity` before framing.
+pub fn restore_state_request(
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+    state: &NativeDeviceState,
+) -> Result<Vec<u8>> {
+    if operation == 0 {
+        return Err(Error::Protocol("restore operation must be nonzero"));
+    }
+    state
+        .require_asset_free_processing()
+        .map_err(|_| Error::Protocol("restore state must be asset free"))?;
+    hex_plugin_state::available(state, Some(config.identity)).map_err(Error::State)?;
+    let payload = state.payload();
+    if payload.len() < 96 || payload.len() > hex_plugin_state::MAX_ENVELOPE_BYTES {
+        return Err(Error::Protocol("restore state extent refused"));
+    }
+    let mut header = quiesce(config, sequence)?;
+    header[..4].copy_from_slice(b"HXVW");
+    let mut out = buffer(76 + payload.len())?;
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&operation.to_le_bytes());
+    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
 pub fn validate_resume(previous: Binding, next: Binding) -> Result<()> {
     if [
         previous.root,
@@ -725,6 +755,26 @@ pub fn reactivated_facts(
     let (facts, mut rest) = epoch_facts(body, config, sequence)?;
     if operation == 0 || u64::from_le_bytes(rest.array()?) != operation {
         return Err(Error::Protocol("reactivation operation differs"));
+    }
+    rest.end()?;
+    Ok(facts)
+}
+
+/// Decode a quiescent `HXVIWR01` restore acknowledgement. `config.restore` must
+/// hold the exact requested `NativeDeviceState` so `Facts::decode` verifies the
+/// echoed envelope bytes.
+pub fn restored_facts(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    operation: u64,
+) -> Result<Facts> {
+    if config.restore.is_none() {
+        return Err(Error::Protocol("restore acknowledgement requires restored configuration"));
+    }
+    let (facts, mut rest) = epoch_facts(body, config, sequence)?;
+    if operation == 0 || u64::from_le_bytes(rest.array()?) != operation {
+        return Err(Error::Protocol("restore operation differs"));
     }
     rest.end()?;
     Ok(facts)

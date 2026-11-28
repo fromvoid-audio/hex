@@ -1098,6 +1098,60 @@ fn reactivation_binds_source_completed_prefix_and_unique_operation() {
     assert!(reactivated_facts(&body, &config, 3, 2).is_err());
 }
 #[test]
+fn quiescent_restore_binds_source_prefix_operation_and_envelope() {
+    let mut config = config();
+    let state = hex_plugin_state::encode(hex_plugin_state::State {
+        identity: config.identity,
+        component: Some(&[1, 2, 3]),
+        controller: Some(&[4, 5]),
+    })
+    .unwrap();
+    let request = restore_state_request(&config, 3, 2, &state).unwrap();
+    assert_eq!(&request[..4], b"HXVW");
+    assert_eq!(&request[4..6], &1_u16.to_le_bytes());
+    assert_eq!(
+        &request[48..76],
+        &[
+            3_u64.to_le_bytes().as_slice(),
+            24_u64.to_le_bytes().as_slice(),
+            2_u64.to_le_bytes().as_slice(),
+            &(state.payload().len() as u32).to_le_bytes(),
+        ]
+        .concat()[..]
+    );
+    assert_eq!(&request[76..], state.payload());
+    assert!(restore_state_request(&config, 3, 0, &state).is_err());
+    assert!(restore_state_request(&config, u64::MAX, 2, &state).is_err());
+
+    let mut wrong_identity = config.clone();
+    wrong_identity.identity.binary.info_sha256[0] ^= 1;
+    assert!(restore_state_request(&wrong_identity, 3, 2, &state).is_err());
+
+    // Decoding requires config.restore to match the exact requested envelope.
+    let mut restored_config = config.clone();
+    restored_config.restore = Some(state.clone());
+    let mut body = epoch_body(&restored_config, 3);
+    body.extend(2_u64.to_le_bytes());
+    let facts = restored_facts(&body, &restored_config, 3, 2).unwrap();
+    assert_eq!(facts.algorithmic_latency_frames, 3);
+    assert!(facts.restored);
+    assert!(restored_facts(&body, &config, 3, 2).is_err());
+    for end in 0..body.len() {
+        assert!(restored_facts(&body[..end], &restored_config, 3, 2).is_err());
+    }
+    assert!(restored_facts(&body, &restored_config, 2, 2).is_err());
+    assert!(restored_facts(&body, &restored_config, 3, 1).is_err());
+    assert!(restored_facts(&body, &restored_config, 3, 0).is_err());
+    let mut mutated_envelope = body.clone();
+    let last_payload_byte = body.len() - 25;
+    mutated_envelope[last_payload_byte] ^= 1;
+    assert!(restored_facts(&mutated_envelope, &restored_config, 3, 2).is_err());
+    body.push(0);
+    assert!(restored_facts(&body, &restored_config, 3, 2).is_err());
+    config.restore = Some(state);
+    assert_eq!(control_limit(b"HXVIWR01"), 170 + hex_plugin_state::MAX_ENVELOPE_BYTES);
+}
+#[test]
 fn epoch_acknowledgements_bind_exact_source_prefix_facts_and_presentation() {
     let mut config = config();
     let body = epoch_body(&config, 3);

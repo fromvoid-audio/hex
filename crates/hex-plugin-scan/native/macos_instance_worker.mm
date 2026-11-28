@@ -474,7 +474,7 @@ int main(int argc,char** argv) {
     @autoreleasepool {
         try {
             auto request=wire::configuration(channel);config.emplace(request);
-            const auto restoration=wire::startup(channel,*config);
+            auto restoration=wire::startup(channel,*config);
             if(use_shm_ring && !shm_ring.recv_and_map(channel)) { failure=ProtocolFailure;throw Refusal{}; }
             failure=Admission;module.open(*config);
             failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
@@ -565,10 +565,11 @@ int main(int argc,char** argv) {
             // processing lane is stopped and waiting at every epoch SDK step.
             // Live capture below has its own bounded nonwaiting slot in this
             // same worker. Mutex/condition waits live only in the epoch path.
-            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,FlushRequested,FlushSent,ReactivateRequested,ReactivateSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
+            enum EpochStage { Idle,FactsRequested,FactsSent,CaptureRequested,CaptureSent,FlushRequested,FlushSent,ReactivateRequested,ReactivateSent,RestoreRequested,RestoreSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
             EpochStage epoch_stage=Idle;
             uint64_t next_graph=0,next_epoch=0;
-            uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0;
+            uint64_t capture_operation=0,flush_operation=0,reactivate_operation=0,restore_operation=0;
+            std::optional<wire::Startup> pending_restore;
             hex_instance::ParameterFeedback flushed_values;
             uint8_t flush_disposition=0;
             bool flush_while_idle=false;
@@ -1233,8 +1234,27 @@ int main(int argc,char** argv) {
                             if(worker_failure.load()) break;
                             phase.store(1,std::memory_order_release);
                             auto resumed=packet.read(channel,*config,blocks,frames);
-                            uint64_t captures=0,flushes=0,reactivations=0;
-                            while(resumed==5 || resumed==8 || resumed==9 || resumed==10 || resumed==11 || resumed==12) {
+                            uint64_t captures=0,flushes=0,reactivations=0,restores=0;
+                            while(resumed==5 || resumed==8 || resumed==9 || resumed==10 || resumed==11 || resumed==12 || resumed==13) {
+                                if(resumed==13) {
+                                    if(restores==std::numeric_limits<uint64_t>::max() ||
+                                       packet.capture_operation!=restores+1 || !packet.restore_state) {
+                                        worker_failure.store(ProtocolFailure);break;
+                                    }
+                                    phase.store(3,std::memory_order_release);
+                                    {
+                                        std::unique_lock<std::mutex> lock(startup_mutex);
+                                        restore_operation=packet.capture_operation;
+                                        pending_restore=std::move(packet.restore_state);
+                                        packet.restore_state.reset();
+                                        epoch_stage=RestoreRequested;
+                                        startup_changed.notify_all();wake_main();
+                                        startup_changed.wait(lock,[&]{return epoch_stage==RestoreSent || worker_failure.load();});
+                                    }
+                                    if(worker_failure.load()) break;
+                                    ++restores;phase.store(1,std::memory_order_release);
+                                    resumed=packet.read(channel,*config,blocks,frames);continue;
+                                }
                                 if(resumed==12) {
                                     if(reactivations==std::numeric_limits<uint64_t>::max() || packet.capture_operation!=reactivations+1) {
                                         worker_failure.store(ProtocolFailure);break;
@@ -1832,6 +1852,36 @@ int main(int argc,char** argv) {
                         }
                         std::lock_guard<std::mutex> lock(startup_mutex);
                         epoch_stage=ReactivateSent;startup_changed.notify_all();
+                    } else if(stage==RestoreRequested) {
+                        try {
+                            if(!pending_restore || instance.pending_parameter_edits()) {
+                                error(channel,&*config,Restore);std::_Exit(Restore);
+                            }
+                            const bool keep_output_buses=restoration.report_output_buses;
+                            auto next_restoration=std::move(*pending_restore);
+                            pending_restore.reset();
+                            next_restoration.report_output_buses=keep_output_buses;
+                            parameter_feedback={};
+                            if(!instance.restore_quiescent_state_on_control(next_restoration.state)) {
+                                error(channel,&*config,Restore);std::_Exit(Restore);
+                            }
+                            instance.dispatch_host_callbacks();
+                            latency=instance.reported_latency_on_control();
+                            tail=instance.reported_tail_on_control();
+                            available=instance.presentation_latency_available_on_control();
+                            expression=instance.note_expression_capabilities_on_control();
+                            if(!latency || !tail || !available || !expression || instance.host_refusals()) {
+                                error(channel,&*config,Restore);std::_Exit(Restore);
+                            }
+                            restoration=std::move(next_restoration);
+                            auto body=facts_body(*config,*latency,*tail,*available,*expression,restoration);
+                            wire::number(body,blocks,8);wire::number(body,frames,8);wire::number(body,restore_operation,8);
+                            if(!wire::send(channel,"HXVIWR01",body)) std::_Exit(Cancelled);
+                        } catch(...) {
+                            error(channel,&*config,Unexpected);std::_Exit(Unexpected);
+                        }
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=RestoreSent;startup_changed.notify_all();
                     } else if(stage==FlushRequested) {
                         // The original worker is waiting at this barrier. Synchronize controller values before ACK;
                         // neither flush nor mirror advances the PCM prefix.

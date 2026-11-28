@@ -128,6 +128,74 @@ impl Prepared {
     }
 }
 
+impl Quiescent {
+    /// Collect fresh normalized values and step counts for the requested sorted
+    /// raw IDs directly from this stopped controller without resuming or
+    /// spawning a processing worker. Cancellation or refusal retains disposal
+    /// custody in `PreparationFailure`.
+    pub fn read_authored_parameter_metadata_retained_while_on_control(
+        mut self,
+        class: ClassId,
+        ids: &[u32],
+        mut is_cancelled: impl FnMut() -> bool,
+    ) -> std::result::Result<(Self, AuthoredParameterMetadata), PreparationFailure> {
+        let result = (|| {
+            if is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            if self.instance.config.identity.class != class {
+                return Err(Error::Protocol(
+                    "authored parameter class differs from loaded source",
+                ));
+            }
+            let mut selection = Selection::new(ids)?;
+            let until = end_after(self.instance.limits.startup)?;
+            let mut query = ParameterPageQuery::default();
+            loop {
+                if is_cancelled() {
+                    return Err(Error::Cancelled);
+                }
+                self.instance
+                    .begin_controller_request_on_audio_channel(query.into(), until)?;
+                let page = loop {
+                    if is_cancelled() {
+                        return Err(Error::Cancelled);
+                    }
+                    match self.instance.poll_parameter_page()? {
+                        ParameterPageProgress::Page(page) => break page,
+                        ParameterPageProgress::Pending => {
+                            if Instant::now() >= until {
+                                return self.instance.refuse_parameter_page(Error::Timeout);
+                            }
+                            pause(until);
+                        }
+                        ParameterPageProgress::Changed { .. } => {
+                            return Err(Error::Protocol("authored parameter metadata changed"));
+                        }
+                        ParameterPageProgress::Conversion(_)
+                        | ParameterPageProgress::Editor(_)
+                        | ParameterPageProgress::EditorSeal(_)
+                        | ParameterPageProgress::EditorFrontier(_)
+                        | ParameterPageProgress::EditorAdmission(_) => {
+                            return Err(Error::Protocol(
+                                "expected authored parameter metadata page",
+                            ));
+                        }
+                    }
+                };
+                let Some(next) = selection.accept(&page)? else {
+                    return selection.finish_fresh(&self.instance, page.revision);
+                };
+                query = next;
+            }
+        })();
+        match result {
+            Ok(metadata) => Ok((self, metadata)),
+            Err(cause) => Err(self.instance.refuse_epoch_retained(cause)),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct Parameter {
     id: u32,
@@ -202,6 +270,20 @@ impl Selection {
         for parameter in &mut self.parameters {
             parameter.normalized = previous.initial_normalized(parameter.id).map(f64::to_bits);
         }
+    }
+
+    fn finish_fresh(self, instance: &Prepared, revision: u64) -> Result<AuthoredParameterMetadata> {
+        if self.parameters.iter().any(|p| p.steps.is_none()) {
+            return Err(Error::Protocol("authored parameter is missing"));
+        }
+        Ok(AuthoredParameterMetadata {
+            binding: instance.config.binding,
+            source: Arc::downgrade(&instance.lease.cancellation.cancelled),
+            class: instance.config.identity.class,
+            revision,
+            parameters: self.parameters,
+            extension_limit: None,
+        })
     }
 
     fn finish(mut self, instance: &Prepared, revision: u64) -> Result<AuthoredParameterMetadata> {

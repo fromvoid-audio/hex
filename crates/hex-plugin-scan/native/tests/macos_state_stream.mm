@@ -175,5 +175,33 @@ int main() {
         verify_capture_and_readback(stream, expected, sizeof(expected));
         assert(stream->dispose_on_control());
     }
+
+    // 8. Reusing a read-only stream on control replaces bytes cleanly and refuses invalid inputs.
+    {
+        const unsigned char first[4] = {'S', 'T', '0', '1'};
+        const unsigned char second[6] = {'R', 'E', 'S', 'T', '0', '2'};
+        auto* stream = new StateStream(first, sizeof(first));
+        assert(stream->valid() && stream->exclusive() && stream->size() == sizeof(first));
+        assert(stream->reset_read_only_on_control(second, sizeof(second)));
+        assert(stream->valid() && stream->exclusive() && stream->size() == sizeof(second));
+        std::array<unsigned char, 8> readback{};
+        int32 read_bytes = 0;
+        assert(stream->read(readback.data(), static_cast<int32>(sizeof(second)), &read_bytes) ==
+               kResultOk);
+        assert(read_bytes == static_cast<int32>(sizeof(second)));
+        assert(std::memcmp(readback.data(), second, sizeof(second)) == 0);
+        // Empty reset is allowed even with nullptr source.
+        assert(stream->reset_read_only_on_control(nullptr, 0));
+        assert(stream->size() == 0 && stream->valid() && stream->exclusive());
+        // Null non-empty and over-capacity requests are refused without corrupting validity.
+        assert(!stream->reset_read_only_on_control(nullptr, 4));
+        assert(!stream->reset_read_only_on_control(first, StateStream::capacity + 1));
+        assert(stream->valid());
+        // Non-exclusive stream refuses reset.
+        stream->addRef();
+        assert(!stream->reset_read_only_on_control(first, sizeof(first)));
+        stream->release();
+        assert(stream->dispose_on_control());
+    }
     return 0;
 }

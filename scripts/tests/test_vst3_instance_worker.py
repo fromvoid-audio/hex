@@ -81,7 +81,7 @@ class Session:
         magic = prefix + self.exact(4)
         length = struct.unpack("<I", self.exact(4))[0]
         state_prefix = {b"HXVIFA05": 146, b"HXVIRD06": 87, b"HXVICS02": 62, b"HXVLCA02": 63,
-                        b"HXVIQF04": 162, b"HXVIAR03": 170, b"HXVIRR04": 172}
+                        b"HXVIQF04": 162, b"HXVIAR03": 170, b"HXVIWR01": 170, b"HXVIRR04": 172}
         limit = STATE_ENVELOPE_BYTES + state_prefix[magic] if magic in state_prefix else 8192
         if length > limit:
             raise AssertionError("unbounded helper control reply")
@@ -1066,6 +1066,60 @@ class NativeInstanceTests(unittest.TestCase):
         self.terminal(session, 0, message=session.stop())
         self.assertEqual(self.observation()[10], 1)
         self.assertEqual(self.observation()[11], 1)
+
+    def test_quiescent_restore_updates_state_flush_capture_and_refuses_bad_envelope(self):
+        first = self.startup_state(gain=1.0, latency=0, scroll=7)
+        second = self.startup_state(gain=3.0, latency=2, scroll=29)
+        session = self.session(variant=180, startup_state=first)
+        self.ready(session, controller=True)
+        session.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
+        self.assertEqual(session.message()[0], b"HXVIQF04")
+
+        # 1. Restore second state while quiescent: latency/controller/component update and echo exact envelope.
+        def send_restore(target, operation, payload):
+            header = struct.pack("<4sHHH6x7QI", b"HXVW", 1, 0, 0, *BINDING, 0, 0, operation, len(payload))
+            target.socket.sendall(header + payload)
+            return target.message()
+
+        magic, body = send_restore(session, 1, second)
+        self.assertEqual(magic, b"HXVIWR01")
+        self.assertEqual(struct.unpack_from("<II", body, 126), (2, 0))
+        self.assertEqual(body[141:141 + 5 + len(second)], struct.pack("<BI", 1, len(second)) + second)
+        self.assertEqual(struct.unpack_from("<3Q", body, len(body) - 24), (0, 0, 1))
+        self.assertEqual(self.restore_observation()[6], struct.unpack("<i", struct.pack("<f", 3.0))[0])
+
+        # 2. Flush a parameter point on the restored quiescent instance and capture it.
+        session.socket.sendall(struct.pack("<4sHHHH4x7QHHId", b"HXVF", 2, 0, 0, 1, *BINDING, 0, 0, 1, 0, 0, 7, 0.5))
+        magic, flushed = session.message()
+        self.assertEqual(magic, b"HXVIFL01")
+        self.assertEqual(struct.unpack("<H7QBHId", flushed), (1, *BINDING, 0, 0, 1, 1, 1, 7, 0.5))
+        session.socket.sendall(struct.pack("<4sHHH6x7Q", b"HXVC", 1, 0, 0, *BINDING, 0, 0, 1))
+        magic, captured = session.message()
+        self.assertEqual(magic, b"HXVICS02")
+        self.assertEqual(struct.unpack_from("<f", captured, 62 + 104)[0], 2.0)
+
+        # 3. Restore back to first state cleanly on the exact same quiescent helper (operation 2).
+        magic, body = send_restore(session, 2, first)
+        self.assertEqual(magic, b"HXVIWR01")
+        self.assertEqual(struct.unpack_from("<II", body, 126), (0, 0))
+        self.assertEqual(struct.unpack_from("<3Q", body, len(body) - 24), (0, 0, 2))
+        self.assertEqual(self.restore_observation()[6], struct.unpack("<i", struct.pack("<f", 1.0))[0])
+
+        # 4. Out-of-order operation sequence is refused before SDK entry.
+        magic, err = send_restore(session, 2, second)
+        self.assertEqual(magic, b"HXVIER01")
+        self.assertEqual(struct.unpack("<HB4QI", err), (1, 1, *BINDING, 8))
+        self.terminal(session, 8)
+
+        # 5. A plugin that refuses post-setup setState (variant=37) reports Restore failure and exits cleanly.
+        refusing = self.session(variant=37, startup_state=first)
+        self.ready(refusing, controller=True)
+        refusing.socket.sendall(struct.pack("<4sHHH6x6Q", b"HXVQ", 1, 0, 0, *BINDING, 0, 0))
+        self.assertEqual(refusing.message()[0], b"HXVIQF04")
+        magic, err = send_restore(refusing, 1, second)
+        self.assertEqual(magic, b"HXVIER01")
+        self.assertEqual(struct.unpack("<HB4QI", err), (1, 1, *BINDING, 14))
+        self.assertEqual(refusing.process.wait(timeout=10), 14)
 
     def test_stopped_flush_rejects_stale_malformed_and_unknown_before_sdk_entry(self):
         for mode in ("operation", "prefix", "binding", "offset", "unknown", "duplicate"):
