@@ -312,6 +312,8 @@ impl Plugins {
             }
             self.yield_parameters_to_control(control, input.context(), cancellation)
                 .map_err(refused)?;
+            self.drain_parameter_conversion_for_control(control, input.context(), cancellation)
+                .map_err(refused)?;
             let inventory = self
                 .observed_parameters
                 .iter()
@@ -565,6 +567,51 @@ impl Plugins {
 }
 
 impl Gesture {
+    pub(super) fn allows_read_only_format(&self, source: Binding, parameter: u32) -> bool {
+        self.binding == source && self.origin.parameter == parameter && self.commit.is_none()
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_active(
+        origin: PluginParameterOrigin,
+        binding: Binding,
+        output: u64,
+        commit: Option<(AudioSourceContext, u64)>,
+    ) -> Self {
+        Self {
+            key: GestureKey {
+                generation: origin.context.project_generation,
+                token: 1,
+            },
+            origin,
+            binding,
+            output,
+            steps: 0,
+            last: origin.initial,
+            sequence: 0,
+            pending: None,
+            live: None,
+            capture: None,
+            capture_sequenced: false,
+            last_input: None,
+            last_input_idle: false,
+            sequenced_capture: None,
+            before: None,
+            commit,
+            next_program: None,
+            commit_accepted: false,
+            capture_class: None,
+            deliveries: Vec::new(),
+            retired_delivery: None,
+            recording: false,
+            recording_base: None,
+            recorded_release: false,
+            recording_context: None,
+            recording_closed: false,
+            recording_interrupted: false,
+        }
+    }
+
     /// A capture fact only selects the existing source for this exact pending
     /// canonical edit; the audio owner independently authenticates publication.
     #[allow(clippy::too_many_arguments)] // Exact gesture, target, predecessor, source and cancellation.
