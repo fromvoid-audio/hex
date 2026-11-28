@@ -103,6 +103,20 @@ fn preparation_inventory(
                 storage.ipc_handle_bound,
             )
         }
+        Owner::Quiescent(owner)
+            if slot.warm_scratch.is_some()
+                && slot.facts == Some(owner.facts())
+                && slot.presentation.is_none() =>
+        {
+            let storage = owner.retained_storage_on_control()?;
+            (
+                storage.data_bytes,
+                storage.shared_groups,
+                storage.shared_handle_bound,
+                storage.native_child_lifetime_bound,
+                storage.ipc_handle_bound,
+            )
+        }
         _ => return None,
     };
     if data.checked_add(hex_plugin_host::NATIVE_DIAGNOSTIC_DATA_BYTES)?
@@ -178,8 +192,11 @@ impl Bank {
                 {
                     return None;
                 }
-                if verified_references.is_some_and(|references| !references.contains(index))
-                    && matches!(cell.owner, Some(Owner::Pending(_) | Owner::Prepared(_)))
+                if (verified_references.is_some_and(|references| !references.contains(index))
+                    && matches!(cell.owner, Some(Owner::Pending(_) | Owner::Prepared(_))))
+                    || (slot.warm_scratch.is_some()
+                        && matches!(cell.owner, Some(Owner::Quiescent(_)))
+                        && verified_references.is_none_or(|references| !references.contains(index)))
                 {
                     return sum.add(preparation_inventory(
                         slot,

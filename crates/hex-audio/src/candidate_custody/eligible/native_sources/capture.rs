@@ -623,7 +623,7 @@ impl Custody {
     // Capture, parameter flush and reactivation use the same quiescent-owner
     // admission/terminal path. Only Work spans SDK I/O; close keeps its existing
     // exact cancellation token, and neither operation grants resume/publication.
-    fn with_quiescent_native_source<T>(
+    pub(super) fn with_quiescent_native_source<T>(
         &self,
         binding: Binding,
         run: impl FnOnce(

@@ -69,6 +69,7 @@ pub enum PluginProfile {
 
 /// Checked helper artifact held by the canonical worker. Actual native source,
 /// worker, endpoint, cancellation and retirement owners remain in its output Root.
+#[derive(Clone)]
 pub struct Hosting {
     build: InstanceBuild,
     limits: native::Limits,

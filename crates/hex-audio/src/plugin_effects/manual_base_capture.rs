@@ -26,6 +26,7 @@ pub(crate) struct BaseCaptureSource {
 
 enum Phase {
     Prepare,
+    Restore,
     Flush,
     Capture,
     Retire(Option<Result<NativeDeviceState, ManualBaseCaptureError>>),
@@ -33,9 +34,22 @@ enum Phase {
     Finished,
 }
 
+#[derive(Clone)]
 struct FlushPlan {
     cohorts: VecDeque<Parameters>,
     exact_readback: bool,
+}
+
+struct ColdFallback {
+    hosting: Hosting,
+    metadata: EffectSourceMetadata,
+    owner: hex_lattice::ProcessorChainOwner,
+    device_id: u64,
+    graph: u64,
+    rate: u32,
+    profile: PluginProfile,
+    state: NativeDeviceState,
+    flushes: FlushPlan,
 }
 
 impl FlushPlan {
@@ -99,6 +113,11 @@ pub struct ManualBaseCapture {
     output_identity: u64,
     source: Option<(AppliedAudioSource, u64, bool)>,
     original_binding: Option<Binding>,
+    warm_key: crate::candidate_custody::WarmScratchKey,
+    warm_acquired: bool,
+    fallback_to_cold: bool,
+    restore_state: Option<NativeDeviceState>,
+    cold_fallback: Option<Box<ColdFallback>>,
     identity: hex_plugin_state::Identity,
     presentation: PresentationPlan,
     flushes: FlushPlan,
@@ -233,17 +252,50 @@ impl Hosting {
         let identity = Self::saved_identity_on_control(canonical)?;
         let (rate, transport_epoch, original) =
             output.native_base_capture_source(source, binding, canonical, playing)?;
-        let scratch = self.begin_on_control(
-            output,
-            original.metadata.selection(),
-            original.identity.owner(),
-            original.identity.device_id(),
-            binding.graph,
-            rate,
-            original.profile,
-            Some(canonical.clone()),
-            None,
-        )?;
+        let warm_key = crate::candidate_custody::WarmScratchKey {
+            original_binding: binding,
+            identity,
+            sample_rate_bits: f64::from(rate).to_bits(),
+            input_channels: match original.profile {
+                PluginProfile::Effect => 2,
+                PluginProfile::Instrument => 0,
+            },
+            output_channels: 2,
+            presentation: original.presentation,
+        };
+        let (scratch, warm_acquired, restore_state, cold_fallback, phase) =
+            if let Some(scratch) = output.acquire_warm_scratch_native_source_on_control(warm_key) {
+                (
+                    scratch,
+                    true,
+                    Some(canonical.clone()),
+                    Some(Box::new(ColdFallback {
+                        hosting: self.clone(),
+                        metadata: original.metadata,
+                        owner: original.identity.owner(),
+                        device_id: original.identity.device_id(),
+                        graph: binding.graph,
+                        rate,
+                        profile: original.profile,
+                        state: canonical.clone(),
+                        flushes: flushes.clone(),
+                    })),
+                    Phase::Restore,
+                )
+            } else {
+                let scratch = self.begin_on_control(
+                    output,
+                    original.metadata.selection(),
+                    original.identity.owner(),
+                    original.identity.device_id(),
+                    binding.graph,
+                    rate,
+                    original.profile,
+                    Some(canonical.clone()),
+                    None,
+                )?;
+                (scratch, false, None, None, Phase::Prepare)
+            };
         let before_fingerprint = state_approval::state_fingerprint(canonical);
         let manual_point_id = (!flushes.exact_readback
             && flushes.cohorts.len() == 1
@@ -254,13 +306,18 @@ impl Hosting {
             output_identity: source.output_identity,
             source: Some((source, transport_epoch, playing)),
             original_binding: Some(binding),
+            warm_key,
+            warm_acquired,
+            fallback_to_cold: false,
+            restore_state,
+            cold_fallback,
             identity,
             presentation: original.presentation,
             flushes,
             before_fingerprint,
             manual_point_id,
             flushed_normalized: None,
-            phase: Phase::Prepare,
+            phase,
         })
     }
     /// Restore fresh captured state in a private Root sibling, then put only
@@ -338,32 +395,71 @@ impl Hosting {
                 })
                 .map_err(|_| "native saved base value is invalid")?;
         }
-        let scratch = self.begin_on_control(
-            output,
-            original.metadata.selection(),
-            original.identity.owner(),
-            original.identity.device_id(),
-            binding.graph,
-            rate,
-            original.profile,
-            Some(captured.clone()),
-            None,
-        )?;
+        let flushes = FlushPlan {
+            cohorts: VecDeque::from([parameters]),
+            exact_readback: true,
+        };
+        let warm_key = crate::candidate_custody::WarmScratchKey {
+            original_binding: binding,
+            identity,
+            sample_rate_bits: f64::from(rate).to_bits(),
+            input_channels: match original.profile {
+                PluginProfile::Effect => 2,
+                PluginProfile::Instrument => 0,
+            },
+            output_channels: 2,
+            presentation: original.presentation,
+        };
+        let (scratch, warm_acquired, restore_state, cold_fallback, phase) =
+            if let Some(scratch) = output.acquire_warm_scratch_native_source_on_control(warm_key) {
+                (
+                    scratch,
+                    true,
+                    Some(captured.clone()),
+                    Some(Box::new(ColdFallback {
+                        hosting: self.clone(),
+                        metadata: original.metadata,
+                        owner: original.identity.owner(),
+                        device_id: original.identity.device_id(),
+                        graph: binding.graph,
+                        rate,
+                        profile: original.profile,
+                        state: captured.clone(),
+                        flushes: flushes.clone(),
+                    })),
+                    Phase::Restore,
+                )
+            } else {
+                let scratch = self.begin_on_control(
+                    output,
+                    original.metadata.selection(),
+                    original.identity.owner(),
+                    original.identity.device_id(),
+                    binding.graph,
+                    rate,
+                    original.profile,
+                    Some(captured.clone()),
+                    None,
+                )?;
+                (scratch, false, None, None, Phase::Prepare)
+            };
         Ok(ManualBaseCapture {
             binding: scratch,
             output_identity: binding.root,
             source: None,
             original_binding: None,
+            warm_key,
+            warm_acquired,
+            fallback_to_cold: false,
+            restore_state,
+            cold_fallback,
             identity,
             presentation: original.presentation,
-            flushes: FlushPlan {
-                cohorts: VecDeque::from([parameters]),
-                exact_readback: true,
-            },
+            flushes,
             before_fingerprint: state_approval::state_fingerprint(canonical),
             manual_point_id: None,
             flushed_normalized: None,
-            phase: Phase::Prepare,
+            phase,
         })
     }
 }
@@ -426,6 +522,11 @@ impl ManualBaseCapture {
         if matches!(progress, Some(Progress::Retiring | Progress::Complete))
             && !matches!(self.phase, Phase::Retire(_))
         {
+            if self.warm_acquired && self.cold_fallback.is_some() {
+                output
+                    .disable_warm_scratch_native_source_on_control(self.warm_key.original_binding);
+                self.fallback_to_cold = true;
+            }
             self.phase = Phase::Retire(Some(Err(Failed(
                 "native manual base preparation refused".into(),
             ))));
@@ -438,6 +539,41 @@ impl ManualBaseCapture {
                 return None;
             }
             let report = output.recover_native_source_preparation(self.binding)?;
+            if self.fallback_to_cold {
+                self.fallback_to_cold = false;
+                if let Some(error) = Self::interruption(self.source, &output.status, is_cancelled) {
+                    self.cold_fallback = None;
+                    self.phase = Phase::Finished;
+                    return Some(Err(error));
+                }
+                if let Some(cold) = self.cold_fallback.take() {
+                    match cold.hosting.begin_on_control(
+                        output,
+                        cold.metadata.selection(),
+                        cold.owner,
+                        cold.device_id,
+                        cold.graph,
+                        cold.rate,
+                        cold.profile,
+                        Some(cold.state),
+                        None,
+                    ) {
+                        Ok(scratch) => {
+                            self.binding = scratch;
+                            self.warm_acquired = false;
+                            self.restore_state = None;
+                            self.flushes = cold.flushes;
+                            self.flushed_normalized = None;
+                            self.phase = Phase::Prepare;
+                            return None;
+                        }
+                        Err(error) => {
+                            self.phase = Phase::Finished;
+                            return Some(Err(Failed(error)));
+                        }
+                    }
+                }
+            }
             let result = match (report.error.or(report.cleanup_error), result.take()) {
                 (Some(error), _) => Err(Failed(error.to_string())),
                 (None, Some(Ok(state))) => {
@@ -449,29 +585,7 @@ impl ManualBaseCapture {
                     "native manual base capture result is unavailable".into(),
                 )),
             };
-            match (result, self.original_binding, self.source) {
-                (Ok(state), Some(binding), Some(source)) => {
-                    let manual_flush = self.manual_point_id.zip(self.flushed_normalized).map(
-                        |(id, flushed_normalized)| state_approval::ManualFlushObservation {
-                            id,
-                            flushed_normalized,
-                            before_fingerprint: self.before_fingerprint,
-                            after_fingerprint: state_approval::state_fingerprint(&state),
-                        },
-                    );
-                    self.phase = Phase::Approve(CompletedManualBase {
-                        binding,
-                        source,
-                        state,
-                        manual_flush,
-                    });
-                    return None;
-                }
-                (result, _, _) => {
-                    self.phase = Phase::Finished;
-                    return Some(result);
-                }
-            }
+            return self.complete_terminal(result);
         }
 
         // Recheck source changes during bounded native I/O without taking
@@ -484,6 +598,7 @@ impl ManualBaseCapture {
             }
             interruption.is_some()
         };
+        let mut parked_state = None;
         let next = match (&self.phase, progress) {
             (Phase::Prepare, Some(Progress::Facts(_))) => output
                 .complete_native_source_preparation(self.binding, self.presentation)
@@ -497,6 +612,24 @@ impl ManualBaseCapture {
                     self.binding = binding;
                     Phase::Flush
                 }),
+            (Phase::Restore, Some(Progress::Facts(_))) => {
+                let Some(state) = self.restore_state.clone() else {
+                    self.phase = Phase::Retire(Some(Err(Failed(
+                        "native manual base restore state unavailable".into(),
+                    ))));
+                    return None;
+                };
+                output
+                    .restore_native_source_state_on_control(self.binding, state, &mut cancelled)
+                    .and_then(|restored| {
+                        restored
+                            .ok_or("native manual base warm restore refused")
+                            .map(|_| {
+                                self.restore_state = None;
+                                Phase::Flush
+                            })
+                    })
+            }
             (Phase::Flush, Some(Progress::Facts(_))) => match self.flushes.cohorts.front() {
                 Some(points) => output
                     .flush_native_source_parameters_on_control(self.binding, points, &mut cancelled)
@@ -534,28 +667,83 @@ impl ManualBaseCapture {
             },
             (Phase::Capture, Some(Progress::Facts(_))) => output
                 .capture_native_source_state_on_control(self.binding, &mut cancelled)
-                .map(|state| {
-                    let result = state
-                        .ok_or_else(|| Failed("native manual base capture refused".into()))
-                        .and_then(|state| {
-                            if Hosting::saved_identity_on_control(&state).map_err(Failed)?
-                                == self.identity
-                            {
-                                Ok(state)
-                            } else {
-                                Err(Failed("native manual base capture identity differs".into()))
-                            }
-                        });
-                    Phase::Retire(Some(result))
+                .and_then(|state| {
+                    let Some(state) = state else {
+                        return Err("native manual base capture refused");
+                    };
+                    if Hosting::saved_identity_on_control(&state)
+                        .map_err(|_| "native manual base capture identity differs")?
+                        != self.identity
+                    {
+                        return Err("native manual base capture identity differs");
+                    }
+                    if interruption.is_none()
+                        && !is_cancelled()
+                        && Self::interruption(self.source, &status, &mut || false).is_none()
+                        && output.park_warm_scratch_native_source_on_control(
+                            self.binding,
+                            self.warm_key,
+                        )
+                    {
+                        parked_state = Some(state);
+                        return Ok(Phase::Finished);
+                    }
+                    Ok(Phase::Retire(Some(Ok(state))))
                 }),
             _ => return None,
         };
+        if let Some(state) = parked_state {
+            return self.complete_terminal(
+                Self::interruption(self.source, &output.status, is_cancelled)
+                    .map_or(Ok(state), Err),
+            );
+        }
         match (interruption, next) {
-            (Some(error), _) => self.phase = Phase::Retire(Some(Err(error))),
+            (Some(error), _) => {
+                self.fallback_to_cold = false;
+                self.phase = Phase::Retire(Some(Err(error)));
+            }
             (None, Ok(phase)) => self.phase = phase,
             (None, Err("native preparation is busy")) => {}
-            (None, Err(error)) => self.phase = Phase::Retire(Some(Err(Failed(error.into())))),
+            (None, Err(error)) => {
+                if self.warm_acquired && self.cold_fallback.is_some() {
+                    output.disable_warm_scratch_native_source_on_control(
+                        self.warm_key.original_binding,
+                    );
+                    self.fallback_to_cold = true;
+                }
+                self.phase = Phase::Retire(Some(Err(Failed(error.into()))));
+            }
         }
         None
+    }
+
+    fn complete_terminal(
+        &mut self,
+        result: Result<NativeDeviceState, ManualBaseCaptureError>,
+    ) -> Option<Result<NativeDeviceState, ManualBaseCaptureError>> {
+        match (result, self.original_binding, self.source) {
+            (Ok(state), Some(binding), Some(source)) => {
+                let manual_flush = self.manual_point_id.zip(self.flushed_normalized).map(
+                    |(id, flushed_normalized)| state_approval::ManualFlushObservation {
+                        id,
+                        flushed_normalized,
+                        before_fingerprint: self.before_fingerprint,
+                        after_fingerprint: state_approval::state_fingerprint(&state),
+                    },
+                );
+                self.phase = Phase::Approve(CompletedManualBase {
+                    binding,
+                    source,
+                    state,
+                    manual_flush,
+                });
+                None
+            }
+            (result, _, _) => {
+                self.phase = Phase::Finished;
+                Some(result)
+            }
+        }
     }
 }
