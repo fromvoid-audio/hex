@@ -452,6 +452,7 @@ impl Knob {
             .map(PluginParameterValue::normalized)
     }
 
+    #[allow(clippy::too_many_arguments)] // Exact source query, row, presentation, edit availability, active gesture and terminal lock.
     fn renew(
         &self,
         query: PluginParameterQuery,
@@ -459,12 +460,13 @@ impl Knob {
         presentation: (f64, Option<&str>),
         enabled: bool,
         active: Option<hex_session::device_gesture::GestureSnapshot>,
+        locked_by_terminal: bool,
         cx: &mut Context<EditorView>,
     ) -> Option<ParameterControl> {
         let (value, display) = presentation;
         self.origin.set(parameter_origin(query, row)?);
         let value = self.pending_value(active).unwrap_or(value);
-        let busy = active.is_some_and(|gesture| !self.owns(gesture.key));
+        let busy = active.is_some_and(|gesture| !self.owns(gesture.key) || locked_by_terminal);
         self.control
             .set_external_state(row.steps, value, display, cx);
         self.control

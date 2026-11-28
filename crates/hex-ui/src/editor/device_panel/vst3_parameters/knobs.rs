@@ -162,6 +162,8 @@ pub(in crate::editor) fn knob(
 ) -> Option<ParameterControl> {
     let enabled = !dense_target_owns_parameter(view, device, row.id);
     let active = view.device_panel.gesture.snapshot();
+    let locked_by_terminal = view.device_panel.gesture.has_pending_terminal()
+        || view.device_panel.gesture.is_recovery_pending();
     let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
     if let Some(knob) = panel.knobs.get(&row.id)
         && knob.matches_source(panel.source?, query, row)
@@ -174,6 +176,7 @@ pub(in crate::editor) fn knob(
             (painted, display.as_deref()),
             enabled,
             active,
+            locked_by_terminal,
             cx,
         );
     }
@@ -196,6 +199,8 @@ pub(in crate::editor) fn follow_knob(
     cx: &mut Context<EditorView>,
 ) -> Option<ParameterControl> {
     let active = view.device_panel.gesture.snapshot();
+    let locked_by_terminal = view.device_panel.gesture.has_pending_terminal()
+        || view.device_panel.gesture.is_recovery_pending();
     let panel = view.device_panel.vst3_parameters.panels.get(&device)?;
     let enabled = panel.pending_touch.is_none()
         && panel.queued_touch.is_none()
@@ -212,6 +217,7 @@ pub(in crate::editor) fn follow_knob(
             (painted, display.as_deref()),
             enabled,
             active,
+            locked_by_terminal,
             cx,
         );
     }
